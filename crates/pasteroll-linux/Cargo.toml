@@ -1,0 +1,22 @@
+[package]
+name = "pasteroll-linux"
+version = "0.1.0-beta.1"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "pasteroll"
+path = "src/main.rs"
+
+[dependencies]
+pasteroll-app = { version = "0.1.0-beta.1", path = "../pasteroll-app" }
+pasteroll-core = { version = "0.1.0-beta.1", path = "../pasteroll-core" }
+pasteroll-render = { version = "0.1.0-beta.1", path = "../pasteroll-render" }
+zeroize = "1.9.1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+rpassword = "7.5.4"
+zbus = "5"
+x11rb = { version = "0.13", features = ["xfixes", "xtest", "shape", "randr"] }

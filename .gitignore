@@ -1,0 +1,18 @@
+# build output
+target/
+target-dev/
+dist/
+
+# local data (never commit a history or its key)
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.key
+*.exp
+
+# editor / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

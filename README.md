@@ -1,0 +1,144 @@
+# Pasteroll
+
+A clipboard history you can scroll with the mouse wheel. Copy as usual; when you need an earlier
+clip, press **Ctrl+Shift+middle-click**, scroll through your history right where you are working,
+and paste the whole clip, or select just a part of it and paste only that.
+
+**Status: public beta (`0.1.0-beta.1`).** It works and is tested, but it is young. Expect rough
+edges and please [report them](https://github.com/qpd-v/pasteroll/issues).
+
+| | Windows 10 / 11 | Linux (X11) |
+|---|---|---|
+| Download | `pasteroll-windows-x64.zip` | `pasteroll-linux-x86_64.tar.gz` (static, any x86-64 distro) |
+| Tray icon | yes | StatusNotifier (KDE, GNOME with AppIndicator, Ubuntu) or XEmbed |
+| Wayland | n/a | not supported; use an X11 session (see below) |
+| macOS | not available | |
+
+## Features
+
+- **Scroll your history** with the mouse wheel or arrow keys; the carousel opens at the pointer.
+- **Search as you type** (file names too) and filter by Text, Document, Image, Video, Audio,
+  Compressed, Pinned, or filters you define.
+- **Partial paste**: double-click a word or drag across text in the preview, then Enter pastes
+  only the selection.
+- **Pin** clips (Ctrl+P) so they are never removed automatically; delete with Ctrl+Delete.
+- **Images and files** are kept too, with fast cached previews.
+- **Private by design**: stored encrypted on your computer, nothing is ever sent anywhere
+  (see [PRIVACY.md](PRIVACY.md)).
+- **Skips password managers** that mark their copies as sensitive, and programs you exclude.
+- **Terminal safe**: asks for a second Enter before pasting several lines into a terminal.
+- **Adjustable size**: 50 % to 200 % in Settings.
+- Starts with your session only if you turn that on.
+
+## Install
+
+### Windows
+
+1. Download `pasteroll-windows-x64.zip` and `SHA256SUMS` from the
+   [latest release](https://github.com/qpd-v/pasteroll/releases) and
+   [verify the checksum](#verify-your-download).
+2. Unzip, then double-click `pasteroll.exe` and choose **Yes** (or run `pasteroll.exe install`).
+   It installs for your account only, with no administrator rights, and adds a Start menu entry.
+
+> **"Windows protected your PC"**: the beta is **not code-signed yet**, so SmartScreen shows
+> this for new programs. Click **More info → Run anyway** after checking the checksum. Some
+> antivirus programs are also wary of anything that watches the keyboard and clipboard (which a
+> clipboard manager must); the source is here for you to read and build yourself.
+
+### Linux
+
+```sh
+tar xzf pasteroll-linux-x86_64.tar.gz
+cd pasteroll-linux-x86_64
+./pasteroll install        # copies to ~/.local/bin, adds a menu entry and icon
+pasteroll run
+```
+
+Pasteroll needs an **X11 session**. Ubuntu and Fedora log in to Wayland by default: choose
+"Ubuntu on Xorg" (or "GNOME on Xorg") from the gear icon on the login screen. Under Wayland,
+programs running through XWayland are covered but native Wayland windows are not.
+
+## Use
+
+| | |
+|---|---|
+| **Ctrl+Shift+middle-click** | open the carousel at the pointer |
+| mouse wheel / ↑ ↓ | move through clips |
+| type | search |
+| Tab | choose a filter |
+| Enter, or click the target | paste |
+| double-click / drag in the preview | select part of a clip to paste |
+| Ctrl+P / Ctrl+Delete | pin / delete a clip |
+| Esc | close |
+
+Tray icon: pause recording, Settings, open data folder, quit. Settings has the history limits,
+carousel size, programs to ignore and custom filters.
+
+### Command line
+
+```
+pasteroll run | status | config [show|path|init|set KEY VALUE] | exclude PROGRAM
+          | clear --yes | repair --yes | rotate-key | key-export --out FILE | key-import --in FILE
+          | install | uninstall [--remove-data --yes] | autostart [on|off] | --version
+```
+
+## Your data and recovery
+
+History is a SQLite database encrypted per clip, in `%LOCALAPPDATA%\Pasteroll` (Windows) or
+`~/.local/share/pasteroll` (Linux). **Make a recovery file** so a reinstall or a lost key file
+cannot lose the history:
+
+```
+pasteroll key-export --out recovery.key     # protected by a passphrase you choose
+pasteroll key-import --in recovery.key
+```
+
+Read the honest limits in [SECURITY.md](SECURITY.md).
+
+## Verify your download
+
+Each release has a `SHA256SUMS` file.
+
+```powershell
+# Windows
+Get-FileHash .\pasteroll-windows-x64.zip -Algorithm SHA256
+```
+```sh
+# Linux
+sha256sum -c SHA256SUMS --ignore-missing
+```
+
+The value must match the line in `SHA256SUMS` exactly.
+
+## Build from source
+
+You need a recent stable [Rust](https://rustup.rs). No other tools are required on Windows.
+
+```sh
+git clone https://github.com/qpd-v/pasteroll
+cd pasteroll
+cargo build --release -p pasteroll-win      # Windows: target\release\pasteroll.exe
+cargo build --release -p pasteroll-linux    # Linux: target/release/pasteroll
+cargo test --workspace
+```
+
+Release packages: `scripts/package-windows.ps1` and `scripts/package-linux.sh` (static musl build;
+needs `musl-tools` and `rustup target add x86_64-unknown-linux-musl`).
+
+The code is split into `pasteroll-core` (storage, crypto, settings), `pasteroll-render` (drawing),
+`pasteroll-app` (the controller that is the same on every platform) and one thin crate per
+platform (`pasteroll-win`, `pasteroll-linux`).
+
+## Known limits
+
+- Linux: X11 only. Wayland has no global input grabs for ordinary programs.
+- Pasting into a program running as administrator (Windows) is blocked by Windows.
+- The carousel is not excluded from screen capture (Windows Recall, screen sharing can see it).
+- Not signed yet (Windows), no auto-update: download new versions yourself.
+- No macOS build.
+
+## License
+
+Dual-licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your
+option. The name "Pasteroll" and its logo are not covered by these licenses; please do not present
+a modified build as the official one.

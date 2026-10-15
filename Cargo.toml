@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = ["crates/pasteroll-app","crates/pasteroll-core", "crates/pasteroll-render", "crates/pasteroll-win", "crates/pasteroll-linux"]
+
+[workspace.package]
+repository = "https://github.com/qpd-v/pasteroll"
+homepage = "https://pasteroll.com"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -1,0 +1,18 @@
+# cargo deny check  --  licenses and known advisories for the dependency tree.
+[graph]
+targets = ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-musl"]
+
+[licenses]
+allow = [
+    "MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause",
+    "ISC", "Zlib", "Unicode-3.0", "0BSD", "Unlicense", "CC0-1.0", "MPL-2.0",
+]
+confidence-threshold = 0.9
+
+[advisories]
+version = 2
+yanked = "deny"
+
+[bans]
+multiple-versions = "allow"
+wildcards = "allow"
