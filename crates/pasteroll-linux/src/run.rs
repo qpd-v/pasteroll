@@ -69,6 +69,7 @@ pub fn run(db: PathBuf, capture: bool, max_seconds: Option<u64>) -> i32 {
 fn run_inner(db: PathBuf, capture: bool, max_seconds: Option<u64>) -> Result<(), String> {
     sys::harden_process();
     let _single = sys::single_instance(&db)?;
+    let mut stop = sys::StopListener::new(&db)?;
     let cfg = ks::load_config(&db).map_err(|p| {
         format!("{} is not valid:\n  - {}", ks::config_path(&db).display(), p.join("\n  - "))
     })?;
@@ -173,6 +174,7 @@ fn run_inner(db: PathBuf, capture: bool, max_seconds: Option<u64>) -> Result<(),
     let mut next_tick = Instant::now() + TICK;
 
     while !STOP.load(Ordering::SeqCst) {
+        if stop.requested() { break; }
         last_turn.store(started.elapsed().as_millis() as u64, Ordering::SeqCst);
         // everything the server has sent
         loop {

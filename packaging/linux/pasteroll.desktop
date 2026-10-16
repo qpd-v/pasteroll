@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Pasteroll
+Comment=Local encrypted clipboard history (requires an X11 session)
+Exec=@BINDIR@/pasteroll run
+TryExec=@BINDIR@/pasteroll
+Icon=pasteroll
+Terminal=false
+Categories=Utility;
+StartupNotify=false

@@ -1,0 +1,2 @@
+# RC.EXE's preprocessor needs CRLF for the multi-line VERSIONINFO resource.
+pasteroll.rc text eol=crlf

@@ -7,6 +7,7 @@ repository = "https://github.com/qpd-v/pasteroll"
 homepage = "https://pasteroll.com"
 edition = "2021"
 license = "MIT OR Apache-2.0"
+authors = ["Pasteroll"]
 publish = false
 
 # Drawing and text shaping are very slow unoptimised; debug builds and tests of our own code

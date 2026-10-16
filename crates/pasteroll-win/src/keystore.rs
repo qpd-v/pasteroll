@@ -25,6 +25,10 @@ pub use pasteroll_core::keystore::{config_path, load_config, read_config_text, R
 const ENTROPY: &[u8] = b"carousel/v1/master-key";
 
 pub fn default_db() -> Result<PathBuf, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    if let Some(db) = pasteroll_core::paths::portable_db(&exe) {
+        return Ok(db);
+    }
     Ok(default_db_in(&crate::winsys::local_app_data()?))
 }
 

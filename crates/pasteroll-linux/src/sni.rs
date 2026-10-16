@@ -397,10 +397,9 @@ mod tests {
             assert_eq!(w, h);
             assert_eq!(d.len(), (*w as usize) * (*h as usize) * 4);
         }
-        // somewhere the logo is opaque, somewhere (a corner) it is transparent
+        // The approved source has an opaque background; alpha is the first ARGB byte.
         let (_, _, d) = &p[4];
-        assert!(d.chunks_exact(4).any(|px| px[0] > 128));
-        assert!(d.chunks_exact(4).any(|px| px[0] == 0));
+        assert!(d.chunks_exact(4).all(|px| px[0] == 255));
         assert_ne!(pixmaps(true)[4].2, p[4].2);
     }
 

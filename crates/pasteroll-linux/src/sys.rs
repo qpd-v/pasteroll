@@ -113,6 +113,10 @@ impl Os for LinuxOs {
 
 /// `$XDG_DATA_HOME/pasteroll/history.db`, else `~/.local/share/pasteroll/history.db`.
 pub fn default_db() -> Result<PathBuf, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    if let Some(db) = pasteroll_core::paths::portable_db(&exe) {
+        return Ok(db);
+    }
     let base = match std::env::var_os("XDG_DATA_HOME").filter(|v| !v.is_empty()) {
         Some(p) => PathBuf::from(p),
         None => {
@@ -145,10 +149,138 @@ pub fn single_instance(db: &Path) -> Result<FileLock, String> {
     }
 }
 
+/// Local-only control pipe. Its reader belongs to the process holding app.lock; no PID is
+/// stored and no signal is sent to a possibly reused PID. Create only after taking that lock.
+pub struct StopListener {
+    file: std::fs::File,
+    path: PathBuf,
+}
+
+impl StopListener {
+    pub fn new(db: &Path) -> Result<Self, String> {
+        use std::ffi::CString;
+        use std::os::unix::fs::FileTypeExt;
+        let path = db.with_file_name("app.stop");
+        match std::fs::symlink_metadata(&path) {
+            Ok(m) if m.file_type().is_fifo() && m.uid() == euid() => {
+                std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+            }
+            Ok(_) => return Err("app.stop is not our control pipe; refusing to replace it".into()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.to_string()),
+        }
+        let c = CString::new(path.as_os_str().as_encoded_bytes()).map_err(|e| e.to_string())?;
+        if unsafe { libc::mkfifo(c.as_ptr(), 0o600) } != 0 {
+            return Err(format!("cannot create the stop pipe: {}", std::io::Error::last_os_error()));
+        }
+        let file = std::fs::OpenOptions::new().read(true).write(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW).open(&path).map_err(|e| e.to_string())?;
+        Ok(Self { file, path })
+    }
+
+    pub fn requested(&mut self) -> bool {
+        use std::io::Read;
+        let mut buf = [0u8; 64];
+        self.file.read(&mut buf).is_ok_and(|n| buf[..n].split(|b| *b == b'\n').any(|s| s == b"stop"))
+    }
+}
+
+impl Drop for StopListener {
+    fn drop(&mut self) { let _ = std::fs::remove_file(&self.path); }
+}
+
+/// Read the existing instance lock without creating a data folder or lock file.
+fn instance_running(db: &Path) -> Result<bool, String> {
+    use std::os::fd::AsRawFd;
+    let file = match std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NOFOLLOW)
+        .open(db.with_file_name("app.lock")) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e.to_string()),
+    };
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        return Ok(false);
+    }
+    let err = std::io::Error::last_os_error();
+    if err.raw_os_error() == Some(libc::EWOULDBLOCK) { Ok(true) } else { Err(err.to_string()) }
+}
+
+pub fn stop_running(db: &Path) -> Result<(), String> {
+    use std::io::Write;
+    use std::os::unix::fs::FileTypeExt;
+    let path = db.with_file_name("app.stop");
+    let mut sent = false;
+    for _ in 0..50 {
+        if !instance_running(db)? { return Ok(()); }
+        if !sent {
+            if let Ok(meta) = std::fs::symlink_metadata(&path) {
+                if !meta.file_type().is_fifo() || meta.uid() != euid() {
+                    return Err("app.stop is not our control pipe; refusing to use it".into());
+                }
+                match std::fs::OpenOptions::new().write(true)
+                    .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW).open(&path) {
+                    Ok(mut f) => {
+                        f.write_all(b"stop\n").map_err(|e| e.to_string())?;
+                        sent = true;
+                    }
+                    Err(e) if matches!(e.raw_os_error(), Some(libc::ENXIO) | Some(libc::ENOENT)) => {}
+                    Err(e) => return Err(e.to_string()),
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    if !instance_running(db)? { return Ok(()); }
+    Err("Pasteroll did not quit. Quit it from the tray icon and try again. Older versions may not support stop.".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use pasteroll_core::keystore as ks;
+
+    #[test]
+    fn stop_without_an_instance_creates_no_data() {
+        let d = temp("stop-absent");
+        stop_running(&d.join("history.db")).unwrap();
+        assert!(!d.exists());
+    }
+
+    #[test]
+    fn stop_requests_a_graceful_exit_and_waits_for_the_instance_lock() {
+        let d = temp("stop-running");
+        let db = d.join("history.db");
+        let lock = single_instance(&db).unwrap();
+        let mut listener = StopListener::new(&db).unwrap();
+        let peer_db = db.clone();
+        let peer = std::thread::spawn(move || stop_running(&peer_db));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !listener.requested() {
+            assert!(std::time::Instant::now() < deadline, "stop request never arrived");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(instance_running(&db).unwrap());
+        drop(listener);
+        drop(lock);
+        peer.join().unwrap().unwrap();
+        assert!(!db.with_file_name("app.stop").exists());
+        stop_running(&db).unwrap();
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn stop_never_replaces_or_writes_an_unrelated_file() {
+        let d = temp("stop-foreign");
+        let db = d.join("history.db");
+        let lock = single_instance(&db).unwrap();
+        let path = d.join("app.stop");
+        std::fs::write(&path, b"keep").unwrap();
+        assert!(StopListener::new(&db).is_err());
+        assert!(stop_running(&db).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"keep");
+        drop(lock);
+        std::fs::remove_dir_all(d).unwrap();
+    }
 
     fn temp(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("pasteroll-linux-{tag}-{}", std::process::id()));

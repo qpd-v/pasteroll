@@ -1,7 +1,5 @@
 #!/bin/bash
-# Writes dist/SHA256SUMS for the release archives (run from the repository root after both
-# packages are built).
+# Generate the current-version manifest on Linux/WSL, or pass --verify to validate it.
 set -euo pipefail
-cd dist
-sha256sum pasteroll-windows-x64.zip pasteroll-linux-x86_64.tar.gz > SHA256SUMS
-cat SHA256SUMS
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+exec python3 "$root/scripts/checksums.py" "$@"

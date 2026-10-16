@@ -46,9 +46,27 @@ fn start_menu_link() -> Result<PathBuf, String> {
 
 /// Is this program the installed copy?
 pub fn running_installed() -> bool {
+    if pasteroll_core::paths::is_portable() {
+        return false;
+    }
+    if installed_by_setup() {
+        return true;
+    }
     match (std::env::current_exe(), installed_exe()) {
         (Ok(a), Ok(b)) => same_file(&a, &b),
         _ => false,
+    }
+}
+
+pub fn installed_by_setup() -> bool {
+    std::env::current_exe().is_ok_and(|p| pasteroll_core::paths::installed_by_setup(&p))
+}
+
+fn require_nonportable() -> Result<(), String> {
+    if pasteroll_core::paths::is_portable() {
+        Err("Installation and autostart changes are unavailable in portable mode. Remove portable.txt to install this copy.".into())
+    } else {
+        Ok(())
     }
 }
 
@@ -162,12 +180,14 @@ fn run_command(exe: &Path) -> String {
 }
 
 pub fn autostart_enabled() -> bool {
+    if pasteroll_core::paths::is_portable() { return false; }
     get_string(RUN_KEY, VALUE_NAME).is_some()
 }
 
 /// Turns "start when I sign in" on or off for the current user. Off by default; only the person
 /// asks for it (the settings window or `pasteroll autostart on`).
 pub fn set_autostart(on: bool) -> Result<(), String> {
+    require_nonportable()?;
     if on {
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         set_string(RUN_KEY, VALUE_NAME, &run_command(&exe))
@@ -223,8 +243,36 @@ pub fn stop_running() -> bool {
     false
 }
 
+/// An installer must not stop an unrelated copy running from another installation folder.
+/// Enumerate message-only windows, verify the owning executable, then wait for that process.
+pub fn stop_installation(expected: &Path) -> bool {
+    use windows::Win32::System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE};
+    let mut previous = None;
+    let mut unreadable = false;
+    loop {
+        let window = unsafe { FindWindowExW(Some(HWND_MESSAGE), previous, w!("PasterollApp"), None) };
+        let Ok(window) = window else { return !unreadable };
+        previous = Some(window);
+        let mut pid = 0;
+        unsafe { GetWindowThreadProcessId(window, Some(&mut pid)); }
+        let Some(actual) = winsys::exe_path(pid) else { unreadable = true; continue };
+        if !same_file(&actual, expected) { continue; }
+        let Ok(process) = (unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid) }) else { return false };
+        let stopped = unsafe {
+            PostMessageW(Some(window), WM_CLOSE, WPARAM(0), LPARAM(0)).is_ok()
+                && WaitForSingleObject(process, 5_000) == WAIT_OBJECT_0
+        };
+        unsafe { let _ = CloseHandle(process); }
+        return stopped;
+    }
+}
+
 /// Installs this program for the current user. Returns a line for the person to read.
 pub fn install() -> Result<String, String> {
+    require_nonportable()?;
+    if installed_by_setup() {
+        return Ok("Pasteroll is already installed by Setup. Use Setup to upgrade it.".into());
+    }
     let src = std::env::current_exe().map_err(|e| e.to_string())?;
     let dir = install_dir()?;
     let dst = installed_exe()?;
@@ -259,41 +307,43 @@ pub fn install() -> Result<String, String> {
     Ok(format!("Installed to {}. Start it from the Start menu.", dir.display()))
 }
 
-/// Removes the installation. The history and settings are kept unless `remove_data`.
-pub fn uninstall(remove_data: bool, data_dir: Option<&Path>) -> Result<String, String> {
+/// Adopt a self-install's per-user registration after Setup has placed its marker.
+pub fn adopt_setup() -> Result<String, String> {
+    require_nonportable()?;
+    if !installed_by_setup() { return Err("This command requires a Setup-owned copy.".into()); }
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let previous = installed_exe()?;
+    // Only retire the old self-installer's Apps entry when Setup upgraded that same folder.
+    if let Some(dir) = get_string(UNINSTALL_KEY, "InstallLocation") {
+        if exe.parent().is_some_and(|p| same_file(p, Path::new(&dir))) {
+            if get_string(RUN_KEY, VALUE_NAME).as_deref() == Some(&run_command(&previous)) {
+                set_string(RUN_KEY, VALUE_NAME, &run_command(&exe))?;
+            }
+            delete_key(UNINSTALL_KEY);
+        }
+    }
+    Ok("Setup registration synchronized.".into())
+}
+
+/// Removes a legacy self-install. Setup itself owns removal of Setup installations.
+pub fn uninstall(remove_data: bool, db: &Path) -> Result<String, String> {
+    require_nonportable()?;
+    if installed_by_setup() {
+        return Err("Pasteroll was installed by Setup. Uninstall it through Settings > Apps > Pasteroll.".into());
+    }
     if !stop_running() {
         return Err("Pasteroll is running and did not quit. Quit it from its tray icon and try again.".into());
     }
+    let removed = if remove_data { Some(remove_user_data(db)?) } else { None };
     delete_value(RUN_KEY, VALUE_NAME);
     delete_key(UNINSTALL_KEY);
     if let Ok(link) = start_menu_link() {
         let _ = std::fs::remove_file(link);
     }
     let mut notes = Vec::new();
-    if remove_data {
-        if let Some(d) = data_dir {
-            // only the files Pasteroll itself makes: the folder may have been chosen with --db
-            let mut removed = 0;
-            for name in [
-                "history.db",
-                "history.db-wal",
-                "history.db-shm",
-                "history.key",
-                "history.key.tmp",
-                "history.lock",
-                "config.toml",
-                "config.toml.tmp",
-                "paste_keys.txt",
-                "first-run.txt",
-            ] {
-                if std::fs::remove_file(d.join(name)).is_ok() {
-                    removed += 1;
-                }
-            }
-            let _ = std::fs::remove_dir(d);
-            notes.push(format!("deleted {removed} file(s) in {}", d.display()));
-        }
-    } else if let Some(d) = data_dir {
+    if let Some(removed) = removed {
+        notes.push(format!("deleted {removed} data file(s)"));
+    } else if let Some(d) = db.parent() {
         notes.push(format!("your history and settings were kept in {}", d.display()));
     }
     // the program file: if this is the running copy it cannot delete itself, so a detached
@@ -317,6 +367,44 @@ pub fn uninstall(remove_data: bool, data_dir: Option<&Path>) -> Result<String, S
         let _ = std::fs::remove_dir(&dir);
     }
     Ok(format!("Pasteroll was removed. {}", notes.join("; ")))
+}
+
+/// Setup's data-only removal: no program, shortcut or registry changes, and no key decryption.
+/// The exclusive history lock refuses removal while an app or maintenance operation uses it.
+pub fn remove_user_data(db: &Path) -> Result<usize, String> {
+    require_nonportable()?;
+    let dir = db.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+    if !dir.exists() { return Ok(0); }
+    let lock = crate::keystore::lock_history(db, true)?;
+    let sidecar = |suffix: &str| {
+        let mut name = db.as_os_str().to_os_string();
+        name.push(suffix);
+        PathBuf::from(name)
+    };
+    let mut files = vec![db.to_path_buf(), sidecar("-wal"), sidecar("-shm"), sidecar("-journal"),
+        db.with_extension("key"), db.with_extension("key.tmp")];
+    for name in ["config.toml", "config.toml.tmp", "paste_keys.txt", "image-presets.txt",
+        "image-presets.txt.tmp", "first-run.txt", "pasteroll.log"] {
+        files.push(dir.join(name));
+    }
+    // Refuse links before deleting anything, just as reset-history does.
+    for p in &files {
+        if winsys::is_reparse_point(p) {
+            return Err("A data file is a link; refusing to remove data.".into());
+        }
+    }
+    let mut removed = 0;
+    for p in files {
+        match std::fs::remove_file(p) {
+            Ok(()) => removed += 1,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("could not remove a data file: {e}")),
+        }
+    }
+    drop(lock);
+    let _ = std::fs::remove_file(dir.join("history.lock"));
+    let _ = std::fs::remove_dir(dir); // only succeeds if empty; unrelated files always stay
+    Ok(removed)
 }
 
 // ------------------------------------------------------------------ first run
@@ -398,6 +486,20 @@ pub fn detach_console_if_owned() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn data_removal_refuses_an_in_use_history_before_deleting_anything() {
+        let dir = std::env::temp_dir().join(format!("pasteroll-remove-locked-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("history.db");
+        std::fs::write(&db, b"scratch").unwrap();
+        let lock = crate::keystore::lock_history(&db, false).unwrap();
+        assert!(remove_user_data(&db).is_err());
+        assert_eq!(std::fs::read(&db).unwrap(), b"scratch");
+        drop(lock);
+        remove_user_data(&db).unwrap();
+        assert!(!dir.exists());
+    }
 
     #[test]
     fn the_run_entry_quotes_the_path() {

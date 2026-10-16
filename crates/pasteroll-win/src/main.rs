@@ -94,7 +94,7 @@ fn usage() -> ! {
     eprintln!(
         "usage: pasteroll     run | status | config [show|path|init|set KEY VALUE] | exclude EXE | \
          clear --yes [--keep-pinned] | repair --yes | key-export --out FILE | key-import --in FILE | \
-         rotate-key | reset-history --yes | seed | probe | clipboard-selftest | install | \
+         rotate-key | reset-history --yes | seed | probe | clipboard-selftest | stop | install | \
          uninstall [--remove-data --yes] | autostart [on|off]\n\
          options: --db FILE   --no-capture   --max-seconds N   --yes   --no-notice"
     );
@@ -144,7 +144,7 @@ fn seed(db: &Path, args: &[String]) -> i32 {
             return fail(format!("seed failed: {e}"));
         }
     }
-    s.add_files(&["C:\\Users\\Demo\\Documents\\invoice-2026-10.pdf".into()], now).ok();
+    s.add_files(&["C:\\Demo\\Documents\\invoice-2026-10.pdf".into()], now).ok();
     // A small synthetic image too, so image preview and image-to-desktop can be tried.
     let mut px = Vec::new();
     for y in 0..120u32 {
@@ -543,12 +543,11 @@ fn main() {
     winsys::harden_process();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cmd = args.first().map(String::as_str).unwrap_or("");
-    let db = match value(&args, "--db") {
-        Some(p) => PathBuf::from(p),
-        None => match keystore::default_db() {
-            Ok(p) => p,
-            Err(e) => std::process::exit(fail(e)),
-        },
+    let db = match std::env::current_exe().map_err(|e| e.to_string()).and_then(|exe| {
+        pasteroll_core::paths::database(&exe, value(&args, "--db").map(PathBuf::from), keystore::default_db)
+    }) {
+        Ok(p) => p,
+        Err(e) => std::process::exit(fail(e)),
     };
     let code = match cmd {
         "--version" | "-V" | "version" => {
@@ -598,7 +597,7 @@ fn main() {
         "run" => run_app(db, &args),
         // started by double-click: offer to install, or just run when already installed
         "" => {
-            if setup::running_installed() || cfg!(debug_assertions) || !setup::prompt_install() {
+            if pasteroll_core::paths::is_portable() || setup::running_installed() || cfg!(debug_assertions) || !setup::prompt_install() {
                 run_app(db, &args)
             } else {
                 match setup::install() {
@@ -620,7 +619,17 @@ fn main() {
                 }
             }
         }
-        "install" => match setup::install() {
+        "stop" => {
+            let expected = value(&args, "--if-exe");
+            if flag(&args, "--if-exe") && expected.is_none() {
+                fail("--if-exe requires an executable path.")
+            } else if expected.as_deref().map_or_else(setup::stop_running, |p| setup::stop_installation(Path::new(p))) {
+                0
+            } else {
+                fail("Pasteroll did not quit. Quit it from the tray icon and try again.")
+            }
+        },
+        "install" => match if flag(&args, "--setup-adopt") { setup::adopt_setup() } else { setup::install() } {
             Ok(msg) => {
                 println!("{msg}");
                 0
@@ -629,11 +638,19 @@ fn main() {
         },
         "uninstall" => {
             let remove = flag(&args, "--remove-data");
-            if remove && !flag(&args, "--yes") {
+            let data_only = flag(&args, "--data-only");
+            if data_only && (!remove || !flag(&args, "--yes")) {
+                fail("--data-only requires --remove-data --yes.")
+            } else if data_only {
+                match setup::remove_user_data(&db) {
+                    Ok(n) => { println!("Removed {n} data file(s). The program was kept."); 0 }
+                    Err(e) => fail(e),
+                }
+            } else if remove && !flag(&args, "--yes") {
                 eprintln!("--remove-data deletes your history and settings in {}. Add --yes to confirm.", db.parent().map(|p| p.display().to_string()).unwrap_or_default());
                 2
             } else {
-                match setup::uninstall(remove, db.parent()) {
+                match setup::uninstall(remove, &db) {
                     Ok(msg) => {
                         println!("{msg}");
                         0

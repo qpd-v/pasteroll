@@ -25,6 +25,10 @@ network activity. The only files it writes are in its own data folder
 (`%LOCALAPPDATA%\Pasteroll` or `~/.local/share/pasteroll`), plus the files `install` creates
 (program, Start menu or application-menu entry, uninstall entry).
 
+With `portable.txt` beside the program, its application data stays in the adjacent `data` folder.
+Portable mode does not install the app or change autostart. On Linux a local control pipe in the
+data folder lets `pasteroll stop` request a graceful exit; it does not use the network.
+
 ## How it is stored
 
 Each clip is encrypted before it is written to the database (see [SECURITY.md](SECURITY.md) for

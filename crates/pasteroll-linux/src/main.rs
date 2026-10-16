@@ -104,7 +104,7 @@ mod cli {
                 return fail(format!("seed failed: {e}"));
             }
         }
-        s.add_files(&["/home/demo/Documents/invoice-2026-10.pdf".into()], now).ok();
+        s.add_files(&["/demo/Documents/invoice-2026-10.pdf".into()], now).ok();
         let mut px = Vec::new();
         for y in 0..120u32 {
             for x in 0..200u32 {
@@ -427,7 +427,7 @@ mod cli {
             "usage: pasteroll run | status | config [show|path|init|set KEY VALUE] | exclude PROGRAM | \
              clear --yes [--keep-pinned] | repair --yes | rotate-key | key-export --out FILE | \
              key-import --in FILE [--force] | reset-history --yes | seed | \
-             install | uninstall [--remove-data --yes] | autostart [on|off]\n\
+             stop | install | uninstall [--remove-data --yes] | autostart [on|off]\n\
              options: --db FILE   --no-capture   --max-seconds N   --yes"
         );
         2
@@ -437,14 +437,14 @@ mod cli {
         sys::harden_process();
         let args: Vec<String> = std::env::args().skip(1).collect();
         let cmd = args.first().map(String::as_str).unwrap_or("");
-        let db = match value(&args, "--db") {
-            Some(p) => PathBuf::from(p),
-            None => match sys::default_db() {
-                Ok(p) => p,
-                Err(e) => return fail(e),
-            },
+        let db = match std::env::current_exe().map_err(|e| e.to_string()).and_then(|exe| {
+            pasteroll_core::paths::database(&exe, value(&args, "--db").map(PathBuf::from), sys::default_db)
+        }) {
+            Ok(p) => p,
+            Err(e) => return fail(e),
         };
         match cmd {
+            "stop" => match sys::stop_running(&db) { Ok(()) => 0, Err(e) => fail(e) },
             "run" => crate::run::run(
                 db,
                 !flag(&args, "--no-capture"),

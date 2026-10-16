@@ -1,16 +1,17 @@
-# Builds the release program and zips it with its README into dist\.
-# Run from the repository root:  powershell -File scripts\package-windows.ps1
+# Build the versioned portable ZIP locally. No install or registry changes.
 $ErrorActionPreference = 'Stop'
-# Keep the build machine's user name and folders out of the program (panic locations, PDB path).
-$home_dir = $env:USERPROFILE
-$src_dir = (Get-Location).Path
-$env:RUSTFLAGS = "--remap-path-prefix=$home_dir=C:\user --remap-path-prefix=$src_dir=C:\src -C link-arg=/PDBALTPATH:pasteroll.pdb"
-cargo build --release -p pasteroll-win
-$out = 'dist\pasteroll-windows-x64'
-Remove-Item -Recurse -Force $out -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Force $out | Out-Null
-Copy-Item 'target\release\pasteroll.exe' "$out\pasteroll.exe"
-Copy-Item 'packaging\README-windows.txt' "$out\README.txt"
-Copy-Item 'LICENSE-MIT', 'LICENSE-APACHE' $out
-Compress-Archive -Path "$out\*" -DestinationPath 'dist\pasteroll-windows-x64.zip' -Force
-certutil -hashfile 'dist\pasteroll-windows-x64.zip' SHA256
+. (Join-Path $PSScriptRoot 'windows-package-common.ps1')
+Push-Location $PackageRoot
+try {
+    $package = Get-PasterollPackage
+    Build-PasterollWindows
+    $stage = New-PasterollStage 'portable'
+    [IO.File]::WriteAllBytes((Join-Path $stage 'portable.txt'), [byte[]]@())
+    $dist = Join-Path $PackageRoot 'dist'
+    New-Item -ItemType Directory -Path $dist -Force | Out-Null
+    $archive = Join-Path $dist "pasteroll-$($package.version)-windows-x64-portable.zip"
+    Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $archive -Force
+    Write-Output "Built pasteroll-$($package.version)-windows-x64-portable.zip"
+} finally {
+    Pop-Location
+}

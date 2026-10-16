@@ -327,7 +327,7 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
         let autostart = child(
             hwnd,
             w!("BUTTON"),
-            "Start Pasteroll when I sign in to Windows",
+            if pasteroll_core::paths::is_portable() { pasteroll_core::paths::PORTABLE_AUTOSTART } else { "Start Pasteroll when I sign in to Windows" },
             BS_AUTOCHECKBOX as u32 | WS_TABSTOP.0,
             0,
             (16, 326, 488, 22),
@@ -336,6 +336,9 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
             font,
         );
         SendMessageW(autostart, BM_SETCHECK, Some(WPARAM(usize::from(crate::setup::autostart_enabled()))), Some(LPARAM(0)));
+        if pasteroll_core::paths::is_portable() {
+            let _ = windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow(autostart, false);
+        }
         SendMessageW(pause, BM_SETCHECK, Some(WPARAM(usize::from(cfg.paused))), Some(LPARAM(0)));
         SendMessageW(warn, BM_SETCHECK, Some(WPARAM(usize::from(cfg.warn_multiline_in_terminals))), Some(LPARAM(0)));
 

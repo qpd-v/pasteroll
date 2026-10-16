@@ -23,6 +23,7 @@ pub mod keystore;
 pub mod limits;
 pub mod logo;
 pub mod padding;
+pub mod paths;
 pub mod preview;
 pub mod record;
 pub mod recovery;

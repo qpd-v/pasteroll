@@ -105,13 +105,17 @@ pub fn outranks_us(pid: u32) -> bool {
 
 /// Lower-cased exe file name of a process ("windowsterminal.exe").
 pub fn exe_name(pid: u32) -> Option<String> {
+    exe_path(pid)?.file_name()?.to_str().map(str::to_ascii_lowercase)
+}
+
+/// Full process path, used to scope installer shutdown to the copy being replaced.
+pub fn exe_path(pid: u32) -> Option<std::path::PathBuf> {
     unsafe {
         let p = Handle(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?);
         let mut buf = vec![0u16; 1024];
         let mut len = buf.len() as u32;
         QueryFullProcessImageNameW(p.0, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len).ok()?;
-        let full = String::from_utf16_lossy(&buf[..len as usize]);
-        full.rsplit(['\\', '/']).next().map(|s| s.to_ascii_lowercase())
+        Some(std::path::PathBuf::from(String::from_utf16_lossy(&buf[..len as usize])))
     }
 }
 

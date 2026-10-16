@@ -711,8 +711,8 @@ impl Shell {
         w.push(Widget::new(
             S_AUTOSTART,
             rect(16.0, 328.0, 488.0, 24.0),
-            "Start Pasteroll when I sign in",
-            WKind::Check { checked: s.autostart },
+            if pasteroll_core::paths::is_portable() { pasteroll_core::paths::PORTABLE_AUTOSTART } else { "Start Pasteroll when I sign in" },
+            if pasteroll_core::paths::is_portable() { WKind::Note } else { WKind::Check { checked: s.autostart } },
         ));
         w.push(Widget::new(
             0,
@@ -1214,13 +1214,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_icon_has_a_shape_and_is_opaque_where_drawn() {
+    fn the_approved_opaque_icon_fills_its_shape_mask() {
         for n in [16u32, 24, 48] {
             let (bgra, solid) = icon_pixels(n, false);
             assert_eq!(bgra.len(), (n * n * 4) as usize);
             assert_eq!(solid.len(), (n * n) as usize);
             assert!(bgra.chunks_exact(4).all(|p| p[3] == 255));
-            assert!(solid.iter().any(|s| *s) && solid.iter().any(|s| !*s), "partly covered");
+            assert!(solid.iter().all(|s| *s), "the approved artwork has an opaque background");
         }
     }
 

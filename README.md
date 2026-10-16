@@ -4,12 +4,12 @@ A clipboard history you can scroll with the mouse wheel. Copy as usual; when you
 clip, press **Ctrl+Shift+middle-click**, scroll through your history right where you are working,
 and paste the whole clip, or select just a part of it and paste only that.
 
-**Status: public beta (`0.1.0-beta.1`).** It works and is tested, but it is young. Expect rough
+**Status: public beta (`0.1.0-beta.2`).** It works and is tested, but it is young. Expect rough
 edges and please [report them](https://github.com/qpd-v/pasteroll/issues).
 
 | | Windows 10 / 11 | Linux (X11) |
 |---|---|---|
-| Download | `pasteroll-windows-x64.zip` | `pasteroll-linux-x86_64.tar.gz` (static, any x86-64 distro) |
+| Download | `pasteroll-0.1.0-beta.2-windows-x64-setup.exe` or `pasteroll-0.1.0-beta.2-windows-x64-portable.zip` | `pasteroll-0.1.0-beta.2-linux-x86_64.tar.gz` or `pasteroll_0.1.0-beta.2_amd64.deb` |
 | Tray icon | yes | StatusNotifier (KDE, GNOME with AppIndicator, Ubuntu) or XEmbed |
 | Wayland | n/a | not supported; use an X11 session (see below) |
 | macOS | not available | |
@@ -44,11 +44,14 @@ edges and please [report them](https://github.com/qpd-v/pasteroll/issues).
 
 ### Windows
 
-1. Download `pasteroll-windows-x64.zip` and `SHA256SUMS` from the
-   [latest release](https://github.com/qpd-v/pasteroll/releases) and
+1. Download `pasteroll-0.1.0-beta.2-windows-x64-setup.exe` and `SHA256SUMS` from the
+   [beta.2 release](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.2) and
    [verify the checksum](#verify-your-download).
-2. Unzip, then double-click `pasteroll.exe` and choose **Yes** (or run `pasteroll.exe install`).
-   It installs for your account only, with no administrator rights, and adds a Start menu entry.
+2. Run the setup wizard. **Only for me** is the default and needs no administrator rights;
+   **For all users** needs UAC. Start menu is on by default; desktop shortcut and autostart are off.
+
+For portable use, extract `pasteroll-0.1.0-beta.2-windows-x64-portable.zip` and run `pasteroll.exe`.
+Its included `portable.txt` keeps application data in the adjacent `data` folder.
 
 > **"Windows protected your PC"**: the beta is **not code-signed yet**, so SmartScreen shows
 > this for new programs. Click **More info → Run anyway** after checking the checksum. Some
@@ -58,11 +61,17 @@ edges and please [report them](https://github.com/qpd-v/pasteroll/issues).
 ### Linux
 
 ```sh
-tar xzf pasteroll-linux-x86_64.tar.gz
-cd pasteroll-linux-x86_64
-./pasteroll install        # copies to ~/.local/bin, adds a menu entry and icon
+tar xzf pasteroll-0.1.0-beta.2-linux-x86_64.tar.gz
+cd pasteroll-0.1.0-beta.2-linux-x86_64
+./install.sh              # per-user: ~/.local/bin, menu entry and icon
 pasteroll run
 ```
+
+For all users, use `sudo ./install.sh --system`. On Debian/Ubuntu, an alternative is
+`sudo dpkg -i pasteroll_0.1.0-beta.2_amd64.deb`. Neither installer enables autostart.
+Remove an archive install with `./install.sh --uninstall` (add `--system` and sudo for a system
+install), or a Debian package with `sudo dpkg -r pasteroll`. These operations keep history/settings.
+The app's own `install` and `uninstall` commands manage per-user installs only.
 
 Optional: Extract text needs `tesseract-ocr`, and Save as uses `zenity` or `kdialog` (without one,
 clips are saved to the Desktop).
@@ -136,10 +145,28 @@ carousel size, the key for the image editor, programs to ignore and custom filte
 ```
 pasteroll run | status | config [show|path|init|set KEY VALUE] | exclude PROGRAM
           | clear --yes | repair --yes | rotate-key | key-export --out FILE | key-import --in FILE
-          | install | uninstall [--remove-data --yes] | autostart [on|off] | --version
+          | stop | install | uninstall [--remove-data --yes] | autostart [on|off] | --version
 ```
 
 ## Your data and recovery
+
+### Portable mode
+
+Create an empty `portable.txt` beside the executable. All application data then lives in a `data`
+folder beside it, regardless of the working directory. The folder must be writable. Portable mode
+does not offer installation or autostart, and rejects `--db` overrides. To remove a portable copy,
+quit it and delete its folder; the `uninstall` command is disabled.
+
+On Windows the key is still protected by DPAPI for the signed-in account. Copying a portable folder
+to another PC or account does **not** make its history readable there: use `key-export` and
+`key-import` to transfer the key securely. Encryption is unchanged.
+
+`pasteroll stop` asks the running copy to quit gracefully and succeeds if none is running. On Linux
+it addresses the selected data folder (`--db FILE` outside portable mode); older running versions
+without the control pipe must be quit from the tray. On Windows it addresses the current session's
+instance. A copy installed by Setup is upgraded using Setup and removed through Settings > Apps.
+
+### Installed data
 
 History is a SQLite database encrypted per clip, in `%LOCALAPPDATA%\Pasteroll` (Windows) or
 `~/.local/share/pasteroll` (Linux). **Make a recovery file** so a reinstall or a lost key file
@@ -158,7 +185,7 @@ Each release has a `SHA256SUMS` file.
 
 ```powershell
 # Windows
-Get-FileHash .\pasteroll-windows-x64.zip -Algorithm SHA256
+Get-FileHash .\pasteroll-0.1.0-beta.2-windows-x64-setup.exe -Algorithm SHA256
 ```
 ```sh
 # Linux
@@ -169,19 +196,24 @@ The value must match the line in `SHA256SUMS` exactly.
 
 ## Build from source
 
-You need a recent stable [Rust](https://rustup.rs). No other tools are required on Windows.
+You need a recent stable [Rust](https://rustup.rs) and the platform's build toolchain (MSVC build
+tools on Windows). Packaging additionally needs Inno Setup 6 on Windows and Python 3.11+ for the
+release tools; Linux packages also need `musl-tools`, binutils and `dpkg-deb`.
 
 ```sh
 git clone https://github.com/qpd-v/pasteroll
 cd pasteroll
 cargo build --release -p pasteroll-win      # Windows: target\release\pasteroll.exe
 cargo build --release -p pasteroll-linux    # Linux: target/release/pasteroll
-cargo test --workspace                       # Windows
+cargo clean -p pasteroll-win --profile dev    # removes a possibly stale same-name test binary
+cargo test --workspace --exclude pasteroll-linux  # Windows native suite
 cargo test --workspace --exclude pasteroll-win   # Linux
 ```
 
-Release packages: `scripts/package-windows.ps1` and `scripts/package-linux.sh` (static musl build;
-needs `musl-tools` and `rustup target add x86_64-unknown-linux-musl`).
+Release packages: `scripts/package-windows-installer.ps1` builds the setup EXE and portable ZIP;
+`scripts/package-linux.sh` builds the static musl archive and `.deb` (the musl Rust target must be
+installed beforehand). See [RELEASING.md](RELEASING.md) for tests, private-string scans, checksums
+and the manual publication command. No packaging script downloads prerequisites.
 
 The code is split into `pasteroll-core` (storage, crypto, settings), `pasteroll-render` (drawing),
 `pasteroll-app` (the controller that is the same on every platform) and one thin crate per

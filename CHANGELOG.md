@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 0.1.0-beta.2
+
+- Portable mode: place `portable.txt` beside the program to keep history, keys, configuration,
+  presets and logs in its `data` folder. Installation and autostart changes are disabled there.
+  Windows history remains bound to the Windows account by DPAPI; use key export/import to move it.
+- A `stop` command requests a graceful exit and succeeds when no instance is running.
+- Windows recognizes Setup-owned installations through `setup.txt` and delegates removal to
+  Settings > Apps.
+- Updated application icon from the approved artwork.
+- Windows Setup wizard with current-user/all-users installation, versioned portable ZIP,
+  graceful upgrades, optional shortcuts and autostart, and consent before uninstall data removal.
+  Setup stops only the copy in its target folder and leaves another installation's startup entry alone.
+- Linux static archive with per-user/system `install.sh`, plus a Debian/Ubuntu package.
+  Installation and package removal keep every account's history and settings.
+
 - **Advanced Image Paste**: Ctrl+click the desktop with an image chosen (the key is a setting:
   Ctrl, Shift or Alt) and the card grows into an image editor instead of saving the picture at
   once. A live preview follows every change: outline, resize (pixels or percent), crop (handles,

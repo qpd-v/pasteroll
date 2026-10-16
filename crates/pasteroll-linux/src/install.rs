@@ -8,6 +8,14 @@
 
 use std::path::{Path, PathBuf};
 
+fn require_nonportable() -> Result<(), String> {
+    if pasteroll_core::paths::is_portable() {
+        Err("Installation and autostart changes are unavailable in portable mode. Remove portable.txt to install this copy.".into())
+    } else {
+        Ok(())
+    }
+}
+
 fn home() -> Result<PathBuf, String> {
     std::env::var_os("HOME").filter(|v| !v.is_empty()).map(PathBuf::from).ok_or_else(|| "HOME is not set".to_string())
 }
@@ -71,11 +79,13 @@ fn write_file(path: &Path, data: &[u8], mode: u32) -> Result<(), String> {
 }
 
 pub fn autostart_enabled() -> bool {
+    if pasteroll_core::paths::is_portable() { return false; }
     autostart_path().map(|p| p.exists()).unwrap_or(false)
 }
 
 /// Turns "start when I sign in" on or off. Off by default; only the person asks for it.
 pub fn set_autostart(on: bool) -> Result<(), String> {
+    require_nonportable()?;
     let path = autostart_path()?;
     if on {
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -90,6 +100,7 @@ pub fn set_autostart(on: bool) -> Result<(), String> {
 }
 
 pub fn install() -> Result<String, String> {
+    require_nonportable()?;
     let src = std::env::current_exe().map_err(|e| e.to_string())?;
     let dst = bin_path()?;
     if std::fs::canonicalize(&src).ok() != std::fs::canonicalize(&dst).ok() {
@@ -112,6 +123,7 @@ pub fn install() -> Result<String, String> {
 
 /// Removes the installation. The history and settings stay unless `remove_data`.
 pub fn uninstall(remove_data: bool, data_dir: Option<&Path>) -> Result<String, String> {
+    require_nonportable()?;
     for p in [autostart_path()?, desktop_path()?, icon_path()?, bin_path()?] {
         match std::fs::remove_file(&p) {
             Ok(()) => {}
@@ -153,7 +165,7 @@ pub fn uninstall(remove_data: bool, data_dir: Option<&Path>) -> Result<String, S
 pub const NOTICE_TITLE: &str = "Welcome to Pasteroll";
 
 pub const NOTICE: &str = "Pasteroll keeps a history of what you copy so you can paste it again later.\n\
-- It is stored only on this computer, encrypted, in your home folder. Nothing is sent anywhere.\n\
+- It is stored only on this computer, encrypted, in Pasteroll's data folder. Nothing is sent anywhere.\n\
 - Open it with Ctrl+Shift+middle-click. Pick a clip with the wheel and press Enter, or select part of it first to paste just that part.\n\
 - Pause recording, or exclude programs such as password managers, from the tray icon: Settings.\n\
 - Pasteroll does not start when you sign in unless you turn that on in Settings.\n\

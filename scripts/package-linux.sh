@@ -1,21 +1,17 @@
 #!/bin/bash
-# Builds a release program for other people's machines and packs it with its README into dist/.
-#
-# - static (musl) build: runs on any x86_64 Linux, whatever its libc version
-# - build paths are remapped, so the binary does not carry your user name or folder layout
-#
-# Run on Linux from the repository root:  bash scripts/package-linux.sh
-# One-time setup:  sudo apt install musl-tools && rustup target add x86_64-unknown-linux-musl
+# Build both versioned Linux packages locally; never install software or download dependencies.
+# Run on Linux/WSL: bash scripts/package-linux.sh
+# Prerequisites: Rust with the musl target, musl-tools, Python 3, binutils, dpkg-deb.
 set -euo pipefail
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+cd "$root"
+for tool in cargo rustc musl-gcc python3 readelf dpkg-deb; do
+    command -v "$tool" >/dev/null || { printf 'Required local tool missing: %s\n' "$tool" >&2; exit 1; }
+done
 target=x86_64-unknown-linux-musl
 sysroot="$(rustc --print sysroot)"
-export RUSTFLAGS="--remap-path-prefix=$HOME=/home/user --remap-path-prefix=$sysroot=/rust --remap-path-prefix=$PWD=/src"
-cargo build --release --target "$target" -p pasteroll-linux
-out=dist/pasteroll-linux-x86_64
-rm -rf "$out"
-mkdir -p "$out"
-cp "target/$target/release/pasteroll" "$out/pasteroll"
-cp packaging/README-linux.txt "$out/README.txt"
-cp LICENSE-MIT LICENSE-APACHE "$out/"
-tar -C dist -czf dist/pasteroll-linux-x86_64.tar.gz pasteroll-linux-x86_64
-sha256sum dist/pasteroll-linux-x86_64.tar.gz
+# Encoded arguments also work when the checkout or home folder contains spaces. Use a generic
+# home prefix without /home/ so the artifact scanner can flag any unremapped Linux home paths.
+export CARGO_ENCODED_RUSTFLAGS="--remap-path-prefix=$HOME=/user"$'\x1f'"--remap-path-prefix=$sysroot=/rust"$'\x1f'"--remap-path-prefix=$root=/src"
+cargo build --release --locked --offline --target "$target" --target-dir "$root/target" -p pasteroll-linux
+python3 scripts/package-linux.py
