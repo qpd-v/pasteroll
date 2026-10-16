@@ -130,6 +130,10 @@ pub struct LinuxPlatform {
     dragging: bool,
     last_down: Option<(Instant, i32, i32)>,
     click: Option<ClickState>,
+    /// The modifier keys (X11 state bits) held at the last click on the program underneath.
+    click_mods: u16,
+    /// The image editor is open: a click outside its window is swallowed.
+    modal: bool,
     own_pid: u32,
     pub server: Server,
     pub clip_counter: Arc<AtomicU64>,
@@ -266,6 +270,8 @@ impl LinuxPlatform {
             dragging: false,
             last_down: None,
             click: None,
+            click_mods: 0,
+            modal: false,
             own_pid: std::process::id(),
             clip_counter: Arc::new(AtomicU64::new(0)),
             own_window,
@@ -556,6 +562,7 @@ impl LinuxPlatform {
                 // a click on the program underneath: let it through (it places the caret), then
                 // paste there once the click has settled
                 let deep = self.window_at(rx, ry);
+                self.click_mods = u16::from(e.state);
                 self.click = Some(ClickState { window: deep, since: Instant::now() });
                 replay = true;
                 out.push(Action::Event(Event::ClickPaste(gen)));
@@ -602,6 +609,8 @@ impl LinuxPlatform {
                 out.push(Action::Event(Event::ViewerMouse(MouseEvent { kind, x, y })));
             }
             _ if inside => {}
+            // the image editor is modal: the click goes nowhere
+            _ if self.modal => {}
             _ => {
                 replay = true;
                 out.push(Action::Event(Event::ClickOutside(gen)));
@@ -899,6 +908,45 @@ impl Platform for LinuxPlatform {
 
     fn animating(&mut self, on: bool) {
         self.fast_ticks = on;
+    }
+
+    fn modal_clicks(&mut self, on: bool) {
+        self.modal = on;
+    }
+
+    fn click_modifiers(&self) -> pasteroll_app::Modifiers {
+        let m = self.click_mods;
+        pasteroll_app::Modifiers { ctrl: m & keys::CONTROL != 0, shift: m & keys::SHIFT != 0, alt: m & keys::ALT != 0 }
+    }
+
+    fn load_presets(&self) -> String {
+        std::fs::read_to_string(self.db.with_file_name("image-presets.txt")).unwrap_or_default()
+    }
+
+    fn save_presets(&mut self, text: &str) -> Result<(), String> {
+        let path = self.db.with_file_name("image-presets.txt");
+        let tmp = self.db.with_file_name("image-presets.txt.tmp");
+        std::fs::write(&tmp, text).and_then(|_| std::fs::rename(&tmp, &path)).map_err(|e| e.to_string())
+    }
+
+    fn folder_dialog(&mut self, start: Option<&Path>, target: &Target) -> SaveChoice {
+        // another program again: see `save_dialog`
+        self.input_active(false);
+        let _ = self.conn.unmap_window(self.viewer);
+        let _ = self.conn.unmap_window(self.overlay);
+        let _ = self.conn.flush();
+        let choice = crate::dialogs::pick_folder(start);
+        let _ = self.conn.map_window(self.overlay);
+        let _ = self.conn.map_window(self.viewer);
+        let _ = self.conn.flush();
+        self.repaint();
+        if let Some((data, w, h)) = self.viewer_frame.take() {
+            self.put_to(self.viewer, &data, w, h);
+            self.viewer_frame = Some((data, w, h));
+        }
+        self.activate(target.id as Window);
+        self.input_active(true);
+        choice
     }
 
     fn shift_held(&self) -> bool {

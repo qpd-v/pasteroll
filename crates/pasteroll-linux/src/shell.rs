@@ -174,6 +174,7 @@ const S_SLIDER: [u32; 4] = [101, 102, 103, 104];
 const S_PAUSE: u32 = 120;
 const S_WARN: u32 = 121;
 const S_AUTOSTART: u32 = 122;
+const S_MOD: [u32; 3] = [123, 124, 125];
 const S_NOTICE_OK: u32 = 170;
 const S_EX_LIST: u32 = 130;
 const S_EX_ENTRY: u32 = 131;
@@ -187,7 +188,7 @@ const S_CONFIRM: u32 = 160;
 const S_BACK: u32 = 161;
 
 const SET_W: f32 = 520.0;
-const SET_H: f32 = 672.0;
+const SET_H: f32 = 728.0;
 const S_SIZE: u32 = 105;
 
 struct SettingsWin {
@@ -203,6 +204,7 @@ struct SettingsWin {
     warn: bool,
     autostart: bool,
     autostart_was: bool,
+    modifier: config::ClickModifier,
     exclude: Vec<String>,
     filters: Vec<String>,
     ex_sel: Option<usize>,
@@ -625,6 +627,7 @@ impl Shell {
             warn: cfg.warn_multiline_in_terminals,
             autostart: crate::install::autostart_enabled(),
             autostart_was: crate::install::autostart_enabled(),
+            modifier: cfg.advanced_image_modifier,
             exclude: cfg.exclude_apps.clone(),
             filters: cfg.custom_filters.iter().map(|f| f.name.clone()).collect(),
             orig: cfg,
@@ -711,40 +714,54 @@ impl Shell {
             "Start Pasteroll when I sign in",
             WKind::Check { checked: s.autostart },
         ));
-        w.push(Widget::new(0, rect(16.0, 364.0, 488.0, 22.0), "Never record copies made in these programs", WKind::Label));
+        w.push(Widget::new(
+            0,
+            rect(16.0, 364.0, 488.0, 40.0),
+            "To edit an image before it is saved to the desktop, hold this key while you click the desktop:",
+            WKind::Note,
+        ));
+        for (i, m) in config::ClickModifier::ALL.iter().enumerate() {
+            w.push(Widget::new(
+                S_MOD[i],
+                rect(16.0 + 110.0 * i as f32, 408.0, 100.0, 24.0),
+                m.label(),
+                WKind::Check { checked: s.modifier == *m },
+            ));
+        }
+        w.push(Widget::new(0, rect(16.0, 440.0, 488.0, 22.0), "Never record copies made in these programs", WKind::Label));
         w.push(Widget::new(
             S_EX_LIST,
-            rect(16.0, 390.0, 300.0, 76.0),
+            rect(16.0, 466.0, 300.0, 76.0),
             "No programs listed",
             WKind::List { items: s.exclude.clone(), selected: s.ex_sel, top: s.ex_top },
         ));
         w.push(Widget::new(
             S_EX_ENTRY,
-            rect(330.0, 390.0, 174.0, 28.0),
+            rect(330.0, 466.0, 174.0, 28.0),
             s.entry.clone(),
             WKind::Entry { placeholder: "program name".into(), focused: s.entry_focus },
         ));
-        w.push(Widget::new(S_EX_ADD, rect(330.0, 424.0, 84.0, 28.0), "Add", WKind::Button { primary: false }));
-        w.push(Widget::new(S_EX_REMOVE, rect(420.0, 424.0, 84.0, 28.0), "Remove", WKind::Button { primary: false }));
-        w.push(Widget::new(0, rect(330.0, 458.0, 174.0, 30.0), "For example keepassxc", WKind::Note));
+        w.push(Widget::new(S_EX_ADD, rect(330.0, 500.0, 84.0, 28.0), "Add", WKind::Button { primary: false }));
+        w.push(Widget::new(S_EX_REMOVE, rect(420.0, 500.0, 84.0, 28.0), "Remove", WKind::Button { primary: false }));
+        w.push(Widget::new(0, rect(330.0, 534.0, 174.0, 30.0), "For example keepassxc", WKind::Note));
         w.push(Widget::new(
             0,
-            rect(16.0, 496.0, 488.0, 22.0),
+            rect(16.0, 572.0, 488.0, 22.0),
             "Custom filters (add them from the filter menu in the overlay)",
             WKind::Label,
         ));
         w.push(Widget::new(
             S_FL_LIST,
-            rect(16.0, 522.0, 300.0, 76.0),
+            rect(16.0, 598.0, 300.0, 76.0),
             "No custom filters",
             WKind::List { items: s.filters.clone(), selected: s.fl_sel, top: s.fl_top },
         ));
-        w.push(Widget::new(S_FL_REMOVE, rect(330.0, 522.0, 84.0, 28.0), "Remove", WKind::Button { primary: false }));
+        w.push(Widget::new(S_FL_REMOVE, rect(330.0, 598.0, 84.0, 28.0), "Remove", WKind::Button { primary: false }));
         if !s.status.is_empty() {
-            w.push(Widget::new(0, rect(16.0, 616.0, 300.0, 44.0), s.status.clone(), WKind::Note));
+            w.push(Widget::new(0, rect(16.0, 672.0, 300.0, 44.0), s.status.clone(), WKind::Note));
         }
-        w.push(Widget::new(S_SAVE, rect(330.0, 624.0, 84.0, 32.0), "Save", WKind::Button { primary: true }));
-        w.push(Widget::new(S_CANCEL, rect(420.0, 624.0, 84.0, 32.0), "Cancel", WKind::Button { primary: false }));
+        w.push(Widget::new(S_SAVE, rect(330.0, 680.0, 84.0, 32.0), "Save", WKind::Button { primary: true }));
+        w.push(Widget::new(S_CANCEL, rect(420.0, 680.0, 84.0, 32.0), "Cancel", WKind::Button { primary: false }));
         Some(UiView { size: (SET_W, SET_H), chrome: Chrome::Window, widgets: w, hover: s.hover })
     }
 
@@ -769,6 +786,7 @@ impl Shell {
             paused: s.paused,
             warn_multiline: s.warn,
             size_percent: s.size_choices[s.size_pos.min(s.size_choices.len() - 1)],
+            advanced_modifier: s.modifier,
             exclude_apps: s.exclude.clone(),
             filter_names: s.filters.clone(),
         })
@@ -1060,6 +1078,9 @@ impl Shell {
                             s.warn = !s.warn;
                         } else if w.id == S_AUTOSTART {
                             s.autostart = !s.autostart;
+                        } else if let Some(i) = S_MOD.iter().position(|v| *v == w.id) {
+                            // one of the three keys, like radio buttons
+                            s.modifier = config::ClickModifier::ALL[i];
                         }
                     }
                     WKind::List { .. } => {

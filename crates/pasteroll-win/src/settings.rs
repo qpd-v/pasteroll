@@ -6,7 +6,7 @@
 //! every part (capture, limits, exclusions) starts from the same file.
 
 use crate::{app, keystore};
-use pasteroll_core::config::{self, Config};
+use pasteroll_core::config::{self, ClickModifier, Config};
 use pasteroll_core::limits::MB;
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -29,6 +29,7 @@ const ID_SIZE_VAL: i32 = 115;
 const ID_PAUSE: i32 = 120;
 const ID_WARN: i32 = 121;
 const ID_AUTOSTART: i32 = 122;
+const ID_MOD: [i32; 3] = [123, 124, 125];
 const ID_EX_LIST: i32 = 130;
 const ID_EX_EDIT: i32 = 131;
 const ID_EX_ADD: i32 = 132;
@@ -57,6 +58,7 @@ struct State {
     warn: HWND,
     autostart: HWND,
     autostart_was: bool,
+    modifier: [HWND; 3],
     ex_list: HWND,
     ex_edit: HWND,
     fl_list: HWND,
@@ -235,7 +237,7 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
             w!("Segoe UI"),
         );
         // client area 520 x 600 at 96 dpi
-        let (cw, ch) = (s(520), s(672));
+        let (cw, ch) = (s(520), s(724));
         let mut r = RECT { left: 0, top: 0, right: cw, bottom: ch };
         let _ = AdjustWindowRectEx(&mut r, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, false, WINDOW_EX_STYLE(0));
         let (ww, wh) = (r.right - r.left, r.bottom - r.top);
@@ -337,23 +339,52 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
         SendMessageW(pause, BM_SETCHECK, Some(WPARAM(usize::from(cfg.paused))), Some(LPARAM(0)));
         SendMessageW(warn, BM_SETCHECK, Some(WPARAM(usize::from(cfg.warn_multiline_in_terminals))), Some(LPARAM(0)));
 
-        child(hwnd, w!("STATIC"), "Never record copies made in these programs", 0, 0, (16, 364, 480, 20), 0, dpi, font);
+        child(
+            hwnd,
+            w!("STATIC"),
+            "To edit an image before it is saved to the desktop, hold this key while you click the desktop:",
+            0,
+            0,
+            (16, 358, 490, 36),
+            0,
+            dpi,
+            font,
+        );
+        let mut modifier = [HWND::default(); 3];
+        for (i, m) in ClickModifier::ALL.iter().enumerate() {
+            let group = if i == 0 { WS_GROUP.0 } else { 0 };
+            modifier[i] = child(
+                hwnd,
+                w!("BUTTON"),
+                m.label(),
+                BS_AUTORADIOBUTTON as u32 | WS_TABSTOP.0 | group,
+                0,
+                (16 + 88 * i as i32, 396, 80, 22),
+                ID_MOD[i],
+                dpi,
+                font,
+            );
+            let on = *m == cfg.advanced_image_modifier;
+            SendMessageW(modifier[i], BM_SETCHECK, Some(WPARAM(usize::from(on))), Some(LPARAM(0)));
+        }
+
+        child(hwnd, w!("STATIC"), "Never record copies made in these programs", 0, 0, (16, 432, 480, 20), 0, dpi, font);
         let lb = (LBS_NOTIFY | LBS_NOINTEGRALHEIGHT) as u32 | WS_VSCROLL.0 | WS_TABSTOP.0;
-        let ex_list = child(hwnd, w!("LISTBOX"), "", lb, WS_EX_CLIENTEDGE.0, (16, 388, 300, 84), ID_EX_LIST, dpi, font);
+        let ex_list = child(hwnd, w!("LISTBOX"), "", lb, WS_EX_CLIENTEDGE.0, (16, 456, 300, 84), ID_EX_LIST, dpi, font);
         let ex_edit = child(
             hwnd,
             w!("EDIT"),
             "",
             ES_AUTOHSCROLL as u32 | WS_TABSTOP.0,
             WS_EX_CLIENTEDGE.0,
-            (330, 388, 174, 24),
+            (330, 456, 174, 24),
             ID_EX_EDIT,
             dpi,
             font,
         );
-        child(hwnd, w!("BUTTON"), "Add", BS_PUSHBUTTON as u32 | WS_TABSTOP.0, 0, (330, 420, 84, 26), ID_EX_ADD, dpi, font);
-        child(hwnd, w!("BUTTON"), "Remove", BS_PUSHBUTTON as u32 | WS_TABSTOP.0, 0, (420, 420, 84, 26), ID_EX_REMOVE, dpi, font);
-        child(hwnd, w!("STATIC"), "Program file name, for example keepass.exe", 0, 0, (330, 452, 180, 36), 0, dpi, font);
+        child(hwnd, w!("BUTTON"), "Add", BS_PUSHBUTTON as u32 | WS_TABSTOP.0, 0, (330, 488, 84, 26), ID_EX_ADD, dpi, font);
+        child(hwnd, w!("BUTTON"), "Remove", BS_PUSHBUTTON as u32 | WS_TABSTOP.0, 0, (420, 488, 84, 26), ID_EX_REMOVE, dpi, font);
+        child(hwnd, w!("STATIC"), "Program file name, for example keepass.exe", 0, 0, (330, 520, 180, 36), 0, dpi, font);
 
         child(
             hwnd,
@@ -361,17 +392,17 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
             "Custom filters (add them from the filter menu in the overlay)",
             0,
             0,
-            (16, 496, 490, 20),
+            (16, 564, 490, 20),
             0,
             dpi,
             font,
         );
-        let fl_list = child(hwnd, w!("LISTBOX"), "", lb, WS_EX_CLIENTEDGE.0, (16, 520, 300, 84), ID_FL_LIST, dpi, font);
-        child(hwnd, w!("BUTTON"), "Remove", BS_PUSHBUTTON as u32 | WS_TABSTOP.0, 0, (330, 520, 84, 26), ID_FL_REMOVE, dpi, font);
+        let fl_list = child(hwnd, w!("LISTBOX"), "", lb, WS_EX_CLIENTEDGE.0, (16, 588, 300, 84), ID_FL_LIST, dpi, font);
+        child(hwnd, w!("BUTTON"), "Remove", BS_PUSHBUTTON as u32 | WS_TABSTOP.0, 0, (330, 588, 84, 26), ID_FL_REMOVE, dpi, font);
 
-        let status_h = child(hwnd, w!("STATIC"), "", 0, 0, (16, 620, 300, 40), ID_STATUS, dpi, font);
-        child(hwnd, w!("BUTTON"), "Save", BS_DEFPUSHBUTTON as u32 | WS_TABSTOP.0, 0, (330, 628, 84, 30), ID_SAVE, dpi, font);
-        child(hwnd, w!("BUTTON"), "Cancel", BS_PUSHBUTTON as u32 | WS_TABSTOP.0, 0, (420, 628, 84, 30), ID_CANCEL, dpi, font);
+        let status_h = child(hwnd, w!("STATIC"), "", 0, 0, (16, 672, 300, 40), ID_STATUS, dpi, font);
+        child(hwnd, w!("BUTTON"), "Save", BS_DEFPUSHBUTTON as u32 | WS_TABSTOP.0, 0, (330, 680, 84, 30), ID_SAVE, dpi, font);
+        child(hwnd, w!("BUTTON"), "Cancel", BS_PUSHBUTTON as u32 | WS_TABSTOP.0, 0, (420, 680, 84, 30), ID_CANCEL, dpi, font);
 
         let exclude = cfg.exclude_apps.clone();
         let filters: Vec<String> = cfg.custom_filters.iter().map(|f| f.name.clone()).collect();
@@ -396,6 +427,7 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
             warn,
             autostart,
             autostart_was: crate::setup::autostart_enabled(),
+            modifier,
             ex_list,
             ex_edit,
             fl_list,
@@ -458,6 +490,7 @@ struct Snapshot {
     size: u32,
     paused: bool,
     warn: bool,
+    modifier: ClickModifier,
     exclude: Vec<String>,
     filters: Vec<String>,
 }
@@ -475,6 +508,11 @@ fn current_choices() -> Option<Snapshot> {
             size: chosen_size(s),
             paused: check(s.pause),
             warn: check(s.warn),
+            modifier: ClickModifier::ALL
+                .iter()
+                .zip(s.modifier.iter())
+                .find(|(_, h)| check(**h))
+                .map_or(s.orig.advanced_image_modifier, |(m, _)| *m),
             exclude: s.exclude.clone(),
             filters: s.filters.clone(),
         })
@@ -492,6 +530,7 @@ fn build_text(snap: &Snapshot, text: &str) -> Result<String, Vec<String>> {
         paused: snap.paused,
         warn_multiline: snap.warn,
         size_percent: snap.size,
+        advanced_modifier: snap.modifier,
         exclude_apps: snap.exclude.clone(),
         filter_names: snap.filters.clone(),
     };
@@ -738,6 +777,7 @@ mod tests {
             size: 100,
             paused: false,
             warn: true,
+            modifier: ClickModifier::Ctrl,
             exclude: vec![],
             filters: vec![],
         };
@@ -768,6 +808,7 @@ mod tests {
             size: 100,
             paused: false,
             warn: true,
+            modifier: ClickModifier::Ctrl,
             exclude: vec!["bitwarden.exe".into()],
             filters: vec![],
         };

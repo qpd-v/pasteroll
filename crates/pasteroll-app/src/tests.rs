@@ -12,6 +12,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+mod editor;
+
 // ---------------------------------------------------------------- fake platform
 
 struct Fake {
@@ -51,6 +53,14 @@ struct Fake {
     save_choice: SaveChoice,
     /// The last carousel frame presented (to see it dimmed behind the viewer).
     last_overlay: Option<pasteroll_render::Frame>,
+    /// Which modifier keys were down at the last click.
+    click_mods: Modifiers,
+    /// The image editor's presets file, and whether it can be written.
+    presets: String,
+    presets_ok: bool,
+    /// What the folder chooser answers.
+    folder_choice: SaveChoice,
+    modal: bool,
 }
 
 fn target(id: u64, exe: &str) -> Target {
@@ -90,6 +100,11 @@ impl Fake {
             shift: false,
             save_choice: SaveChoice::Unavailable,
             last_overlay: None,
+            click_mods: Modifiers::default(),
+            presets: String::new(),
+            presets_ok: true,
+            folder_choice: SaveChoice::Unavailable,
+            modal: false,
         }
     }
 }
@@ -149,6 +164,25 @@ impl Platform for Fake {
     }
     fn save_dialog(&mut self, _name: &str, _ext: &str, _target: &Target) -> SaveChoice {
         self.save_choice.clone()
+    }
+    fn folder_dialog(&mut self, _start: Option<&std::path::Path>, _target: &Target) -> SaveChoice {
+        self.folder_choice.clone()
+    }
+    fn modal_clicks(&mut self, on: bool) {
+        self.modal = on;
+    }
+    fn click_modifiers(&self) -> Modifiers {
+        self.click_mods
+    }
+    fn load_presets(&self) -> String {
+        self.presets.clone()
+    }
+    fn save_presets(&mut self, text: &str) -> Result<(), String> {
+        if !self.presets_ok {
+            return Err("read-only".into());
+        }
+        self.presets = text.to_owned();
+        Ok(())
     }
     fn overlay_hide(&mut self) {
         self.hidden += 1;
@@ -228,6 +262,8 @@ enum Clip<'a> {
     Image,
     /// A picture of one colour: different values are different clips.
     Color(u8),
+    /// A picture with a gradient, `w x h`: its pixels tell where they came from.
+    Gradient(u32, u32),
     Files(&'a [&'a str]),
 }
 
@@ -270,6 +306,15 @@ impl H {
             match c {
                 Clip::Text(t) => store.add_text(t, now).unwrap(),
                 Clip::Image => store.add_image_png(&png(), now).unwrap(),
+                Clip::Gradient(w, h) => {
+                    let mut pixels = Vec::new();
+                    for y in 0..*h {
+                        for x in 0..*w {
+                            pixels.extend_from_slice(&[(x * 255 / w.max(&1)) as u8, (y * 255 / h.max(&1)) as u8, 120, 255]);
+                        }
+                    }
+                    store.add_image_png(&encode_png(&Rgba { width: *w, height: *h, pixels }).unwrap(), now).unwrap()
+                }
                 Clip::Color(c) => {
                     let img = Rgba { width: 8, height: 8, pixels: [*c, 255 - *c, 90, 255].repeat(64) };
                     store.add_image_png(&encode_png(&img).unwrap(), now).unwrap()

@@ -21,10 +21,15 @@
 //! viewer posts `ClickOutside` (it closes the viewer) instead of arming a paste-at-click. The viewer
 //! extends the session limit with [`keepalive`] while it is in use.
 //!
+//! The image editor (Advanced Image Paste) runs in viewer mode too, and is also *modal*: a click
+//! outside its window is swallowed, button down and up, so a stray click cannot reach the program
+//! underneath and lose the work in it. Like everything here, that stops at once if the UI thread
+//! stops answering (see `session_live`).
+//!
 //! Injected events are ignored unless `accept_injected` is set (the self-test uses that).
 
 use pasteroll_core::{Step, WheelAccumulator};
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, AtomicU32, AtomicU64, AtomicUsize, Ordering::*};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering::*};
 use std::sync::Mutex;
 use windows::core::Result;
 use windows::Win32::Foundation::*;
@@ -80,6 +85,8 @@ pub enum Command {
     CtrlZ,
     /// A click outside the expanded viewer (viewer mode only).
     ClickOutside,
+    /// Redo in the image editor.
+    CtrlY,
 }
 
 impl Command {
@@ -88,7 +95,7 @@ impl Command {
         [
             Activate, Older, Newer, Confirm, Cancel, PageUp, PageDown, Delete, CtrlDelete, TogglePin, Backspace,
             CtrlBackspace, Tab, ClickPaste, ClickCancel, Left, Right, Home, End, F3, ShiftF3, F11, ShiftDelete,
-            CtrlA, CtrlC, CtrlE, CtrlF, CtrlI, CtrlS, CtrlZ, ClickOutside,
+            CtrlA, CtrlC, CtrlE, CtrlF, CtrlI, CtrlS, CtrlZ, ClickOutside, CtrlY,
         ]
         .into_iter()
             .find(|c| *c as usize == v)
@@ -112,6 +119,8 @@ struct Shared {
     down_outside: AtomicBool,
     down_root: AtomicIsize,
     down_gen: AtomicUsize,
+    /// Which of Ctrl (1), Shift (2) and Alt (4) were held for the last paste-at-click.
+    click_mods: AtomicU8,
     wheel: Mutex<WheelAccumulator>,
 }
 
@@ -130,6 +139,7 @@ static S: Shared = Shared {
     down_outside: AtomicBool::new(false),
     down_root: AtomicIsize::new(0),
     down_gen: AtomicUsize::new(0),
+    click_mods: AtomicU8::new(0),
     wheel: Mutex::new(WheelAccumulator::new()),
 };
 
@@ -144,6 +154,21 @@ static SESSION_STARTED: AtomicU64 = AtomicU64::new(0);
 /// The expanded viewer's window, and whether it is open.
 static VIEWER: AtomicIsize = AtomicIsize::new(0);
 static VIEWER_MODE: AtomicBool = AtomicBool::new(false);
+/// A click outside the viewer's window is swallowed (the image editor).
+static MODAL: AtomicBool = AtomicBool::new(false);
+
+/// The image editor opened or closed: clicks outside its window are swallowed while it is open.
+pub fn set_modal(on: bool) {
+    MODAL.store(on, SeqCst);
+    if !on {
+        // a half-swallowed click must not eat the next real one
+        S.swallowed_buttons.fetch_and(1, SeqCst);
+    }
+}
+
+fn modal() -> bool {
+    MODAL.load(SeqCst)
+}
 
 /// The viewer window (so clicks on it count as "inside").
 pub fn set_viewer_window(h: HWND) {
@@ -320,6 +345,11 @@ impl Hooks {
         S.generation.load(SeqCst)
     }
 
+    /// Which of Ctrl (1), Shift (2) and Alt (4) were held at the last outside click.
+    pub fn click_mods(&self) -> u8 {
+        S.click_mods.load(SeqCst)
+    }
+
     /// The window and screen point of the last completed outside click.
     pub fn clicked(&self) -> (HWND, POINT) {
         (
@@ -381,6 +411,23 @@ fn modifiers() -> (bool, bool, bool, bool) {
     (down(VK_CONTROL), down(VK_SHIFT), down(VK_MENU), down(VK_LWIN) || down(VK_RWIN))
 }
 
+/// Ctrl (1), Shift (2) and Alt (4) as bits.
+fn mods_bits() -> u8 {
+    let (ctrl, shift, alt, _) = modifiers();
+    u8::from(ctrl) | (u8::from(shift) << 1) | (u8::from(alt) << 2)
+}
+
+/// The bit in `swallowed_buttons` for a button (middle 1, left 2, right 4, other 8).
+fn button_bit(msg: u32) -> Option<u32> {
+    match msg {
+        WM_MBUTTONDOWN | WM_MBUTTONUP => Some(1),
+        WM_LBUTTONDOWN | WM_LBUTTONUP => Some(2),
+        WM_RBUTTONDOWN | WM_RBUTTONUP => Some(4),
+        WM_XBUTTONDOWN | WM_XBUTTONUP => Some(8),
+        _ => None,
+    }
+}
+
 fn inside_overlay(pt: POINT) -> bool {
     let h = unsafe { WindowFromPoint(pt).0 as isize };
     h == S.overlay.load(SeqCst) || (h != 0 && h == VIEWER.load(SeqCst))
@@ -415,10 +462,14 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
 /// `true` = swallow.
 fn mouse_event(msg: u32, ev: &MSLLHOOKSTRUCT) -> bool {
     const MBUTTON: u32 = 1;
-    // matching up for a swallowed activation
-    if msg == WM_MBUTTONUP && S.swallowed_buttons.load(SeqCst) & MBUTTON != 0 {
-        S.swallowed_buttons.fetch_and(!MBUTTON, SeqCst);
-        return true;
+    // the matching up of a swallowed down (the activation, or a click outside the image editor)
+    if matches!(msg, WM_MBUTTONUP | WM_LBUTTONUP | WM_RBUTTONUP | WM_XBUTTONUP) {
+        if let Some(bit) = button_bit(msg) {
+            if S.swallowed_buttons.load(SeqCst) & bit != 0 {
+                S.swallowed_buttons.fetch_and(!bit, SeqCst);
+                return true;
+            }
+        }
     }
     let active = session_live();
     if is_activation(msg) {
@@ -458,6 +509,7 @@ fn mouse_event(msg: u32, ev: &MSLLHOOKSTRUCT) -> bool {
             let root = unsafe { GetAncestor(WindowFromPoint(ev.pt), GA_ROOT) };
             S.down_root.store(root.0 as isize, SeqCst);
             S.down_gen.store(S.generation.load(SeqCst), SeqCst);
+            S.click_mods.store(mods_bits(), SeqCst);
             false
         }
         WM_LBUTTONUP => {
@@ -471,6 +523,7 @@ fn mouse_event(msg: u32, ev: &MSLLHOOKSTRUCT) -> bool {
                     S.click_hwnd.store(clicked.0 as isize, SeqCst);
                     S.click_x.store(ev.pt.x, SeqCst);
                     S.click_y.store(ev.pt.y, SeqCst);
+                    S.click_mods.fetch_or(mods_bits(), SeqCst);
                     post(Command::ClickPaste);
                 }
             }
@@ -499,6 +552,13 @@ fn viewer_mouse_event(msg: u32, ev: &MSLLHOOKSTRUCT) -> bool {
             // never a paste-at-click while the viewer is open: a click elsewhere closes it
             S.down_outside.store(false, SeqCst);
             if !inside_viewer(ev.pt) {
+                if modal() {
+                    // the image editor: the click goes nowhere (its up is swallowed as well)
+                    if let Some(bit) = button_bit(msg) {
+                        S.swallowed_buttons.fetch_or(bit, SeqCst);
+                    }
+                    return true;
+                }
                 post(Command::ClickOutside);
             }
             false
@@ -588,6 +648,8 @@ fn classify(vk: usize, scan: u32) -> Option<Out> {
         VIRTUAL_KEY(0x49) if ctrl_only => Some(Command::CtrlI),
         VIRTUAL_KEY(0x53) if ctrl_only => Some(Command::CtrlS),
         VIRTUAL_KEY(0x5A) if ctrl_only => Some(Command::CtrlZ),
+        VIRTUAL_KEY(0x59) if ctrl_only => Some(Command::CtrlY),
+        VIRTUAL_KEY(0x5A) if ctrl && shift && !alt && !win => Some(Command::CtrlY), // Ctrl+Shift+Z
         // the viewer's navigation keys belong to the application underneath otherwise
         VK_LEFT if plain && viewer_mode() => Some(Command::Left),
         VK_RIGHT if plain && viewer_mode() => Some(Command::Right),

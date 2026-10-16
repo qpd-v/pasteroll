@@ -24,6 +24,11 @@ edges and please [report them](https://github.com/qpd-v/pasteroll/issues).
 - **Expanded viewer**: the card's Expand button (or Ctrl+E) grows a clip into a large window:
   long text to read and search, pictures to zoom and pan, Save as, Info, and Extract text (OCR, on
   this computer). F11 for fullscreen, Esc to shrink it back.
+- **Advanced Image Paste**: Ctrl+click the desktop (the key is a setting) with an image chosen and
+  the picture grows into an editor instead of being saved at once: outline, resize, crop, rounded
+  corners, drop shadow, background removal or fill, padding, rotate and flip, PNG / JPG / WebP / BMP
+  with quality, a file name and folder of your choice, undo and redo, and presets you can reuse. A
+  plain click on the desktop still saves the picture immediately. The clip itself is never changed.
 - **Pin** clips (Ctrl+P) so they are never removed automatically.
 - **Recycle bin**: deleted clips can be brought back (Ctrl+Z, or the Recycle bin filter) for 30
   days; Shift+Delete deletes for good.
@@ -95,8 +100,36 @@ In the expanded viewer:
 | F11 | fullscreen |
 | Esc | leave fullscreen, then close the viewer |
 
+### Advanced Image Paste
+
+With an image chosen in the carousel, a click on the desktop saves it as a PNG right away. Hold
+**Ctrl** while you click (Settings lets you pick Shift or Alt instead) and the picture opens in the
+editor. The settings are grouped in the panel on the right, one section open at a time; the
+switch on a section's row turns the effect on or off, and the preview on the left follows every
+change.
+
+| | |
+|---|---|
+| Crop | drag the handles on the picture, or type a size; lock a shape (1:1, 4:3, 3:2, 16:9, 9:16 or the original's) |
+| Resize | by pixels or percent, keeping the proportions or not |
+| Rotate and flip | any angle, 90 degree turns, flip sideways or upside down |
+| Rounded corners | any radius, square, or fully round |
+| Outline | any colour (a palette or a hex code), any thickness |
+| Drop shadow | colour, opacity, blur, distance and direction |
+| Background | keep, fill see-through parts, remove the background that touches the edges (with a tolerance), or replace it |
+| Padding | the same on every side or different on each, with a colour |
+| Format and quality | PNG (compression), JPG (quality), WebP (lossless), BMP |
+
+The bar at the bottom holds the file name, the folder to save into (the Desktop unless you choose
+another; it is remembered) and **Paste Image**. **Cancel**, Esc or the back arrow return to the
+carousel without saving. Undo and redo (Ctrl+Z, Ctrl+Y) and **Reset all** are at the top, next to
+**Presets**: save the current settings under a name and apply them to any picture later (a
+preset keeps everything except the crop). Enter pastes; while you type in a box Enter finishes the
+typing instead. The editor is modal: clicks outside it do nothing, and it closes after ten
+minutes without input.
+
 Tray icon: pause recording, Settings, open data folder, quit. Settings has the history limits,
-carousel size, programs to ignore and custom filters.
+carousel size, the key for the image editor, programs to ignore and custom filters.
 
 ### Command line
 

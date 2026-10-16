@@ -35,6 +35,11 @@ kept until you delete them.
 A clip you delete goes to the recycle bin first, still encrypted, and is removed for good after 30
 days (or at once with *Delete permanently*, Shift+Delete, or `pasteroll clear`).
 
+*Advanced Image Paste* works on your computer only. The edited picture is written where you choose
+(the Desktop by default) and nowhere else. The presets you save (the settings, never a picture) and
+the folder you last saved to are kept in a small plain-text file, `image-presets.txt`, in the data
+folder.
+
 *Extract text* in the expanded viewer recognises text on this computer only (Windows' built-in
 recognition, or Tesseract on Linux, which reads the picture through a pipe, not a file). *Save
 as* writes a file only where you choose.

@@ -10,6 +10,8 @@ argon2 = { version = "0.6.0", features = ["zeroize"] }
 chacha20poly1305 = { version = "0.11.0", features = ["zeroize"] }
 getrandom = "0.4.3"
 hmac = "0.13.0"
+image-webp = "0.2.4"
+jpeg-encoder = "0.6.1"
 png = "0.18.1"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 sha2 = "0.11.1"

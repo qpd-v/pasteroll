@@ -32,6 +32,17 @@ pub enum Icon {
     ChevronUp,
     ChevronDown,
     Back,
+    Undo,
+    Redo,
+    Reset,
+    Folder,
+    RotateLeft,
+    RotateRight,
+    FlipH,
+    FlipV,
+    Check,
+    Crop,
+    Bookmark,
 }
 
 /// Maps a point of the 16-unit design grid into `r` (DIP), centred, `size` units across.
@@ -250,6 +261,50 @@ pub(crate) fn draw(cv: &mut Canvas, icon: Icon, r: Rect, size: f32, rgb: Rgb) {
             for x in [3.0, 8.0, 13.0] {
                 circle(cv, &g, x, 8.0, 1.35, rgb, None);
             }
+        }
+        Icon::Undo | Icon::Redo => {
+            let m = |x: f32| if icon == Icon::Redo { 16.0 - x } else { x };
+            poly(cv, &g, &[(m(5.8), 2.6), (m(2.6), 5.8), (m(5.8), 9.0)], rgb, 1.6);
+            let mut body = vec![(m(2.6), 5.8), (m(9.0), 5.8)];
+            body.extend(arc(9.0, 10.0, 4.2, -90.0, 90.0).into_iter().map(|(x, y)| (m(x), y)));
+            body.push((m(5.0), 14.2));
+            poly(cv, &g, &body, rgb, 1.6);
+        }
+        Icon::Reset => {
+            poly(cv, &g, &arc(8.5, 8.5, 5.5, 200.0, 500.0), rgb, 1.5);
+            poly(cv, &g, &[(0.8, 5.0), (3.3, 6.6), (5.3, 4.2)], rgb, 1.5);
+            circle(cv, &g, 8.5, 8.5, 1.3, rgb, None);
+        }
+        Icon::RotateLeft | Icon::RotateRight => {
+            let m = |x: f32| if icon == Icon::RotateRight { 16.0 - x } else { x };
+            let pts: Vec<(f32, f32)> = arc(8.5, 8.5, 5.5, 200.0, 500.0).into_iter().map(|(x, y)| (m(x), y)).collect();
+            poly(cv, &g, &pts, rgb, 1.5);
+            poly(cv, &g, &[(m(0.8), 5.0), (m(3.3), 6.6), (m(5.3), 4.2)], rgb, 1.5);
+        }
+        Icon::FlipH => {
+            poly(cv, &g, &[(6.5, 3.0), (6.5, 13.0), (1.5, 13.0), (6.5, 3.0)], rgb, 1.4);
+            poly(cv, &g, &[(9.5, 3.0), (9.5, 13.0), (14.5, 13.0), (9.5, 3.0)], rgb, 1.4);
+            for y in [2.0, 6.0, 10.0, 14.0] {
+                circle(cv, &g, 8.0, y, 0.55, rgb, None);
+            }
+        }
+        Icon::FlipV => {
+            poly(cv, &g, &[(3.0, 6.5), (13.0, 6.5), (13.0, 1.5), (3.0, 6.5)], rgb, 1.4);
+            poly(cv, &g, &[(3.0, 9.5), (13.0, 9.5), (13.0, 14.5), (3.0, 9.5)], rgb, 1.4);
+            for x in [2.0, 6.0, 10.0, 14.0] {
+                circle(cv, &g, x, 8.0, 0.55, rgb, None);
+            }
+        }
+        Icon::Check => poly(cv, &g, &[(3.0, 8.5), (6.5, 12.0), (13.0, 4.5)], rgb, 1.8),
+        Icon::Folder => {
+            poly(cv, &g, &[(1.5, 3.5), (6.0, 3.5), (7.5, 5.5), (14.5, 5.5), (14.5, 13.0), (1.5, 13.0), (1.5, 3.5)], rgb, 1.5);
+        }
+        Icon::Crop => {
+            poly(cv, &g, &[(4.5, 1.5), (4.5, 11.5), (14.5, 11.5)], rgb, 1.6);
+            poly(cv, &g, &[(1.5, 4.5), (11.5, 4.5), (11.5, 14.5)], rgb, 1.6);
+        }
+        Icon::Bookmark => {
+            poly(cv, &g, &[(4.0, 2.0), (12.0, 2.0), (12.0, 14.0), (8.0, 10.8), (4.0, 14.0), (4.0, 2.0)], rgb, 1.5);
         }
     }
 }

@@ -66,8 +66,13 @@ pub fn classify(km: &Keymap, code: u8, state: u16) -> Option<Key> {
     if (ctrl && !altgr) || state & (ALT | SUPER) != 0 && !altgr {
         // Ctrl+P pins, Ctrl+C/E/F/I/S/Z/A serve the viewer; everything else with Ctrl, Alt or
         // Super is not text
+        // redo in the image editor: Ctrl+Shift+Z (and Ctrl+Y below)
+        if ctrl && shift && state & (ALT | SUPER) == 0 && base | 0x20 == 0x7a {
+            return Some(Key::CtrlY);
+        }
         if ctrl && !shift && state & (ALT | SUPER) == 0 {
             return match base | 0x20 {
+                0x79 => Some(Key::CtrlY),
                 0x70 => Some(Key::CtrlP),
                 0x61 => Some(Key::CtrlA),
                 0x63 => Some(Key::CtrlC),
@@ -177,7 +182,7 @@ mod tests {
         assert_eq!(classify(&k, 14, SHIFT), Some(Key::ShiftDelete));
         assert_eq!(classify(&k, 15, CONTROL), Some(Key::CtrlC));
         assert_eq!(classify(&k, 16, CONTROL), Some(Key::CtrlZ));
-        assert_eq!(classify(&k, 16, CONTROL | SHIFT), None);
+        assert_eq!(classify(&k, 16, CONTROL | SHIFT), Some(Key::CtrlY), "Ctrl+Shift+Z redoes");
     }
 
     #[test]

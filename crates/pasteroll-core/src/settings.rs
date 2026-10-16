@@ -1,7 +1,7 @@
 //! What a settings window offers and how its choices become `config.toml` edits. The windows
 //! themselves are platform code; this part is the same everywhere.
 
-use crate::config::{self, Config};
+use crate::config::{self, ClickModifier, Config};
 use crate::limits::{Limits, MB};
 
 const CLIP_STEPS: [u64; 10] = [100, 250, 500, 1_000, 2_500, 5_000, 10_000, 25_000, 50_000, 100_000];
@@ -137,6 +137,7 @@ pub struct Choice {
     pub paused: bool,
     pub warn_multiline: bool,
     pub size_percent: u32,
+    pub advanced_modifier: ClickModifier,
     pub exclude_apps: Vec<String>,
     pub filter_names: Vec<String>,
 }
@@ -152,6 +153,7 @@ impl Choice {
             paused: c.paused,
             warn_multiline: c.warn_multiline_in_terminals,
             size_percent: c.size_percent,
+            advanced_modifier: c.advanced_image_modifier,
             exclude_apps: c.exclude_apps.clone(),
             filter_names: c.custom_filters.iter().map(|f| f.name.clone()).collect(),
         }
@@ -183,6 +185,9 @@ pub fn build_text(orig: &Config, choice: &Choice, text: &str) -> Result<String, 
     }
     if choice.size_percent != orig.size_percent {
         t = config::set_value(&t, "size", &choice.size_percent.to_string())?;
+    }
+    if choice.advanced_modifier != orig.advanced_image_modifier {
+        t = config::set_value(&t, "advanced_image_modifier", choice.advanced_modifier.label())?;
     }
     for old in &orig.exclude_apps {
         if !choice.exclude_apps.contains(old) {
@@ -275,6 +280,16 @@ mod tests {
         assert_eq!(fmt_size(150), "150%");
         assert_eq!(size_factor(150), 1.5);
         assert_eq!(size_factor(50), 0.5);
+    }
+
+    #[test]
+    fn the_image_editor_key_is_written_only_when_it_changes() {
+        let orig = config::parse("").unwrap();
+        let same = Choice::from_config(&orig);
+        assert_eq!(build_text(&orig, &same, "").unwrap(), "");
+        let ch = Choice { advanced_modifier: ClickModifier::Shift, ..same };
+        let out = build_text(&orig, &ch, "").unwrap();
+        assert_eq!(config::parse(&out).unwrap().advanced_image_modifier, ClickModifier::Shift);
     }
 
     #[test]

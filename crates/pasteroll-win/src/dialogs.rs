@@ -108,6 +108,45 @@ pub fn save_file(owner: HWND, name: &str, ext: &str, give_back: HWND) -> SaveCho
     }
 }
 
+/// Asks which folder to save into, above `owner`, opening at `start`. Afterwards `give_back` gets
+/// the foreground again.
+pub fn pick_folder(owner: HWND, start: Option<&std::path::Path>, give_back: HWND) -> SaveChoice {
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let dlg: IFileOpenDialog = match CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER) {
+            Ok(d) => d,
+            Err(_) => return SaveChoice::Unavailable,
+        };
+        let _ = dlg.SetTitle(w!("Save the picture in this folder"));
+        if let Ok(opts) = dlg.GetOptions() {
+            let _ = dlg.SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+        }
+        if let Some(dir) = start {
+            let name = HSTRING::from(dir.to_string_lossy().as_ref());
+            if let Ok(item) = SHCreateItemFromParsingName::<_, _, IShellItem>(&name, None) {
+                let _ = dlg.SetFolder(&item);
+            }
+        }
+        let host = DialogOwner::new(owner);
+        let shown = dlg.Show(Some(host.as_ref().map_or(owner, |h| h.0)));
+        if IsWindow(Some(give_back)).as_bool() {
+            let _ = SetForegroundWindow(give_back);
+        }
+        drop(host);
+        if shown.is_err() {
+            return SaveChoice::Cancelled;
+        }
+        let Ok(item) = dlg.GetResult() else { return SaveChoice::Cancelled };
+        let Ok(path) = item.GetDisplayName(SIGDN_FILESYSPATH) else { return SaveChoice::Cancelled };
+        let s = PCWSTR(path.0).to_string().ok();
+        CoTaskMemFree(Some(path.0 as *const _));
+        match s {
+            Some(s) if !s.is_empty() => SaveChoice::Path(PathBuf::from(s)),
+            _ => SaveChoice::Cancelled,
+        }
+    }
+}
+
 /// "YYYY-MM-DD HH:MM" in the computer's time zone.
 pub fn local_time(secs: i64) -> Option<String> {
     // Unix seconds to FILETIME (100 ns since 1601)

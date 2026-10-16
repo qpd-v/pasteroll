@@ -39,6 +39,8 @@ pub enum Key {
     CtrlI,
     CtrlS,
     CtrlZ,
+    /// Redo (Ctrl+Y, Ctrl+Shift+Z) in the image editor.
+    CtrlY,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -94,6 +94,25 @@ impl OverlayInfo {
     }
 }
 
+/// Which of Ctrl, Shift and Alt were held.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Modifiers {
+    pub ctrl: bool,
+    pub shift: bool,
+    pub alt: bool,
+}
+
+impl Modifiers {
+    pub fn has(&self, m: pasteroll_core::config::ClickModifier) -> bool {
+        use pasteroll_core::config::ClickModifier;
+        match m {
+            ClickModifier::Ctrl => self.ctrl,
+            ClickModifier::Shift => self.shift,
+            ClickModifier::Alt => self.alt,
+        }
+    }
+}
+
 /// What the user did in a save dialog.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SaveChoice {
@@ -204,6 +223,30 @@ pub trait Platform {
     fn save_dialog(&mut self, name: &str, ext: &str, target: &Target) -> SaveChoice {
         let _ = (name, ext, target);
         SaveChoice::Unavailable
+    }
+    /// Asks which folder to save into (a folder chooser). `start` is where it opens; `target` is
+    /// given the keyboard back afterwards, as for [`Platform::save_dialog`].
+    fn folder_dialog(&mut self, start: Option<&Path>, target: &Target) -> SaveChoice {
+        let _ = (start, target);
+        SaveChoice::Unavailable
+    }
+    /// While on, a click outside the viewer's window is swallowed: it does not reach the program
+    /// underneath (the image editor is modal, and a stray click must not lose the work in it).
+    fn modal_clicks(&mut self, on: bool) {
+        let _ = on;
+    }
+    /// Which of Ctrl, Shift and Alt were held when the last paste-at-click was made.
+    fn click_modifiers(&self) -> Modifiers {
+        Modifiers::default()
+    }
+    /// The text of the image editor's presets file ("" when there is none).
+    fn load_presets(&self) -> String {
+        String::new()
+    }
+    /// Stores the image editor's presets file.
+    fn save_presets(&mut self, text: &str) -> Result<(), String> {
+        let _ = text;
+        Err("Presets cannot be saved here.".to_owned())
     }
     /// Local date and time of a Unix time, "YYYY-MM-DD HH:MM".
     fn format_time(&self, secs: i64) -> String {

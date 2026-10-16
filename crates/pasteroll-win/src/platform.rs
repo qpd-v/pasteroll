@@ -190,6 +190,36 @@ impl Platform for WinPlatform {
         choice
     }
 
+    fn folder_dialog(&mut self, start: Option<&Path>, target: &Target) -> SaveChoice {
+        // the dialog needs the keyboard and the mouse: stop taking them while it is up
+        self.input_active(false);
+        let back = HWND(target.id as usize as *mut _);
+        let choice = crate::dialogs::pick_folder(self.viewer.hwnd(), start, back);
+        self.input_active(true);
+        choice
+    }
+
+    fn modal_clicks(&mut self, on: bool) {
+        crate::hooks::set_modal(on);
+    }
+
+    fn click_modifiers(&self) -> pasteroll_app::Modifiers {
+        let bits = self.hooks.as_ref().map_or(0, |h| h.click_mods());
+        pasteroll_app::Modifiers { ctrl: bits & 1 != 0, shift: bits & 2 != 0, alt: bits & 4 != 0 }
+    }
+
+    fn load_presets(&self) -> String {
+        let Some(db) = &self.db else { return String::new() };
+        std::fs::read_to_string(db.with_file_name("image-presets.txt")).unwrap_or_default()
+    }
+
+    fn save_presets(&mut self, text: &str) -> Result<(), String> {
+        let Some(db) = &self.db else { return Err("no data folder".to_owned()) };
+        let path = db.with_file_name("image-presets.txt");
+        let tmp = db.with_file_name("image-presets.txt.tmp");
+        std::fs::write(&tmp, text).and_then(|_| std::fs::rename(&tmp, &path)).map_err(|e| e.to_string())
+    }
+
     fn format_time(&self, secs: i64) -> String {
         crate::dialogs::local_time(secs).unwrap_or_else(|| pasteroll_app::controller::utc_date_time(secs))
     }
@@ -256,11 +286,15 @@ impl Platform for WinPlatform {
             return ClickPoll::Rejected("click was on a control, not a text area");
         }
         let down = |vk: VIRTUAL_KEY| unsafe { (GetAsyncKeyState(vk.0 as i32) as u16 & 0x8000) != 0 };
-        if down(VK_LBUTTON) || !input::held_modifiers().is_empty() {
+        if down(VK_LBUTTON) {
             return ClickPoll::Pending;
         }
+        // no key is sent to the desktop, so a held Ctrl (the image editor's key) need not be waited out
         if desktop {
             return ClickPoll::Desktop;
+        }
+        if !input::held_modifiers().is_empty() {
+            return ClickPoll::Pending;
         }
         let mut info = GUITHREADINFO { cbSize: size_of::<GUITHREADINFO>() as u32, ..Default::default() };
         let tid = unsafe { GetWindowThreadProcessId(root, None) };

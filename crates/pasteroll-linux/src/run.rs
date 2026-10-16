@@ -139,6 +139,7 @@ fn run_inner(db: PathBuf, capture: bool, max_seconds: Option<u64>) -> Result<(),
         log,
     );
     controller.set_paste_policy(PastePolicy::new(cfg.warn_multiline_in_terminals, &cfg.terminal_apps));
+    controller.set_advanced_modifier(cfg.advanced_image_modifier);
     controller.set_custom_filters(cfg.custom_filters.clone());
     controller.set_ocr(Arc::new(crate::dialogs::Tesseract));
 

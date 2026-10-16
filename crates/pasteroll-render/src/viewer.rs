@@ -462,7 +462,7 @@ fn to_pixmap(img: &Rgba) -> Option<Pixmap> {
 
 impl ImgCache {
     /// The picture reduced by `2^level`, made on first use.
-    fn level(&mut self, img: &Arc<Rgba>, level: u32) -> Option<&Pixmap> {
+    pub(crate) fn level(&mut self, img: &Arc<Rgba>, level: u32) -> Option<&Pixmap> {
         if !self.img.as_ref().is_some_and(|i| Arc::ptr_eq(i, img)) {
             self.img = Some(img.clone());
             self.levels.clear();

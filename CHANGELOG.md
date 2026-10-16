@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Advanced Image Paste**: Ctrl+click the desktop with an image chosen (the key is a setting:
+  Ctrl, Shift or Alt) and the card grows into an image editor instead of saving the picture at
+  once. A live preview follows every change: outline, resize (pixels or percent), crop (handles,
+  numbers, locked shapes), rounded corners, drop shadow, background removal / fill / replace,
+  padding, any-angle rotation and flips, and output as PNG, JPG, WebP (lossless) or BMP with
+  quality. Choose the file name and folder, undo and redo, reset all, and save presets. Cancel
+  returns to the carousel; a plain click on the desktop still saves at once. The clip is never
+  changed. `advanced_image_modifier` in `config.toml`; presets live in `image-presets.txt` in the
+  data folder.
 - **Expanded viewer**: the active card's Expand button (or Ctrl+E) grows the clip into a window
   of three quarters of the screen, F11 or its corner button makes it fullscreen, and Esc shrinks
   it back into the carousel exactly as it was. The carousel stays visible, dimmed and inactive.

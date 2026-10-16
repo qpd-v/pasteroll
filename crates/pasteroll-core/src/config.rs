@@ -14,6 +14,36 @@ pub struct CustomFilter {
     pub extensions: Vec<String>,
 }
 
+/// The key that, held while clicking the desktop with an image chosen, opens the Advanced Image
+/// Paste window instead of saving the picture at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClickModifier {
+    Ctrl,
+    Shift,
+    Alt,
+}
+
+impl ClickModifier {
+    pub const ALL: [ClickModifier; 3] = [ClickModifier::Ctrl, ClickModifier::Shift, ClickModifier::Alt];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ClickModifier::Ctrl => "Ctrl",
+            ClickModifier::Shift => "Shift",
+            ClickModifier::Alt => "Alt",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<ClickModifier> {
+        match text.trim().to_ascii_lowercase().as_str() {
+            "ctrl" | "control" => Some(ClickModifier::Ctrl),
+            "shift" => Some(ClickModifier::Shift),
+            "alt" => Some(ClickModifier::Alt),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub limits: Limits,
@@ -28,6 +58,8 @@ pub struct Config {
     pub terminal_apps: Vec<String>,
     /// Size of the carousel as a percentage of its normal size.
     pub size_percent: u32,
+    /// Hold this while clicking the desktop to edit the image before it is saved.
+    pub advanced_image_modifier: ClickModifier,
 }
 
 /// The range the carousel size may take, in percent.
@@ -45,6 +77,7 @@ impl Default for Config {
             warn_multiline_in_terminals: true,
             terminal_apps: Vec::new(),
             size_percent: SIZE_DEFAULT,
+            advanced_image_modifier: ClickModifier::Ctrl,
         }
     }
 }
@@ -71,6 +104,10 @@ exclude_apps = []
 warn_multiline_in_terminals = true
 # More programs to treat as terminals (the usual ones are built in).
 terminal_apps = []
+# Holding this key while clicking the desktop with an image chosen opens the image editor
+# (outline, resize, crop, shadow and more) instead of saving the picture right away.
+# "ctrl", "shift" or "alt".
+advanced_image_modifier = "ctrl"
 
 [appearance]
 # Size of the carousel as a percentage of its normal size, 50 .. 200.
@@ -164,6 +201,10 @@ pub fn parse(text: &str) -> Result<Config, Vec<String>> {
                         "warn_multiline_in_terminals" => match v.as_bool() {
                             Some(b) => cfg.warn_multiline_in_terminals = b,
                             None => problems.push("warn_multiline_in_terminals must be true or false".into()),
+                        },
+                        "advanced_image_modifier" => match v.as_str().and_then(ClickModifier::parse) {
+                            Some(m) => cfg.advanced_image_modifier = m,
+                            None => problems.push("advanced_image_modifier must be \"ctrl\", \"shift\" or \"alt\"".into()),
                         },
                         "terminal_apps" => match strings(v, "terminal_apps") {
                             Ok(list) => {
@@ -295,6 +336,10 @@ pub fn set_value(text: &str, key: &str, val: &str) -> Result<String, Vec<String>
             };
             ("paste", value(b))
         }
+        "advanced_image_modifier" => match ClickModifier::parse(val) {
+            Some(m) => ("paste", value(m.label().to_ascii_lowercase())),
+            None => return Err(vec![format!("advanced_image_modifier must be ctrl, shift or alt (got {val:?})")]),
+        },
         "size" => {
             let v = val.trim().trim_end_matches('%');
             if v.eq_ignore_ascii_case("auto") {
@@ -450,6 +495,7 @@ pub fn describe(c: &Config) -> String {
         "carousel size:  {}\n",
         format!("{}%", c.size_percent)
     ));
+    s.push_str(&format!("image editor:   {}+click on the desktop\n", c.advanced_image_modifier.label()));
     if !c.exclude_apps.is_empty() {
         s.push_str(&format!("excluded apps:  {}\n", c.exclude_apps.join(", ")));
     }
@@ -473,6 +519,20 @@ mod tests {
         let c = parse(TEMPLATE).unwrap();
         assert_eq!(c.limits, Limits::default());
         assert!(!c.paused && c.exclude_apps.is_empty() && c.custom_filters.is_empty());
+    }
+
+    #[test]
+    fn the_image_editor_key_defaults_to_ctrl_and_can_be_changed() {
+        assert_eq!(parse("").unwrap().advanced_image_modifier, ClickModifier::Ctrl);
+        assert_eq!(parse(TEMPLATE).unwrap().advanced_image_modifier, ClickModifier::Ctrl);
+        let c = parse("[paste]\nadvanced_image_modifier = \"Shift\"\n").unwrap();
+        assert_eq!(c.advanced_image_modifier, ClickModifier::Shift);
+        assert!(parse("[paste]\nadvanced_image_modifier = \"win\"\n").is_err());
+        assert!(parse("[paste]\nadvanced_image_modifier = 3\n").is_err());
+        let out = set_value("", "advanced_image_modifier", "ALT").unwrap();
+        assert_eq!(parse(&out).unwrap().advanced_image_modifier, ClickModifier::Alt);
+        assert!(set_value("", "paste.advanced_image_modifier", "super").is_err());
+        assert!(describe(&c).contains("Shift+click"));
     }
 
     #[test]

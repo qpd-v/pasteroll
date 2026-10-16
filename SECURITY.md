@@ -37,6 +37,10 @@ Pasteroll encrypts the history at rest. It is **not** a defence against malware 
   which is for reading, keeps the keys while it is open and closes after 10 minutes without
   input. Either way, input is released if the program stops responding (Windows: within half a
   second; Linux: the program exits after 4 seconds so the X server drops its grabs).
+- **Image editor**: while Advanced Image Paste is open the input hooks also swallow clicks outside
+  its window (so a stray click cannot lose the work), under the same limits as above: they stop at
+  once if the program stops responding, and after ten minutes without input the session ends. The
+  picture is decoded and edited in memory; the original clip is only read.
 - **Recycle bin**: a deleted clip stays in the database, encrypted, for 30 days (so it can be
   restored), unless it is deleted permanently. Permanent deletion overwrites it as before.
 - **No network**: see [PRIVACY.md](PRIVACY.md).

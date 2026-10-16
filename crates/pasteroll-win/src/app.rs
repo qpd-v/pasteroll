@@ -117,6 +117,7 @@ fn to_event(cmd: Command, gen: u64) -> Event {
         Command::CtrlI => Event::Key(Key::CtrlI, gen),
         Command::CtrlS => Event::Key(Key::CtrlS, gen),
         Command::CtrlZ => Event::Key(Key::CtrlZ, gen),
+        Command::CtrlY => Event::Key(Key::CtrlY, gen),
     }
 }
 
@@ -265,6 +266,7 @@ pub fn create(opts: &Options) -> Result<HWND> {
         );
         controller.set_paste_policy(PastePolicy::new(cfg.warn_multiline_in_terminals, &cfg.terminal_apps));
         controller.set_custom_filters(cfg.custom_filters.clone());
+        controller.set_advanced_modifier(cfg.advanced_image_modifier);
         controller.set_ocr(Arc::new(crate::ocr::WinOcr));
         let platform = WinPlatform::new(hwnd, overlay, viewer, hooks).with_db(&opts.db);
         SetTimer(Some(hwnd), TIMER_TICK, 25, None);

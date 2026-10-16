@@ -11,6 +11,7 @@
 //! - capture and image decoding run on worker threads, never here;
 //! - what is pasted is the real text, even where the preview shows hidden characters as tokens.
 
+mod editor;
 mod viewer;
 
 use crate::event::{Event, Key, MouseEvent, MouseKind};
@@ -26,6 +27,7 @@ use pasteroll_core::preview::{sanitize, Sanitized};
 use pasteroll_core::store::{Kind, PinResult};
 use pasteroll_core::{session::Moved, Dir, HistorySource, Item, Selection, Session, Snapshot, Step, Store};
 use pasteroll_render::{geometry, Body, Dropdown, Hit, Renderer, RowKind, RowView, ViewModel, HEIGHT, WIDTH};
+use editor::{EditMsg, Editor};
 use viewer::Viewer;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -296,6 +298,12 @@ pub struct Controller {
     waker: Arc<dyn Waker>,
     ocr_tx: std::sync::mpsc::Sender<viewer::OcrDone>,
     ocr_rx: std::sync::mpsc::Receiver<viewer::OcrDone>,
+    /// The image editor (Advanced Image Paste), while it is open (or animating).
+    editor: Option<Editor>,
+    edit_tx: std::sync::mpsc::Sender<EditMsg>,
+    edit_rx: std::sync::mpsc::Receiver<EditMsg>,
+    /// The key that, held while clicking the desktop, opens the image editor.
+    advanced_modifier: pasteroll_core::config::ClickModifier,
 }
 
 fn thousands(n: usize) -> String {
@@ -377,6 +385,7 @@ impl Controller {
         let paused = policy.paused.clone();
         let workers = Workers::start(factory, waker.clone(), source, policy, log);
         let (ocr_tx, ocr_rx) = std::sync::mpsc::channel();
+        let (edit_tx, edit_rx) = std::sync::mpsc::channel();
         Controller {
             store: Rc::new(RefCell::new(store)),
             renderer: Renderer::new(),
@@ -402,6 +411,10 @@ impl Controller {
             waker,
             ocr_tx,
             ocr_rx,
+            editor: None,
+            edit_tx,
+            edit_rx,
+            advanced_modifier: pasteroll_core::config::ClickModifier::Ctrl,
         }
     }
 
@@ -517,7 +530,10 @@ impl Controller {
             p.heartbeat();
         }
         let viewing = self.viewer.is_some();
+        // the image editor is modal: it takes every event meant for the carousel
+        let consumed = self.editor.is_some() && self.editor_event(p, ev, now);
         match ev {
+            _ if consumed => {}
             Event::Activate => {
                 self.last_activity_ms = now;
                 self.activate(p, now);
@@ -585,6 +601,7 @@ impl Controller {
             Event::Wake => {
                 self.drain_previews();
                 self.drain_ocr(now);
+                self.drain_edit(p, now);
                 self.on_new_clips(p);
             }
         }
@@ -601,7 +618,7 @@ impl Controller {
     /// The user did something: the idle clock starts again (and, in the viewer, the hooks' clock).
     fn touch(&mut self, p: &mut dyn Platform, now: u64) {
         self.last_activity_ms = now;
-        if self.viewer.is_some() {
+        if self.viewer.is_some() || self.editor.is_some() {
             p.input_keepalive();
         }
     }
@@ -675,6 +692,7 @@ impl Controller {
     }
 
     fn end_session(&mut self, p: &mut dyn Platform) {
+        self.drop_editor(p);
         self.drop_viewer(p);
         if self.open.take().is_some() {
             p.input_active(false);
@@ -1380,6 +1398,7 @@ impl Controller {
                     self.undo_trash(p, now);
                 }
             }
+            Key::CtrlY => {}
             Key::CtrlE => {
                 if !adding {
                     self.open_viewer(p, now);
@@ -1725,6 +1744,9 @@ impl Controller {
         if self.viewer.is_some() {
             self.viewer_tick(p, now);
         }
+        if self.editor.is_some() {
+            self.editor_tick(p, now);
+        }
         if let Some(n) = &self.notice {
             if now >= n.until_ms {
                 self.notice = None;
@@ -1747,7 +1769,7 @@ impl Controller {
             }
         }
         let Some(open) = self.open.as_ref() else { return };
-        if self.viewer.is_some() {
+        if self.viewer.is_some() || self.editor.is_some() {
             // reading takes time: the viewer has its own, longer limit, and keeps the hooks alive
             if now.saturating_sub(self.last_activity_ms) > VIEWER_IDLE_MS {
                 self.cancel(p, "idle timeout");
@@ -1768,7 +1790,8 @@ impl Controller {
             None => {
                 // The foreground is not swallowed: if the user leaves the target, stop swallowing.
                 let target = open.target.clone();
-                if !p.target_is_current(&target) {
+                // (the image editor stands on the desktop, whatever program the session began in)
+                if self.editor.is_none() && !p.target_is_current(&target) {
                     self.cancel(p, "foreground changed");
                 }
             }
@@ -1799,7 +1822,12 @@ impl Controller {
                     .and_then(|id| self.store.borrow().kind(id).ok().flatten())
                     == Some(Kind::Image);
                 if is_image {
-                    self.save_desktop_image(p);
+                    if p.click_modifiers().has(self.advanced_modifier) {
+                        // Ctrl+click (by default): the editor, instead of saving at once
+                        self.open_editor(p, now);
+                    } else {
+                        self.save_desktop_image(p);
+                    }
                 } else {
                     self.cancel(p, "only images can be saved to the desktop");
                 }
@@ -1928,6 +1956,10 @@ impl Controller {
     }
 
     fn present(&mut self, p: &mut dyn Platform) {
+        if self.editor.is_some() {
+            self.present_editor(p);
+            return;
+        }
         if self.viewer.is_some() {
             self.present_viewer(p);
             return;

@@ -19,11 +19,11 @@ use pasteroll_render::{
     ViewerView,
 };
 
-const OPEN_MS: u64 = 260;
-const CLOSE_MS: u64 = 230;
+pub(super) const OPEN_MS: u64 = 260;
+pub(super) const CLOSE_MS: u64 = 230;
 const RESIZE_MS: u64 = 210;
 /// How dark the carousel gets behind the viewer (1 = unchanged).
-const DIM: f32 = 0.42;
+pub(super) const DIM: f32 = 0.42;
 /// The viewer shows this much of a very long text (Copy, Paste and Save as still use all of it).
 const VIEWER_MAX_CHARS: usize = 200_000;
 const TOAST_MS: u64 = 1_800;
@@ -33,7 +33,7 @@ const SCROLL_LINES: f32 = 3.0;
 const LINE_DIP: f32 = 19.0;
 /// Animation frames are drawn with at most this many pixels and stretched by the window: a frame
 /// the size of a large screen takes too long to blend for a smooth animation.
-const ANIM_MAX_PIXELS: f32 = 600_000.0;
+pub(super) const ANIM_MAX_PIXELS: f32 = 600_000.0;
 
 type RectPx = (i32, i32, u32, u32);
 
@@ -78,20 +78,20 @@ impl Drop for OcrText {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum AnimKind {
+pub(super) enum AnimKind {
     Open,
     Close,
     Resize,
 }
 
-struct Anim {
-    kind: AnimKind,
-    start_ms: u64,
-    dur_ms: u64,
-    from: RectPx,
-    to: RectPx,
-    morph: Morph,
-    dim: (f32, f32),
+pub(super) struct Anim {
+    pub(super) kind: AnimKind,
+    pub(super) start_ms: u64,
+    pub(super) dur_ms: u64,
+    pub(super) from: RectPx,
+    pub(super) to: RectPx,
+    pub(super) morph: Morph,
+    pub(super) dim: (f32, f32),
 }
 
 /// Entries of the More menu.
@@ -167,11 +167,11 @@ pub(crate) struct Viewer {
     pan: Option<((f32, f32), (f32, f32))>,
 }
 
-fn ease_out(t: f32) -> f32 {
+pub(super) fn ease_out(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(3)
 }
 
-fn ease_in_out(t: f32) -> f32 {
+pub(super) fn ease_in_out(t: f32) -> f32 {
     if t < 0.5 {
         4.0 * t * t * t
     } else {
@@ -179,11 +179,11 @@ fn ease_in_out(t: f32) -> f32 {
     }
 }
 
-fn lerp(a: f32, b: f32, t: f32) -> f32 {
+pub(super) fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
 
-fn lerp_rect(a: RectPx, b: RectPx, t: f32) -> RectPx {
+pub(super) fn lerp_rect(a: RectPx, b: RectPx, t: f32) -> RectPx {
     (
         lerp(a.0 as f32, b.0 as f32, t).round() as i32,
         lerp(a.1 as f32, b.1 as f32, t).round() as i32,
@@ -565,7 +565,7 @@ impl Controller {
 
     /// The active card as it looks now (and where it is on screen), and the carousel with its
     /// place empty.
-    fn card_pictures(&mut self) -> Option<(Frame, RectPx, Frame)> {
+    pub(super) fn card_pictures(&mut self) -> Option<(Frame, RectPx, Frame)> {
         let mut vm = self.view_model();
         vm.hover = None;
         let size = self.size_dip();
@@ -1510,6 +1510,7 @@ impl Controller {
             Key::CtrlS => self.viewer_save(p, now),
             Key::CtrlP => self.viewer_pin(p, now),
             Key::CtrlZ => self.viewer_restore_or_undo(p, now),
+            Key::CtrlY => {}
             Key::CtrlE => self.close_viewer(p, now),
             Key::CtrlI => self.run_action(p, Action::Info, now),
             Key::CtrlA => {

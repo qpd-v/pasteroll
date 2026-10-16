@@ -19,10 +19,15 @@
 //! +----------------------------------------------+
 //! ```
 
+mod editor;
 mod icons;
 mod textmap;
 mod viewer;
 
+pub use editor::{
+    crop_part_at, editor_hit, editor_layout, fit_rect, ButtonView, Col, CropPart, CropView, EHit, ELayout, EditorView, FieldView, Item,
+    ItemKind, Placed, PopupAnchor, PopupView, Top, TopView,
+};
 pub use icons::Icon;
 pub use viewer::{
     fit_zoom, viewer_geometry, ConfirmView, FindView, Morph, MenuItemView, Tool, ToolView, VGeom, VHit, ViewerBody, ViewerView,

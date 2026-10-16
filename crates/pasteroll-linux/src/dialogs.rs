@@ -38,6 +38,28 @@ pub fn save_file(suggested: &Path) -> SaveChoice {
     chosen(kdialog).unwrap_or(SaveChoice::Unavailable)
 }
 
+/// Asks which folder to save into, opening at `start`.
+pub fn pick_folder(start: Option<&Path>) -> SaveChoice {
+    let mut dir = start.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+    if !dir.is_empty() && !dir.ends_with('/') {
+        dir.push('/');
+    }
+    let zenity = Command::new("zenity")
+        .args(["--file-selection", "--directory", "--title=Save the picture in this folder", &format!("--filename={dir}")])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output();
+    if let Some(c) = chosen(zenity) {
+        return c;
+    }
+    let kdialog = Command::new("kdialog")
+        .args(["--title", "Save the picture in this folder", "--getexistingdirectory", &dir])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output();
+    chosen(kdialog).unwrap_or(SaveChoice::Unavailable)
+}
+
 /// Tesseract, if it is installed.
 pub struct Tesseract;
 
