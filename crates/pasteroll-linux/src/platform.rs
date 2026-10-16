@@ -7,12 +7,18 @@
 //! consume it (wheel, clicks on the overlay) or replay it to the program underneath (a click that
 //! should place the caret before the paste). A watchdog in `run.rs` exits the process if the loop
 //! hangs while input is grabbed, because a stuck grab would freeze the desktop.
+//!
+//! The expanded viewer is a second override-redirect window. While it is open the wheel is passed
+//! on raw (with Ctrl and Shift), clicks inside it go to it, and a click elsewhere closes it
+//! instead of pasting there.
 
 use crate::clipboard::Server;
 use crate::keys;
 use crate::sys;
 use crate::x::{self, Atoms, Keymap, XResult};
-use pasteroll_app::{ClickPoll, Event, MouseEvent, MouseKind, OverlayInfo, PasteKey, Payload, Platform, Target};
+use pasteroll_app::{
+    ClickPoll, Event, MouseEvent, MouseKind, OverlayInfo, PasteKey, Payload, Platform, SaveChoice, Target, Wheel,
+};
 use pasteroll_render::{Frame, HEIGHT, WIDTH};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -133,6 +139,18 @@ pub struct LinuxPlatform {
     start: Instant,
     pub db: PathBuf,
     has_ewmh: bool,
+    /// The expanded viewer's window and state.
+    viewer: Window,
+    viewer_pos: (i32, i32),
+    viewer_size: (u32, u32),
+    viewer_mapped: bool,
+    viewer_round: Option<bool>,
+    viewer_frame: Option<(Vec<u8>, u32, u32)>,
+    viewer_mode: bool,
+    /// Left button went down in the viewer and has not been released.
+    viewer_dragging: bool,
+    /// An animation is running: the loop ticks faster.
+    pub fast_ticks: bool,
 }
 
 fn mask(bits: &[EventMask]) -> EventMask {
@@ -167,6 +185,29 @@ impl LinuxPlatform {
         )?;
         let gc = conn.generate_id()?;
         conn.create_gc(gc, overlay, &CreateGCAux::new())?;
+        // pointer moves light up the card's buttons; leaving the window turns them off
+        conn.change_window_attributes(
+            overlay,
+            &ChangeWindowAttributesAux::new()
+                .event_mask(EventMask::EXPOSURE | EventMask::POINTER_MOTION | EventMask::LEAVE_WINDOW),
+        )?;
+        let viewer = conn.generate_id()?;
+        conn.create_window(
+            screen.root_depth,
+            viewer,
+            root,
+            0,
+            0,
+            1,
+            1,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            screen.root_visual,
+            &CreateWindowAux::new()
+                .override_redirect(1)
+                .background_pixel(screen.black_pixel)
+                .event_mask(EventMask::EXPOSURE | EventMask::POINTER_MOTION | EventMask::LEAVE_WINDOW),
+        )?;
 
         // a never-mapped window that owns the clipboard while we serve a paste
         let helper = conn.generate_id()?;
@@ -232,6 +273,15 @@ impl LinuxPlatform {
             start: Instant::now(),
             db,
             has_ewmh,
+            viewer,
+            viewer_pos: (0, 0),
+            viewer_size: (1, 1),
+            viewer_mapped: false,
+            viewer_round: None,
+            viewer_frame: None,
+            viewer_mode: false,
+            viewer_dragging: false,
+            fast_ticks: false,
         })
     }
 
@@ -301,6 +351,18 @@ impl LinuxPlatform {
     }
 
     // ------------------------------------------------------------------ geometry
+
+    fn inside_viewer(&self, x: i32, y: i32) -> bool {
+        self.viewer_mapped
+            && x >= self.viewer_pos.0
+            && y >= self.viewer_pos.1
+            && x < self.viewer_pos.0 + self.viewer_size.0 as i32
+            && y < self.viewer_pos.1 + self.viewer_size.1 as i32
+    }
+
+    fn viewer_local(&self, rx: i32, ry: i32) -> (f32, f32) {
+        ((rx - self.viewer_pos.0) as f32, (ry - self.viewer_pos.1) as f32)
+    }
 
     fn inside_overlay(&self, x: i32, y: i32) -> bool {
         self.mapped
@@ -380,16 +442,38 @@ impl LinuxPlatform {
         match ev {
             XEvent::ButtonPress(e) => self.button_press(&e, &mut out),
             XEvent::ButtonRelease(e) => {
-                if self.active && self.dragging && e.detail == 1 {
+                if self.active && self.viewer_dragging && e.detail == 1 {
+                    self.viewer_dragging = false;
+                    let (x, y) = self.viewer_local(i32::from(e.root_x), i32::from(e.root_y));
+                    out.push(Action::Event(Event::ViewerMouse(MouseEvent { kind: MouseKind::Up, x, y })));
+                } else if self.active && self.dragging && e.detail == 1 {
                     self.dragging = false;
                     let (x, y) = self.local(i32::from(e.root_x), i32::from(e.root_y));
                     out.push(Action::Event(Event::Mouse(MouseEvent { kind: MouseKind::Up, x, y })));
                 }
             }
             XEvent::MotionNotify(e) => {
-                if self.active && self.dragging {
-                    let (x, y) = self.local(i32::from(e.root_x), i32::from(e.root_y));
+                let (rx, ry) = (i32::from(e.root_x), i32::from(e.root_y));
+                if self.active && self.viewer_dragging {
+                    let (x, y) = self.viewer_local(rx, ry);
+                    out.push(Action::Event(Event::ViewerMouse(MouseEvent { kind: MouseKind::Move, x, y })));
+                } else if self.active && self.dragging {
+                    let (x, y) = self.local(rx, ry);
                     out.push(Action::Event(Event::Mouse(MouseEvent { kind: MouseKind::Move, x, y })));
+                } else if self.active && e.event == self.viewer {
+                    let (x, y) = (f32::from(e.event_x), f32::from(e.event_y));
+                    out.push(Action::Event(Event::ViewerMouse(MouseEvent { kind: MouseKind::Move, x, y })));
+                } else if self.active && e.event == self.overlay {
+                    let (x, y) = (f32::from(e.event_x), f32::from(e.event_y));
+                    out.push(Action::Event(Event::Mouse(MouseEvent { kind: MouseKind::Move, x, y })));
+                }
+            }
+            XEvent::LeaveNotify(e) => {
+                let m = MouseEvent { kind: MouseKind::Leave, x: 0.0, y: 0.0 };
+                if self.active && e.event == self.viewer {
+                    out.push(Action::Event(Event::ViewerMouse(m)));
+                } else if self.active && e.event == self.overlay {
+                    out.push(Action::Event(Event::Mouse(m)));
                 }
             }
             XEvent::KeyPress(e) => {
@@ -402,6 +486,12 @@ impl LinuxPlatform {
             XEvent::Expose(e) => {
                 if e.window == self.overlay && e.count == 0 {
                     self.repaint();
+                }
+                if e.window == self.viewer && e.count == 0 {
+                    if let Some((data, w, h)) = self.viewer_frame.take() {
+                        self.put_to(self.viewer, &data, w, h);
+                        self.viewer_frame = Some((data, w, h));
+                    }
                 }
             }
             XEvent::SelectionRequest(r) => {
@@ -440,6 +530,10 @@ impl LinuxPlatform {
             return;
         }
         let gen = self.generation;
+        if self.viewer_mode {
+            self.viewer_button_press(e, out);
+            return;
+        }
         let inside = self.inside_overlay(rx, ry);
         let mut replay = false;
         match e.detail {
@@ -479,6 +573,61 @@ impl LinuxPlatform {
         let _ = self.conn.flush();
     }
 
+    /// A button press while the viewer is open: the wheel turns raw, clicks in the viewer go to
+    /// it, a click anywhere else closes it (and reaches what was clicked).
+    fn viewer_button_press(&mut self, e: &ButtonPressEvent, out: &mut Vec<Action>) {
+        let (rx, ry) = (i32::from(e.root_x), i32::from(e.root_y));
+        let gen = self.generation;
+        let state = u16::from(e.state);
+        let (ctrl, shift) = (state & keys::CONTROL != 0, state & keys::SHIFT != 0);
+        let inside = self.inside_viewer(rx, ry);
+        let mut replay = false;
+        match e.detail {
+            4..=7 => {
+                let delta = if e.detail == 4 || e.detail == 7 { 120 } else { -120 };
+                let wheel = Wheel { delta, horizontal: e.detail >= 6, ctrl, shift };
+                out.push(Action::Event(Event::Wheel(wheel, gen)));
+            }
+            1 if inside => {
+                let now = Instant::now();
+                let double = self.last_down.is_some_and(|(t, x, y)| {
+                    now.duration_since(t).as_millis() <= DOUBLE_CLICK_MS
+                        && (x - rx).abs() <= DOUBLE_CLICK_PX
+                        && (y - ry).abs() <= DOUBLE_CLICK_PX
+                });
+                self.last_down = if double { None } else { Some((now, rx, ry)) };
+                self.viewer_dragging = true;
+                let (x, y) = self.viewer_local(rx, ry);
+                let kind = if double { MouseKind::DoubleClick } else { MouseKind::Down };
+                out.push(Action::Event(Event::ViewerMouse(MouseEvent { kind, x, y })));
+            }
+            _ if inside => {}
+            _ => {
+                replay = true;
+                out.push(Action::Event(Event::ClickOutside(gen)));
+            }
+        }
+        let mode = if replay { Allow::REPLAY_POINTER } else { Allow::ASYNC_POINTER };
+        let _ = self.conn.allow_events(mode, CURRENT_TIME);
+        let _ = self.conn.flush();
+    }
+
+    /// Asks the window manager to make `win` the active window again (after a dialog).
+    fn activate(&self, win: Window) {
+        if self.has_ewmh {
+            let ev = ClientMessageEvent::new(32, win, self.atoms.net_active_window, [2u32, CURRENT_TIME, 0, 0, 0]);
+            let _ = self.conn.send_event(
+                false,
+                self.root,
+                EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
+                ev,
+            );
+        } else {
+            let _ = self.conn.set_input_focus(InputFocus::PARENT, win, CURRENT_TIME);
+        }
+        let _ = self.conn.flush();
+    }
+
     fn repaint(&mut self) {
         if let Some((data, w, h)) = self.last_frame.take() {
             self.put(&data, w, h);
@@ -487,6 +636,10 @@ impl LinuxPlatform {
     }
 
     fn put(&self, data: &[u8], w: u32, h: u32) {
+        self.put_to(self.overlay, data, w, h);
+    }
+
+    fn put_to(&self, win: Window, data: &[u8], w: u32, h: u32) {
         // keep each request well under the server's maximum
         let max = self.conn.maximum_request_bytes().saturating_sub(64);
         let row_bytes = (w as usize) * 4;
@@ -497,7 +650,7 @@ impl LinuxPlatform {
             let chunk = &data[y * row_bytes..(y + n) * row_bytes];
             let _ = self.conn.put_image(
                 ImageFormat::Z_PIXMAP,
-                self.overlay,
+                win,
                 self.gc,
                 w as u16,
                 n as u16,
@@ -571,6 +724,35 @@ impl LinuxPlatform {
     }
 }
 
+/// Nearest-neighbour stretch of a BGRA picture (animation frames only: they are on screen for a
+/// few milliseconds each).
+fn stretch(src: &[u8], sw: u32, sh: u32, dw: u32, dh: u32) -> Vec<u8> {
+    let (sw, sh, dw, dh) = (sw.max(1) as usize, sh.max(1) as usize, dw.max(1) as usize, dh.max(1) as usize);
+    let xs: Vec<usize> = (0..dw).map(|x| (x * sw / dw).min(sw - 1) * 4).collect();
+    let mut out = vec![0u8; dw * dh * 4];
+    for (y, row) in out.chunks_exact_mut(dw * 4).enumerate() {
+        let sy = (y * sh / dh).min(sh - 1);
+        let line = &src[sy * sw * 4..(sy + 1) * sw * 4];
+        for (x, px) in row.chunks_exact_mut(4).enumerate() {
+            px.copy_from_slice(&line[xs[x]..xs[x] + 4]);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod stretch_tests {
+    #[test]
+    fn stretching_doubles_pixels() {
+        let src = vec![1, 1, 1, 255, 2, 2, 2, 255];
+        let out = super::stretch(&src, 2, 1, 4, 2);
+        assert_eq!(out.len(), 4 * 2 * 4);
+        assert_eq!(&out[0..4], &[1, 1, 1, 255]);
+        assert_eq!(&out[8..12], &[2, 2, 2, 255]);
+        assert_eq!(&out[16..20], &[1, 1, 1, 255]);
+    }
+}
+
 impl Drop for LinuxPlatform {
     fn drop(&mut self) {
         self.release_session();
@@ -584,7 +766,7 @@ impl Drop for LinuxPlatform {
 impl Platform for LinuxPlatform {
     fn foreground(&mut self) -> Option<Target> {
         let win = self.active_window()?;
-        if win == self.overlay || win == self.helper {
+        if win == self.overlay || win == self.helper || win == self.viewer {
             return None;
         }
         let t = self.target_for(win);
@@ -654,7 +836,107 @@ impl Platform for LinuxPlatform {
         let _ = self.conn.map_window(self.overlay);
         let _ = self.conn.flush();
         self.mapped = true;
-        OverlayInfo { scale, size_px: (w as u32, h as u32) }
+        let monitor = (mx, my, sw.max(1) as u32, sh.max(1) as u32);
+        OverlayInfo { scale, size_px: (w as u32, h as u32), origin_px: (x, y), monitor_px: monitor, work_px: monitor }
+    }
+
+
+
+    fn viewer_show(&mut self, rect: (i32, i32, u32, u32), rounded: bool) {
+        let (w, h) = (rect.2.max(1), rect.3.max(1));
+        let _ = self.conn.configure_window(
+            self.viewer,
+            &ConfigureWindowAux::new().x(rect.0).y(rect.1).width(w).height(h).stack_mode(StackMode::ABOVE),
+        );
+        if self.viewer_size != (w, h) || self.viewer_round != Some(rounded) {
+            let r = if rounded { (CORNER_DIP * self.scale).round() as u32 } else { 0 };
+            let rects = rounded_rects(w, h, r);
+            let _ = shape::rectangles(&self.conn, shape::SO::SET, shape::SK::BOUNDING, ClipOrdering::UNSORTED, self.viewer, 0, 0, &rects);
+            self.viewer_round = Some(rounded);
+        }
+        self.viewer_pos = (rect.0, rect.1);
+        self.viewer_size = (w, h);
+        if !self.viewer_mapped {
+            let _ = self.conn.map_window(self.viewer);
+            self.viewer_mapped = true;
+        }
+        let _ = self.conn.flush();
+    }
+
+    fn viewer_present(&mut self, frame: &Frame) {
+        if !self.viewer_mapped {
+            return;
+        }
+        let (w, h) = self.viewer_size;
+        // animation frames are drawn small and stretched here (the server cannot scale)
+        let data = if (frame.width, frame.height) == (w, h) {
+            frame.bgra.clone()
+        } else {
+            stretch(&frame.bgra, frame.width, frame.height, w, h)
+        };
+        self.put_to(self.viewer, &data, w, h);
+        if let Some((d, _, _)) = self.viewer_frame.as_mut() {
+            d.zeroize();
+        }
+        self.viewer_frame = Some((data, w, h));
+    }
+
+    fn viewer_hide(&mut self) {
+        let _ = self.conn.unmap_window(self.viewer);
+        let _ = self.conn.flush();
+        self.viewer_mapped = false;
+        self.viewer_dragging = false;
+        if let Some((d, _, _)) = self.viewer_frame.as_mut() {
+            d.zeroize();
+        }
+        self.viewer_frame = None;
+    }
+
+    fn viewer_mode(&mut self, on: bool) {
+        self.viewer_mode = on;
+        self.viewer_dragging = false;
+    }
+
+    fn animating(&mut self, on: bool) {
+        self.fast_ticks = on;
+    }
+
+    fn shift_held(&self) -> bool {
+        let (_, _, m) = self.pointer();
+        m & keys::SHIFT != 0
+    }
+
+    fn save_dialog(&mut self, name: &str, _ext: &str, target: &Target) -> SaveChoice {
+        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"));
+        let folder = self.desktop_folder().unwrap_or(home);
+        let suggested = folder.join(name);
+        // The dialog is another program: it needs the keyboard, and our windows (above everything)
+        // would hide it. Both are given back afterwards.
+        self.input_active(false);
+        let _ = self.conn.unmap_window(self.viewer);
+        let _ = self.conn.unmap_window(self.overlay);
+        let _ = self.conn.flush();
+        let choice = crate::dialogs::save_file(&suggested);
+        let _ = self.conn.map_window(self.overlay);
+        let _ = self.conn.map_window(self.viewer);
+        let _ = self.conn.flush();
+        self.repaint();
+        if let Some((data, w, h)) = self.viewer_frame.take() {
+            self.put_to(self.viewer, &data, w, h);
+            self.viewer_frame = Some((data, w, h));
+        }
+        self.activate(target.id as Window);
+        self.input_active(true);
+        choice
+    }
+
+    fn format_time(&self, secs: i64) -> String {
+        let t = secs as libc::time_t;
+        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+        unsafe {
+            libc::localtime_r(&t, &mut tm);
+        }
+        format!("{:04}-{:02}-{:02} {:02}:{:02}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min)
     }
 
     fn overlay_present(&mut self, frame: &Frame) {

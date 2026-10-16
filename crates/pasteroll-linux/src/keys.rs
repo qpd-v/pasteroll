@@ -47,7 +47,16 @@ pub fn classify(km: &Keymap, code: u8, state: u16) -> Option<Key> {
         0xff56 | 0xff9b if !ctrl => Some(Key::PageDown),
         0xff09 | 0xfe20 if !ctrl => Some(Key::Tab),
         0xff08 => Some(if ctrl { Key::CtrlBackspace } else { Key::Backspace }),
+        0xffff | 0xff9f if shift && !ctrl => Some(Key::ShiftDelete),
         0xffff | 0xff9f => Some(if ctrl { Key::CtrlDelete } else { Key::Delete }),
+        // the expanded viewer's keys (the keyboard is grabbed during a session, so they are
+        // taken from the application underneath either way)
+        0xff51 | 0xff96 if !ctrl => Some(Key::Left),
+        0xff53 | 0xff98 if !ctrl => Some(Key::Right),
+        0xff50 | 0xff95 if !ctrl => Some(Key::Home),
+        0xff57 | 0xff9c if !ctrl => Some(Key::End),
+        0xffc0 => Some(if shift { Key::ShiftF3 } else { Key::F3 }),
+        0xffc8 => Some(Key::F11),
         _ => None,
     } };
     if named.is_some() {
@@ -55,9 +64,20 @@ pub fn classify(km: &Keymap, code: u8, state: u16) -> Option<Key> {
     }
     // text
     if (ctrl && !altgr) || state & (ALT | SUPER) != 0 && !altgr {
-        // Ctrl+P pins; everything else with Ctrl, Alt or Super is not text
-        if ctrl && !shift && state & (ALT | SUPER) == 0 && (base == 0x70 || base == 0x50) {
-            return Some(Key::CtrlP);
+        // Ctrl+P pins, Ctrl+C/E/F/I/S/Z/A serve the viewer; everything else with Ctrl, Alt or
+        // Super is not text
+        if ctrl && !shift && state & (ALT | SUPER) == 0 {
+            return match base | 0x20 {
+                0x70 => Some(Key::CtrlP),
+                0x61 => Some(Key::CtrlA),
+                0x63 => Some(Key::CtrlC),
+                0x65 => Some(Key::CtrlE),
+                0x66 => Some(Key::CtrlF),
+                0x69 => Some(Key::CtrlI),
+                0x73 => Some(Key::CtrlS),
+                0x7a => Some(Key::CtrlZ),
+                _ => None,
+            };
         }
         return None;
     }
@@ -141,10 +161,33 @@ mod tests {
     }
 
     #[test]
+    fn viewer_keys() {
+        let k = Keymap::from_parts(
+            8,
+            2,
+            vec![0xff51, 0, 0xff53, 0, 0xff50, 0, 0xff57, 0, 0xffc0, 0, 0xffc8, 0, 0xffff, 0, 0x63, 0x43, 0x7a, 0x5a],
+        );
+        assert_eq!(classify(&k, 8, 0), Some(Key::Left));
+        assert_eq!(classify(&k, 9, 0), Some(Key::Right));
+        assert_eq!(classify(&k, 10, 0), Some(Key::Home));
+        assert_eq!(classify(&k, 11, 0), Some(Key::End));
+        assert_eq!(classify(&k, 12, 0), Some(Key::F3));
+        assert_eq!(classify(&k, 12, SHIFT), Some(Key::ShiftF3));
+        assert_eq!(classify(&k, 13, 0), Some(Key::F11));
+        assert_eq!(classify(&k, 14, SHIFT), Some(Key::ShiftDelete));
+        assert_eq!(classify(&k, 15, CONTROL), Some(Key::CtrlC));
+        assert_eq!(classify(&k, 16, CONTROL), Some(Key::CtrlZ));
+        assert_eq!(classify(&k, 16, CONTROL | SHIFT), None);
+    }
+
+    #[test]
     fn ctrl_p_pins_and_other_ctrl_keys_are_ignored() {
         let k = km();
         assert_eq!(classify(&k, 10, CONTROL), Some(Key::CtrlP));
-        assert_eq!(classify(&k, 8, CONTROL), None);
+        assert_eq!(classify(&k, 9, CONTROL), Some(Key::CtrlS), "Ctrl+S saves in the viewer");
+        assert_eq!(classify(&k, 8, CONTROL), Some(Key::CtrlA));
+        assert_eq!(classify(&k, 18, CONTROL), Some(Key::CtrlE));
+        assert_eq!(classify(&k, 17, CONTROL), None);
         assert_eq!(classify(&k, 8, CONTROL | SHIFT), None, "a lingering activation chord types nothing");
         assert_eq!(classify(&k, 8, ALT), None);
         assert_eq!(classify(&k, 8, SUPER), None);
@@ -154,7 +197,7 @@ mod tests {
     fn the_keypad_follows_numlock() {
         let k = km();
         assert_eq!(classify(&k, 16, NUMLOCK), Some(Key::Char('1')));
-        assert_eq!(classify(&k, 16, 0), None, "End is not text");
+        assert_eq!(classify(&k, 16, 0), Some(Key::End), "End is not text: it is the viewer's End key");
     }
 
     #[test]

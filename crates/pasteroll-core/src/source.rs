@@ -46,3 +46,23 @@ pub trait HistorySource {
     /// Whether the clip still exists (it may have been deleted since the page was read).
     fn exists(&mut self, id: i64) -> Result<bool, Self::Error>;
 }
+
+/// A borrowed source reads the same history (tests and short-lived sessions).
+impl<T: HistorySource + ?Sized> HistorySource for &mut T {
+    type Error = T::Error;
+    fn snapshot(&mut self) -> Result<Option<Snapshot>, Self::Error> {
+        (**self).snapshot()
+    }
+    fn page(
+        &mut self,
+        snap: Snapshot,
+        after: Option<(f64, i64)>,
+        dir: Dir,
+        limit: usize,
+    ) -> Result<Vec<Item>, Self::Error> {
+        (**self).page(snap, after, dir, limit)
+    }
+    fn exists(&mut self, id: i64) -> Result<bool, Self::Error> {
+        (**self).exists(id)
+    }
+}

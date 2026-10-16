@@ -14,6 +14,8 @@ pub enum Filter {
     Audio,
     Compressed,
     Pinned,
+    /// The recycle bin: clips moved out of history, restorable for 30 days.
+    Trash,
     /// Index into the user's custom filters.
     Custom(usize),
 }
@@ -39,6 +41,7 @@ pub const BUILTIN: &[(Filter, &str)] = &[
     (Filter::Audio, "Audio"),
     (Filter::Compressed, "Compressed"),
     (Filter::Pinned, "Pinned"),
+    (Filter::Trash, "Recycle bin"),
 ];
 
 /// Everything the dropdown shows: built-ins, the user's filters, then the "add one" entry.
@@ -88,6 +91,8 @@ pub fn matches(filter: &Filter, kind: Kind, pinned: bool, paths: &[&str], custom
     match filter {
         Filter::Everything => true,
         Filter::Pinned => pinned,
+        // the bin's own index holds only binned clips
+        Filter::Trash => true,
         Filter::Text => kind == Kind::Text,
         Filter::Image => kind == Kind::Image || (kind == Kind::Files && any_ext(IMAGE)),
         Filter::Document => kind == Kind::Files && any_ext(DOCUMENT),

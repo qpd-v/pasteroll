@@ -16,6 +16,8 @@ use std::time::{Duration, Instant};
 use x11rb::connection::Connection;
 
 const TICK: Duration = Duration::from_millis(25);
+/// While something animates (the expanded viewer opening, closing, going fullscreen).
+const FAST_TICK: Duration = Duration::from_millis(10);
 /// If the loop does not turn for this long while input is grabbed, exit: a stuck grab freezes the
 /// whole desktop, and the server releases every grab when the process goes away.
 const WATCHDOG_MS: u64 = 4_000;
@@ -138,6 +140,7 @@ fn run_inner(db: PathBuf, capture: bool, max_seconds: Option<u64>) -> Result<(),
     );
     controller.set_paste_policy(PastePolicy::new(cfg.warn_multiline_in_terminals, &cfg.terminal_apps));
     controller.set_custom_filters(cfg.custom_filters.clone());
+    controller.set_ocr(Arc::new(crate::dialogs::Tesseract));
 
     unsafe {
         libc::signal(libc::SIGINT, on_signal as *const () as usize);
@@ -211,7 +214,7 @@ fn run_inner(db: PathBuf, capture: bool, max_seconds: Option<u64>) -> Result<(),
             controller.handle(&mut platform, Event::Wake);
         }
         if Instant::now() >= next_tick {
-            next_tick = Instant::now() + TICK;
+            next_tick = Instant::now() + if platform.fast_ticks { FAST_TICK } else { TICK };
             controller.handle(&mut platform, Event::Tick);
             let _ = platform.conn.flush_if_needed();
         }

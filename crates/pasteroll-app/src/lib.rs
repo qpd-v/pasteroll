@@ -14,11 +14,12 @@ pub mod terminals;
 pub mod workers;
 
 pub use controller::Controller;
-pub use event::{Event, Key, MouseEvent, MouseKind};
+pub use event::{Event, Key, MouseEvent, MouseKind, Wheel};
 pub use pastekeys::{PasteKey, PasteKeys};
 pub use terminals::PastePolicy;
 pub use platform::{
-    Captured, ClickPoll, ClipboardSource, OverlayInfo, Payload, Platform, Skip, Target, Waker,
+    Captured, ClickPoll, ClipboardSource, OverlayInfo, Payload, Platform, SaveChoice, Skip, Target, TextRecognizer,
+    Waker,
 };
 pub use workers::{IngestPolicy, Logger, StoreFactory};
 

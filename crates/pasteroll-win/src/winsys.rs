@@ -395,9 +395,35 @@ pub fn die() -> ! {
     }
 }
 
+/// Where a crash is noted (the data folder's `pasteroll.log`), once the app knows it.
+static CRASH_LOG: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+pub fn set_crash_log(path: std::path::PathBuf) {
+    let _ = CRASH_LOG.set(path);
+}
+
+/// Appends one line to the crash log: what failed and where, never data.
+fn note_crash(what: &str) {
+    use std::io::Write;
+    let Some(path) = CRASH_LOG.get() else { return };
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = writeln!(f, "{secs} pid {}: CRASH {what} (version {})", std::process::id(), env!("CARGO_PKG_VERSION"));
+    }
+}
+
 unsafe extern "system" fn on_unhandled_exception(
-    _info: *const windows::Win32::System::Diagnostics::Debug::EXCEPTION_POINTERS,
+    info: *const windows::Win32::System::Diagnostics::Debug::EXCEPTION_POINTERS,
 ) -> i32 {
+    unsafe {
+        let code = info.as_ref().and_then(|i| i.ExceptionRecord.as_ref()).map_or(0, |r| r.ExceptionCode.0 as u32);
+        let addr = info.as_ref().and_then(|i| i.ExceptionRecord.as_ref()).map_or(0, |r| r.ExceptionAddress as usize);
+        let base = windows::Win32::System::LibraryLoader::GetModuleHandleW(None).map_or(0, |h| h.0 as usize);
+        note_crash(&format!("unhandled exception {code:#010x} at offset {:#x}", addr.wrapping_sub(base)));
+    }
     die()
 }
 
@@ -421,6 +447,7 @@ pub fn harden_process() {
         if let Some(l) = info.location() {
             // `let _` on purpose: if stderr is a closed pipe, reporting must not panic again.
             let _ = writeln!(std::io::stderr(), "[pasteroll] internal error at {}:{}", l.file(), l.line());
+            note_crash(&format!("internal error at {}:{}", l.file(), l.line()));
         }
         die();
     }));

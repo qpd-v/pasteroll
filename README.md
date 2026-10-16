@@ -21,7 +21,12 @@ edges and please [report them](https://github.com/qpd-v/pasteroll/issues).
   Compressed, Pinned, or filters you define.
 - **Partial paste**: double-click a word or drag across text in the preview, then Enter pastes
   only the selection.
-- **Pin** clips (Ctrl+P) so they are never removed automatically; delete with Ctrl+Delete.
+- **Expanded viewer**: the card's Expand button (or Ctrl+E) grows a clip into a large window:
+  long text to read and search, pictures to zoom and pan, Save as, Info, and Extract text (OCR, on
+  this computer). F11 for fullscreen, Esc to shrink it back.
+- **Pin** clips (Ctrl+P) so they are never removed automatically.
+- **Recycle bin**: deleted clips can be brought back (Ctrl+Z, or the Recycle bin filter) for 30
+  days; Shift+Delete deletes for good.
 - **Images and files** are kept too, with fast cached previews.
 - **Private by design**: stored encrypted on your computer, nothing is ever sent anywhere
   (see [PRIVACY.md](PRIVACY.md)).
@@ -54,6 +59,9 @@ cd pasteroll-linux-x86_64
 pasteroll run
 ```
 
+Optional: Extract text needs `tesseract-ocr`, and Save as uses `zenity` or `kdialog` (without one,
+clips are saved to the Desktop).
+
 Pasteroll needs an **X11 session**. Ubuntu and Fedora log in to Wayland by default: choose
 "Ubuntu on Xorg" (or "GNOME on Xorg") from the gear icon on the login screen. Under Wayland,
 programs running through XWayland are covered but native Wayland windows are not.
@@ -68,8 +76,24 @@ programs running through XWayland are covered but native Wayland windows are not
 | Tab | choose a filter |
 | Enter, or click the target | paste |
 | double-click / drag in the preview | select part of a clip to paste |
-| Ctrl+P / Ctrl+Delete | pin / delete a clip |
+| Ctrl+P | pin or unpin a clip |
+| Delete / Ctrl+Z | move a clip to the recycle bin / bring it back |
+| Shift+Delete, Shift+click on the bin button | delete for good (asks first) |
+| Ctrl+E, or the card's Expand button | open the expanded viewer |
 | Esc | close |
+
+In the expanded viewer:
+
+| | |
+|---|---|
+| Left / Right | previous / next clip (the carousel keeps its place) |
+| wheel, arrows, Page Up/Down, Home/End | scroll or pan |
+| Ctrl+wheel, + / -, 0, 1 | zoom pictures, fit, real size |
+| Ctrl+F, or just type | find in the clip; Enter or F3 for the next match |
+| Ctrl+C / Enter | copy (the selection, or the whole clip) / paste |
+| Ctrl+S, Ctrl+I | save as, info |
+| F11 | fullscreen |
+| Esc | leave fullscreen, then close the viewer |
 
 Tray icon: pause recording, Settings, open data folder, quit. Settings has the history limits,
 carousel size, programs to ignore and custom filters.
@@ -119,7 +143,8 @@ git clone https://github.com/qpd-v/pasteroll
 cd pasteroll
 cargo build --release -p pasteroll-win      # Windows: target\release\pasteroll.exe
 cargo build --release -p pasteroll-linux    # Linux: target/release/pasteroll
-cargo test --workspace
+cargo test --workspace                       # Windows
+cargo test --workspace --exclude pasteroll-win   # Linux
 ```
 
 Release packages: `scripts/package-windows.ps1` and `scripts/package-linux.sh` (static musl build;

@@ -11,11 +11,13 @@
 //! - capture and image decoding run on worker threads, never here;
 //! - what is pasted is the real text, even where the preview shows hidden characters as tokens.
 
+mod viewer;
+
 use crate::event::{Event, Key, MouseEvent, MouseKind};
 use crate::filters::{self, Filter};
 use crate::search::{self, MatchSource, SearchIndex};
 use crate::pastekeys::PasteKeys;
-use crate::platform::{ClickPoll, ClipboardSource, OverlayInfo, Payload, Platform, Target, Waker};
+use crate::platform::{ClickPoll, ClipboardSource, OverlayInfo, Payload, Platform, Target, TextRecognizer, Waker};
 use crate::terminals::PastePolicy;
 use crate::workers::{IngestPolicy, Logger, PreviewResult, StoreFactory, Workers};
 use pasteroll_core::config::CustomFilter;
@@ -24,6 +26,7 @@ use pasteroll_core::preview::{sanitize, Sanitized};
 use pasteroll_core::store::{Kind, PinResult};
 use pasteroll_core::{session::Moved, Dir, HistorySource, Item, Selection, Session, Snapshot, Step, Store};
 use pasteroll_render::{geometry, Body, Dropdown, Hit, Renderer, RowKind, RowView, ViewModel, HEIGHT, WIDTH};
+use viewer::Viewer;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -33,6 +36,8 @@ use std::time::Duration;
 
 pub const PREVIEW_CHARS: usize = 4096;
 const IDLE_CANCEL_MS: u64 = 60_000;
+/// The expanded viewer is for reading: it closes only after this long without any input.
+const VIEWER_IDLE_MS: u64 = 600_000;
 const CLICK_WINDOW_MS: u64 = 1_000;
 const NOTICE_MS: u64 = 1_500;
 const MAINTAIN_EVERY_MS: u64 = 600_000;
@@ -49,7 +54,8 @@ const PREFETCH_REACH: usize = 3;
 /// The search index covers at most this many of the newest clips.
 const INDEX_MAX_CLIPS: usize = 50_000;
 /// The input hook stops swallowing at 60 s; the overlay closes a little before that so the two
-/// never disagree (typing going to the target while the overlay still looks live).
+/// never disagree (typing going to the target while the overlay still looks live). Only the
+/// expanded viewer extends that time (see `input_keepalive`); closing it starts the 55 s again.
 const SESSION_MAX_MS: u64 = 55_000;
 
 /// Lets the session and the UI thread share one store connection.
@@ -75,10 +81,30 @@ impl HistorySource for SharedStore {
     }
 }
 
-/// Where the carousel's clips come from: the whole history, or the matches of a search.
+/// The recycle bin, for the bin's list of matches: a clip "exists" while it is in the bin.
+#[derive(Clone)]
+struct TrashStore(SharedStore);
+
+impl HistorySource for TrashStore {
+    type Error = pasteroll_core::store::StoreError;
+    fn snapshot(&mut self) -> Result<Option<Snapshot>, Self::Error> {
+        Ok(None) // the list of matches knows its own extent
+    }
+    fn page(&mut self, _: Snapshot, _: Option<(f64, i64)>, _: Dir, _: usize) -> Result<Vec<Item>, Self::Error> {
+        Ok(Vec::new())
+    }
+    fn exists(&mut self, id: i64) -> Result<bool, Self::Error> {
+        self.0 .0.borrow().is_trashed(id)
+    }
+}
+
+/// Where the carousel's clips come from: the whole history, the matches of a search, or the
+/// recycle bin. Cloneable, so the expanded viewer can browse a copy of the carousel's session.
+#[derive(Clone)]
 enum Src {
     All(SharedStore),
     Matches(MatchSource<SharedStore>),
+    Trash(MatchSource<TrashStore>),
 }
 
 impl HistorySource for Src {
@@ -87,6 +113,7 @@ impl HistorySource for Src {
         match self {
             Src::All(s) => s.snapshot(),
             Src::Matches(s) => s.snapshot(),
+            Src::Trash(s) => s.snapshot(),
         }
     }
     fn page(
@@ -99,12 +126,14 @@ impl HistorySource for Src {
         match self {
             Src::All(s) => s.page(snap, after, dir, limit),
             Src::Matches(s) => s.page(snap, after, dir, limit),
+            Src::Trash(s) => s.page(snap, after, dir, limit),
         }
     }
     fn exists(&mut self, id: i64) -> Result<bool, Self::Error> {
         match self {
             Src::All(s) => s.exists(id),
             Src::Matches(s) => s.exists(id),
+            Src::Trash(s) => s.exists(id),
         }
     }
 }
@@ -170,6 +199,10 @@ struct Ui {
     dropdown_open: bool,
     /// A multi-line paste into a terminal was announced; the next Enter goes through.
     warned: bool,
+    /// The card button under the pointer.
+    hover: Option<Hit>,
+    /// Deleting this clip for good was asked for; Enter (or another click) confirms.
+    confirm_delete: Option<i64>,
 }
 
 struct Open {
@@ -189,6 +222,8 @@ struct Open {
     dd_hover: usize,
     /// The search box is being used to type a new custom filter ("Name ext ext").
     adding_filter: bool,
+    /// The clip last moved to the recycle bin in this session (Ctrl+Z brings it back).
+    last_trashed: Option<Item>,
 }
 
 impl Open {
@@ -208,6 +243,10 @@ impl Open {
 
     fn is_all(&self) -> bool {
         self.search_text().trim().is_empty() && self.filter == Filter::Everything
+    }
+
+    fn in_trash(&self) -> bool {
+        self.filter == Filter::Trash
     }
 }
 
@@ -249,6 +288,14 @@ pub struct Controller {
     preview_gen: u64,
     overlay: OverlayInfo,
     dirty: bool,
+    /// The expanded viewer, while it is open (or animating).
+    viewer: Option<Viewer>,
+    /// Where the pointer last was over the viewer (screen px): wheel zoom centres on it.
+    last_pointer: (i32, i32),
+    ocr: Option<Arc<dyn TextRecognizer>>,
+    waker: Arc<dyn Waker>,
+    ocr_tx: std::sync::mpsc::Sender<viewer::OcrDone>,
+    ocr_rx: std::sync::mpsc::Receiver<viewer::OcrDone>,
 }
 
 fn thousands(n: usize) -> String {
@@ -281,6 +328,38 @@ fn utf16_ranges(text: &str, ranges: &[(usize, usize)]) -> Vec<(usize, usize)> {
         .collect()
 }
 
+/// Year, month, day of a day number (days since 1970-01-01), proleptic Gregorian.
+fn civil(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (yoe + era * 400 + i64::from(m <= 2), m, d)
+}
+
+/// "YYYY-MM-DD" of a day number (UTC).
+pub(crate) fn utc_date(day: i64) -> String {
+    let (y, m, d) = civil(day);
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// "YYYY-MM-DD HH:MM" (UTC) of a Unix time; platforms show local time instead.
+pub fn utc_date_time(secs: i64) -> String {
+    let rem = secs.rem_euclid(86_400);
+    format!("{} {:02}:{:02}", utc_date(secs.div_euclid(86_400)), rem / 3_600, rem % 3_600 / 60)
+}
+
+/// Whether a paste went ahead or needs the user's go-ahead first.
+enum PasteCheck {
+    Done,
+    /// A multi-line text into a terminal: this many lines.
+    Warn(usize),
+}
+
 fn file_name(path: &str) -> &str {
     path.rsplit(['\\', '/']).find(|s| !s.is_empty()).unwrap_or(path)
 }
@@ -296,7 +375,8 @@ impl Controller {
         log: Logger,
     ) -> Controller {
         let paused = policy.paused.clone();
-        let workers = Workers::start(factory, waker, source, policy, log);
+        let workers = Workers::start(factory, waker.clone(), source, policy, log);
+        let (ocr_tx, ocr_rx) = std::sync::mpsc::channel();
         Controller {
             store: Rc::new(RefCell::new(store)),
             renderer: Renderer::new(),
@@ -314,9 +394,20 @@ impl Controller {
             last_maintain_ms: None,
             row_cache: HashMap::new(),
             preview_gen: 0,
-            overlay: OverlayInfo { scale: 1.0, size_px: (WIDTH as u32, HEIGHT as u32) },
+            overlay: OverlayInfo::new(1.0, (WIDTH as u32, HEIGHT as u32)),
             dirty: false,
+            viewer: None,
+            last_pointer: (0, 0),
+            ocr: None,
+            waker,
+            ocr_tx,
+            ocr_rx,
         }
+    }
+
+    /// Text recognition for the viewer's Extract text (none: the action says it is unavailable).
+    pub fn set_ocr(&mut self, ocr: Arc<dyn TextRecognizer>) {
+        self.ocr = Some(ocr);
     }
 
     // ------------------------------------------------------------------ queries (tests, platforms)
@@ -425,6 +516,7 @@ impl Controller {
         if !matches!(ev, Event::Tick) {
             p.heartbeat();
         }
+        let viewing = self.viewer.is_some();
         match ev {
             Event::Activate => {
                 self.last_activity_ms = now;
@@ -432,21 +524,28 @@ impl Controller {
             }
             Event::Step(step, gen) => {
                 if self.live(p, gen) {
-                    self.last_activity_ms = now;
-                    if self.open.as_ref().is_some_and(|o| o.ui.click.is_none()) {
+                    self.touch(p, now);
+                    if viewing {
+                        self.viewer_step(p, step == Step::Older, now);
+                    } else if self.open.as_ref().is_some_and(|o| o.ui.click.is_none()) {
                         self.step(p, step == Step::Older);
                     }
                 }
             }
             Event::Key(key, gen) => {
                 if self.live(p, gen) {
-                    self.last_activity_ms = now;
-                    self.key(p, key, now);
+                    self.touch(p, now);
+                    if viewing {
+                        self.viewer_key(p, key, now);
+                    } else {
+                        self.key(p, key, now);
+                    }
                 }
             }
             Event::ClickPaste(gen) => {
-                if self.live(p, gen) {
-                    self.last_activity_ms = now;
+                // the viewer is modal: no paste-at-click while it is open
+                if self.live(p, gen) && !viewing {
+                    self.touch(p, now);
                     if let Some(o) = self.open.as_mut() {
                         if o.ui.click.is_none() {
                             o.ui.click = Some(ClickWait { since_ms: now, first: true });
@@ -454,20 +553,38 @@ impl Controller {
                     }
                 }
             }
-            Event::ClickCancel(gen) => {
+            Event::ClickCancel(gen) | Event::ClickOutside(gen) => {
                 if self.live(p, gen) {
-                    self.cancel(p, "clicked elsewhere");
+                    if viewing {
+                        self.close_viewer(p, now);
+                    } else if matches!(ev, Event::ClickCancel(_)) {
+                        self.cancel(p, "clicked elsewhere");
+                    }
                 }
             }
             Event::Mouse(m) => {
-                if self.open.is_some() {
-                    self.last_activity_ms = now;
+                // the carousel takes no input while the viewer is open
+                if self.open.is_some() && !viewing {
+                    self.touch(p, now);
                     self.mouse(p, m, now);
+                }
+            }
+            Event::ViewerMouse(m) => {
+                if self.open.is_some() && viewing {
+                    self.touch(p, now);
+                    self.viewer_mouse(p, m, now);
+                }
+            }
+            Event::Wheel(w, gen) => {
+                if self.live(p, gen) && viewing {
+                    self.touch(p, now);
+                    self.viewer_wheel(w);
                 }
             }
             Event::Tick => self.tick(p, now),
             Event::Wake => {
                 self.drain_previews();
+                self.drain_ocr(now);
                 self.on_new_clips(p);
             }
         }
@@ -479,6 +596,14 @@ impl Controller {
 
     fn live(&self, p: &dyn Platform, gen: u64) -> bool {
         self.open.is_some() && gen == p.input_generation()
+    }
+
+    /// The user did something: the idle clock starts again (and, in the viewer, the hooks' clock).
+    fn touch(&mut self, p: &mut dyn Platform, now: u64) {
+        self.last_activity_ms = now;
+        if self.viewer.is_some() {
+            p.input_keepalive();
+        }
     }
 
     // ------------------------------------------------------------------ session lifecycle
@@ -525,6 +650,7 @@ impl Controller {
             total: 0,
             dd_hover: 0,
             adding_filter: false,
+            last_trashed: None,
             target,
             ui: Ui {
                 body: BodyState::Message(String::new()),
@@ -536,6 +662,8 @@ impl Controller {
                 click: None,
                 dropdown_open: false,
                 warned: false,
+                hover: None,
+                confirm_delete: None,
             },
         });
         p.input_active(true);
@@ -547,6 +675,7 @@ impl Controller {
     }
 
     fn end_session(&mut self, p: &mut dyn Platform) {
+        self.drop_viewer(p);
         if self.open.take().is_some() {
             p.input_active(false);
             p.overlay_hide();
@@ -586,47 +715,135 @@ impl Controller {
 
     fn toggle_pin(&mut self, p: &mut dyn Platform, now: u64) {
         let Some(id) = self.current_id() else { return };
+        if self.open.as_ref().is_some_and(Open::in_trash) {
+            self.flash("Restore it from the recycle bin first to pin it", now);
+            return;
+        }
+        if let Some(msg) = self.set_pin(p, id, now) {
+            self.flash(&msg, now);
+        }
+    }
+
+    /// Pins or unpins clip `id`. Returns what to tell the user.
+    fn set_pin(&mut self, p: &mut dyn Platform, id: i64, _now: u64) -> Option<String> {
         let pinned = self.store.borrow().info(id).ok().flatten().is_some_and(|i| i.pinned);
         let result = self.store.borrow_mut().set_pinned(id, !pinned);
         let mut now_pinned = pinned;
-        match result {
+        let msg = match result {
             Ok(PinResult::Pinned) => {
                 now_pinned = true;
-                self.flash("Pinned: kept until you unpin it", now)
+                Some("Pinned: kept until you unpin it".to_owned())
             }
             Ok(PinResult::Unpinned) => {
                 now_pinned = false;
-                self.flash("Unpinned", now)
+                Some("Unpinned".to_owned())
             }
             Ok(PinResult::LimitReached) => {
                 let max = self.store.borrow().limits().max_pins;
-                self.flash(&format!("Pin limit reached ({max}). Unpin something first."), now);
+                Some(format!("Pin limit reached ({max}). Unpin something first."))
             }
-            Ok(PinResult::Missing) => self.flash("That clip no longer exists", now),
-            Err(e) => p.log(&format!("could not change the pin: {e}")),
-        }
+            Ok(PinResult::Missing) => Some("That clip no longer exists".to_owned()),
+            Err(e) => {
+                p.log(&format!("could not change the pin: {e}"));
+                None
+            }
+        };
         self.row_cache.remove(&id);
         if let Some(idx) = self.open.as_mut().and_then(|o| o.index.as_mut()) {
             idx.set_pinned(id, now_pinned);
         }
-        // In the Pinned filter, pinning state is membership: the list and the counts must follow.
-        if self.open.as_ref().is_some_and(|o| o.filter == Filter::Pinned) && now_pinned != pinned {
+        // In the Pinned filter, pinning state is membership: the list and the counts must follow
+        // (not under the viewer, which must give the carousel back as it was).
+        if self.open.as_ref().is_some_and(|o| o.filter == Filter::Pinned) && now_pinned != pinned && self.viewer.is_none() {
             self.refresh(p);
         }
         self.dirty = true;
+        msg
     }
 
-    /// Deletes the candidate from history (Delete key) and moves on to the next one.
-    fn delete_current(&mut self, p: &mut dyn Platform) {
+    /// Delete key and the card's bin button: the candidate goes to the recycle bin (in the bin
+    /// itself, deleting is for good and is confirmed first).
+    fn delete_current(&mut self, p: &mut dyn Platform, now: u64) {
         let Some(id) = self.current_id() else { return };
+        if self.open.as_ref().is_some_and(Open::in_trash) {
+            self.ask_delete_forever(id);
+            return;
+        }
+        if self.trash_clip(p, id) {
+            self.step(p, true);
+            if self.open.is_some() {
+                self.flash("Moved to the recycle bin. Ctrl+Z brings it back.", now);
+            }
+        }
+    }
+
+    /// Moves clip `id` from history to the recycle bin. `false` if nothing changed.
+    fn trash_clip(&mut self, p: &mut dyn Platform, id: i64) -> bool {
+        let order = self
+            .open
+            .as_ref()
+            .and_then(|o| o.session.as_ref())
+            .and_then(|s| s.window_items().0.iter().find(|i| i.id == id).map(|i| i.order));
+        let order = order.or_else(|| self.store.borrow_mut().order_of(id).ok().flatten());
+        match self.store.borrow_mut().trash(id, p.now_secs()) {
+            Ok(true) => {}
+            Ok(false) => return false,
+            Err(e) => {
+                p.log(&format!("could not move the clip to the recycle bin: {e}"));
+                return false;
+            }
+        }
+        self.forget_clip(id);
+        if let (Some(o), Some(order)) = (self.open.as_mut(), order) {
+            o.last_trashed = Some(Item { id, order });
+        }
+        true
+    }
+
+    /// Deletes clip `id` for good (from history or the bin). `false` if nothing changed.
+    fn delete_forever(&mut self, p: &mut dyn Platform, id: i64) -> bool {
         match self.store.borrow_mut().delete(id) {
-            Ok(_) => {}
+            Ok(true) => {}
+            Ok(false) => return false,
             Err(e) => {
                 p.log(&format!("could not delete the clip: {e}"));
-                return;
+                return false;
+            }
+        }
+        self.forget_clip(id);
+        if let Some(o) = self.open.as_mut() {
+            if o.last_trashed.as_ref().is_some_and(|i| i.id == id) {
+                o.last_trashed = None;
+            }
+        }
+        true
+    }
+
+    /// Brings clip `id` back from the bin. `false` if nothing changed.
+    fn restore_clip(&mut self, p: &mut dyn Platform, id: i64) -> bool {
+        match self.store.borrow_mut().restore(id) {
+            Ok(true) => {}
+            Ok(false) => return false,
+            Err(e) => {
+                p.log(&format!("could not restore the clip: {e}"));
+                return false;
             }
         }
         self.row_cache.remove(&id);
+        if let Some(o) = self.open.as_mut() {
+            // the index no longer covers history: rebuilt on the next search
+            o.index = None;
+            if o.last_trashed.as_ref().is_some_and(|i| i.id == id) {
+                o.last_trashed = None;
+            }
+        }
+        true
+    }
+
+    /// A clip left the list being shown: drop what is cached about it.
+    fn forget_clip(&mut self, id: i64) {
+        self.row_cache.remove(&id);
+        self.thumbs.retain(|(k, _)| *k != id);
         if let Some(idx) = self.open.as_mut().and_then(|o| o.index.as_mut()) {
             idx.remove(id);
         }
@@ -634,18 +851,100 @@ impl Controller {
             o.matched = o.matched.saturating_sub(1);
             o.total = o.total.saturating_sub(1);
         }
-        self.step(p, true);
+    }
+
+    /// Shift+Delete, Shift+click on the bin button, Delete in the bin: deleting for good is
+    /// confirmed first (Enter, or the same click again).
+    fn ask_delete_forever(&mut self, id: i64) {
+        if let Some(o) = self.open.as_mut() {
+            o.ui.confirm_delete = Some(id);
+        }
+        self.status = Some(Status {
+            text: "Delete this clip permanently? Enter deletes, Esc keeps it.".into(),
+            until_ms: u64::MAX,
+        });
+        self.dirty = true;
+    }
+
+    fn confirm_delete_forever(&mut self, p: &mut dyn Platform, now: u64) {
+        let Some(id) = self.open.as_mut().and_then(|o| o.ui.confirm_delete.take()) else { return };
+        self.status = None;
+        if self.delete_forever(p, id) {
+            if self.current_id() == Some(id) {
+                self.step(p, true);
+            }
+            if self.open.is_some() {
+                self.flash("Deleted permanently", now);
+            }
+        }
+        self.dirty = true;
+    }
+
+    fn withdraw_delete_question(&mut self) {
+        if self.open.as_mut().and_then(|o| o.ui.confirm_delete.take()).is_some() {
+            self.status = None;
+            self.dirty = true;
+        }
+    }
+
+    /// Ctrl+Z / the card's Restore button. In the bin: the candidate goes back to history.
+    /// Elsewhere: the clip last moved to the bin comes back, and the carousel shows it.
+    fn undo_trash(&mut self, p: &mut dyn Platform, now: u64) {
+        if self.open.as_ref().is_some_and(Open::in_trash) {
+            let Some(id) = self.current_id() else { return };
+            if self.restore_clip(p, id) {
+                self.step(p, true);
+                if self.open.is_some() {
+                    self.flash("Restored to history", now);
+                }
+            }
+            return;
+        }
+        let Some(item) = self.open.as_mut().and_then(|o| o.last_trashed.take()) else { return };
+        if self.restore_clip(p, item.id) {
+            self.refresh_at(p, Some(item));
+            self.flash("Restored", now);
+        }
     }
 
     // ------------------------------------------------------------------ search and filters
 
     /// Re-runs the search for the current query and filter and shows the newest match.
     fn refresh(&mut self, p: &mut dyn Platform) {
+        self.refresh_at(p, None);
+    }
+
+    /// As [`Controller::refresh`], landing on `at` when it is in the new list.
+    fn refresh_at(&mut self, p: &mut dyn Platform, at: Option<Item>) {
         // the clip the warning was about may no longer be the candidate
         self.withdraw_warning();
+        self.withdraw_delete_question();
+        let open_src = |src: Src| match &at {
+            Some(item) => Session::open_at(src, item),
+            None => Session::open(src),
+        };
         let Some(open) = self.open.as_mut() else { return };
-        if open.is_all() {
-            let session = Session::open(Src::All(SharedStore(self.store.clone()))).ok().flatten();
+        if open.in_trash() {
+            let rows = self.store.borrow().trash_rows();
+            match rows {
+                Ok(rows) => {
+                    let index = SearchIndex::from_rows(rows);
+                    let items = index.search(open.search_text(), &Filter::Trash, &self.custom_filters);
+                    open.matched = items.len();
+                    open.total = index.len();
+                    let src = Src::Trash(MatchSource::new(items, TrashStore(SharedStore(self.store.clone()))));
+                    open.session = open_src(src).ok().flatten();
+                }
+                Err(e) => {
+                    p.log(&format!("could not read the recycle bin: {e}"));
+                    open.session = None;
+                }
+            }
+            if open.session.is_none() && open.search_text().trim().is_empty() {
+                self.status = Some(Status { text: "The recycle bin is empty.".into(), until_ms: p.now_ms() + NOTICE_MS });
+            }
+        } else if open.is_all() {
+            let session = open_src(Src::All(SharedStore(self.store.clone()))).ok().flatten();
             open.matched = 0;
             open.total = 0;
             open.session = session;
@@ -676,7 +975,7 @@ impl Controller {
             open.matched = items.len();
             open.total = index.len();
             let src = Src::Matches(MatchSource::new(items, SharedStore(self.store.clone())));
-            open.session = match Session::open(src) {
+            open.session = match open_src(src) {
                 Ok(s) => s,
                 Err(e) => {
                     p.log(&format!("search failed: {e}"));
@@ -895,13 +1194,19 @@ impl Controller {
         }
     }
 
-    fn on_preview(&mut self, r: PreviewResult) {
+    fn on_preview(&mut self, mut r: PreviewResult) {
         if self.open.is_none() {
             return;
         }
-        let img = r.image.map(Arc::new);
-        if let Some(img) = &img {
-            self.remember_thumb(r.id, img.clone());
+        let img = r.image.take().map(Arc::new);
+        if let (Some(i), false) = (&img, r.full) {
+            self.remember_thumb(r.id, i.clone());
+        }
+        if self.viewer.is_some() {
+            self.viewer_on_preview(&r, img.clone());
+        }
+        if r.full {
+            return; // only the viewer asks for whole pictures
         }
         if r.prefetch {
             return; // only for the cache
@@ -965,6 +1270,21 @@ impl Controller {
         }
         if key != Key::Enter {
             self.withdraw_warning();
+        }
+        // a pending "delete permanently?": Enter confirms, Esc keeps the clip, anything else
+        // carries on as usual
+        if self.open.as_ref().is_some_and(|o| o.ui.confirm_delete.is_some()) {
+            match key {
+                Key::Enter => {
+                    self.confirm_delete_forever(p, now);
+                    return;
+                }
+                Key::Escape => {
+                    self.withdraw_delete_question();
+                    return;
+                }
+                _ => self.withdraw_delete_question(),
+            }
         }
         let (dropdown, adding) = match self.open.as_ref() {
             Some(o) => (o.ui.dropdown_open, o.adding_filter),
@@ -1042,14 +1362,41 @@ impl Controller {
             // likely meant for the box (Ctrl+A, Delete), so it only acts on an empty box.
             Key::Delete => {
                 if self.open.as_ref().is_some_and(|o| o.query.is_empty() && !o.adding_filter) {
-                    self.delete_current(p);
+                    self.delete_current(p, now);
                 }
             }
             Key::CtrlDelete => {
                 if !adding {
-                    self.delete_current(p);
+                    self.delete_current(p, now);
                 }
             }
+            Key::ShiftDelete => {
+                if let (Some(id), false) = (self.current_id(), adding) {
+                    self.ask_delete_forever(id);
+                }
+            }
+            Key::CtrlZ => {
+                if !adding {
+                    self.undo_trash(p, now);
+                }
+            }
+            Key::CtrlE => {
+                if !adding {
+                    self.open_viewer(p, now);
+                }
+            }
+            // keys for the viewer; the carousel has no use for them
+            Key::Left
+            | Key::Right
+            | Key::Home
+            | Key::End
+            | Key::F3
+            | Key::ShiftF3
+            | Key::F11
+            | Key::CtrlC
+            | Key::CtrlF
+            | Key::CtrlI
+            | Key::CtrlS => {}
             Key::PageUp | Key::PageDown => {
                 let mut vm = self.view_model();
                 let size = self.size_dip();
@@ -1069,8 +1416,25 @@ impl Controller {
     // ------------------------------------------------------------------ mouse on the overlay
 
     fn mouse(&mut self, p: &mut dyn Platform, m: MouseEvent, now: u64) {
-        // Mouse moves over the overlay only matter during a drag; do no work otherwise.
+        if m.kind == MouseKind::Leave {
+            if let Some(o) = self.open.as_mut() {
+                if o.ui.hover.take().is_some() {
+                    self.dirty = true;
+                }
+            }
+            return;
+        }
+        // Outside a drag, a move only lights up the card's buttons: a cheap geometry test.
         if m.kind == MouseKind::Move && !self.open.as_ref().is_some_and(|o| o.ui.dragging) {
+            let mut vm = self.view_model();
+            let hover = pasteroll_render::button_at(&vm, self.size_dip(), self.overlay.scale, m.x, m.y);
+            vm.wipe();
+            if let Some(o) = self.open.as_mut() {
+                if o.ui.hover != hover {
+                    o.ui.hover = hover;
+                    self.dirty = true;
+                }
+            }
             return;
         }
         let mut vm = self.view_model();
@@ -1090,7 +1454,26 @@ impl Controller {
                     self.dropdown_pick(p, i);
                     return;
                 }
+                if !matches!(hit, Hit::Delete) {
+                    self.withdraw_delete_question();
+                }
                 match hit {
+                    Hit::Expand => self.open_viewer(p, now),
+                    Hit::Delete => {
+                        let id = self.current_id();
+                        let pending = self.open.as_ref().and_then(|o| o.ui.confirm_delete);
+                        let forever = p.shift_held() || self.open.as_ref().is_some_and(Open::in_trash);
+                        match (id, pending) {
+                            (Some(id), Some(q)) if q == id => self.confirm_delete_forever(p, now),
+                            (Some(id), _) if forever => self.ask_delete_forever(id),
+                            (Some(_), _) => {
+                                self.withdraw_delete_question();
+                                self.delete_current(p, now);
+                            }
+                            _ => {}
+                        }
+                    }
+                    Hit::Restore => self.undo_trash(p, now),
                     Hit::FilterButton => {
                         if let Some(o) = self.open.as_mut() {
                             o.ui.dropdown_open = !o.ui.dropdown_open;
@@ -1121,6 +1504,7 @@ impl Controller {
                     o.ui.dragging = false;
                 }
             }
+            MouseKind::Leave => {}
         }
     }
 
@@ -1200,20 +1584,38 @@ impl Controller {
         let Some(id) = open.current_id() else {
             return; // nothing matches the search: Enter has nothing to paste
         };
+        let warned = open.ui.warned;
+        let selection = self.selected_text();
+        if let PasteCheck::Warn(lines) = self.paste_item(p, id, selection, warned) {
+            if let Some(o) = self.open.as_mut() {
+                o.ui.warned = true;
+            }
+            // Stays up until the user decides: Enter to paste, anything else to back out.
+            self.status = Some(Status {
+                text: format!("{lines} line(s) into a terminal may run commands. Enter pastes, Esc cancels."),
+                until_ms: u64::MAX,
+            });
+            self.dirty = true;
+        }
+    }
+
+    /// Pastes clip `id` (or `selection`, part of it) into the session's target. A multi-line text
+    /// into a terminal is not pasted until `warned` says the user has been told.
+    fn paste_item(&mut self, p: &mut dyn Platform, id: i64, selection: Option<String>, warned: bool) -> PasteCheck {
+        let Some(open) = self.open.as_ref() else { return PasteCheck::Done };
         let target = open.target.clone();
         if target.desktop {
             self.cancel(p, "Enter does not paste onto the desktop (click it to save an image)");
-            return;
+            return PasteCheck::Done;
         }
         if !p.target_is_current(&target) {
             self.cancel(p, "foreground changed; not pasting");
-            return;
+            return PasteCheck::Done;
         }
         if p.target_privileged(&target) {
             self.cancel(p, "target runs at a higher privilege level; not pasting");
-            return;
+            return PasteCheck::Done;
         }
-        let selection = self.selected_text();
         let (payload, whole) = match selection {
             Some(t) => (Payload::Text(t), false),
             None => {
@@ -1229,7 +1631,7 @@ impl Controller {
                     Some(pl) => (pl, true),
                     None => {
                         self.cancel(p, "clip could not be read");
-                        return;
+                        return PasteCheck::Done;
                     }
                 }
             }
@@ -1237,19 +1639,8 @@ impl Controller {
         let payload = WipeOnDrop(payload);
         let payload = &payload.0;
         if let Payload::Text(t) = payload {
-            let warned = self.open.as_ref().is_some_and(|o| o.ui.warned);
             if !warned && self.paste_policy.needs_warning(&target.exe, &target.class, t) {
-                let lines = t.lines().count().max(1);
-                if let Some(o) = self.open.as_mut() {
-                    o.ui.warned = true;
-                }
-                // Stays up until the user decides: Enter to paste, anything else to back out.
-                self.status = Some(Status {
-                    text: format!("{lines} line(s) into a terminal may run commands. Enter pastes, Esc cancels."),
-                    until_ms: u64::MAX,
-                });
-                self.dirty = true;
-                return;
+                return PasteCheck::Warn(t.lines().count().max(1));
             }
         }
         self.end_session(p);
@@ -1257,26 +1648,31 @@ impl Controller {
         // briefly, then give up rather than send a wrong chord.
         if !p.modifiers_released(Duration::from_millis(300)) {
             p.log("Alt/Win still held; not pasting");
-            return;
+            return PasteCheck::Done;
         }
         // Write the clipboard first (it can take a moment if another process holds it), then
         // re-check the destination as late as possible before the keystroke.
         if let Err(e) = p.write_clipboard(payload) {
             p.log(&format!("could not write clipboard: {e}"));
-            return;
+            return PasteCheck::Done;
         }
         if !p.target_is_current(&target) {
             p.log("foreground changed while preparing the paste; not pasting");
-            return;
+            return PasteCheck::Done;
         }
         let key = self.paste_keys.for_exe(&target.exe);
         if !p.send_paste(key) {
             p.log("paste keystroke was blocked by the system; is the target elevated?");
-            return;
+            return PasteCheck::Done;
         }
         if whole {
             let now = p.now_secs();
-            let _ = self.store.borrow_mut().mark_pasted(id, now, true);
+            let mut st = self.store.borrow_mut();
+            // pasting a clip from the recycle bin brings it back
+            if st.is_trashed(id).unwrap_or(false) {
+                let _ = st.restore(id);
+            }
+            let _ = st.mark_pasted(id, now, true);
         }
         let what = match (payload, whole) {
             (Payload::Text(t), true) => format!("whole clip ({} chars)", t.chars().count()),
@@ -1285,6 +1681,7 @@ impl Controller {
             (Payload::Image(_), _) => "image".to_owned(),
         };
         p.log(&format!("pasted {what} with {key:?}"));
+        PasteCheck::Done
     }
 
     /// Saves the image candidate as a new PNG on the Desktop. Not a clipboard operation: nothing
@@ -1325,6 +1722,9 @@ impl Controller {
 
     fn tick(&mut self, p: &mut dyn Platform, now: u64) {
         p.heartbeat();
+        if self.viewer.is_some() {
+            self.viewer_tick(p, now);
+        }
         if let Some(n) = &self.notice {
             if now >= n.until_ms {
                 self.notice = None;
@@ -1347,13 +1747,22 @@ impl Controller {
             }
         }
         let Some(open) = self.open.as_ref() else { return };
-        if now.saturating_sub(open.opened_ms) > SESSION_MAX_MS {
-            self.cancel(p, "session time limit");
-            return;
-        }
-        if now.saturating_sub(self.last_activity_ms) > IDLE_CANCEL_MS {
-            self.cancel(p, "idle timeout");
-            return;
+        if self.viewer.is_some() {
+            // reading takes time: the viewer has its own, longer limit, and keeps the hooks alive
+            if now.saturating_sub(self.last_activity_ms) > VIEWER_IDLE_MS {
+                self.cancel(p, "idle timeout");
+                return;
+            }
+            p.input_keepalive();
+        } else {
+            if now.saturating_sub(open.opened_ms) > SESSION_MAX_MS {
+                self.cancel(p, "session time limit");
+                return;
+            }
+            if now.saturating_sub(self.last_activity_ms) > IDLE_CANCEL_MS {
+                self.cancel(p, "idle timeout");
+                return;
+            }
         }
         match &open.ui.click {
             None => {
@@ -1470,6 +1879,9 @@ impl Controller {
             None => (Vec::new(), 0),
         };
         vm.active = active;
+        vm.card_buttons = open.session.is_some();
+        vm.in_trash = open.in_trash();
+        vm.hover = open.ui.hover;
         let (selection, scroll, dropdown_open) =
             (open.ui.selection, open.ui.scroll, open.ui.dropdown_open);
         let (query, adding, hover, filter) =
@@ -1516,6 +1928,10 @@ impl Controller {
     }
 
     fn present(&mut self, p: &mut dyn Platform) {
+        if self.viewer.is_some() {
+            self.present_viewer(p);
+            return;
+        }
         if self.open.is_none() && self.notice.is_none() {
             return;
         }

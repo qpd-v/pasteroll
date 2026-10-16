@@ -2,7 +2,8 @@
 //! alive):
 //!
 //! - ingest: after a clipboard change, reads the clipboard and stores the clip;
-//! - preview: decodes and downscales the image candidate.
+//! - preview: decodes and downscales the image candidate, and decodes the full picture for the
+//!   expanded viewer.
 //!
 //! Each worker has its own database connection (WAL mode: readers never block the writer). Results
 //! come back over a channel and the platform's event loop is woken with [`Waker`].
@@ -37,6 +38,8 @@ pub struct PreviewResult {
     pub id: i64,
     pub image: Option<Rgba>,
     pub prefetch: bool,
+    /// The full-size picture (for the expanded viewer), not the preview.
+    pub full: bool,
 }
 
 struct PreviewJob {
@@ -44,6 +47,8 @@ struct PreviewJob {
     generation: u64,
     /// Warming the cache for a neighbour of the candidate: lower priority, nothing is shown for it.
     prefetch: bool,
+    /// Decode the whole picture, not the preview.
+    full: bool,
 }
 
 pub struct Workers {
@@ -59,9 +64,12 @@ pub struct Workers {
 fn queue(
     job: PreviewJob,
     current: &mut Option<PreviewJob>,
+    full: &mut Option<PreviewJob>,
     prefetch: &mut std::collections::VecDeque<PreviewJob>,
 ) {
-    if job.prefetch {
+    if job.full {
+        *full = Some(job);
+    } else if job.prefetch {
         if !prefetch.iter().any(|j| j.id == job.id) {
             prefetch.push_back(job);
         }
@@ -135,25 +143,25 @@ impl Workers {
                     }
                     // Ask who wrote the clipboard before reading it: an excluded program's copy must
                     // never be read, let alone stored.
-                    if let Some(app) = source.source_app() {
-                        if policy.exclude_apps.contains(&app) {
-                            continue;
-                        }
+                    let app = source.source_app();
+                    if app.as_ref().is_some_and(|a| policy.exclude_apps.contains(a)) {
+                        continue;
                     }
+                    let app = app.as_deref();
                     use zeroize::Zeroize;
                     let stored = match source.capture() {
                         Ok(Captured::Text(mut t)) => {
-                            let r = store.add_text(&t, now_secs());
+                            let r = store.add_text_from(&t, now_secs(), app);
                             t.zeroize();
                             r
                         }
                         Ok(Captured::Files(mut f)) => {
-                            let r = store.add_files(&f, now_secs());
+                            let r = store.add_files_from(&f, now_secs(), app);
                             f.iter_mut().for_each(|s| s.zeroize());
                             r
                         }
                         Ok(Captured::Image(mut png)) => {
-                            let r = store.add_image_png(&png, now_secs());
+                            let r = store.add_image_png_from(&png, now_secs(), app);
                             png.zeroize();
                             r
                         }
@@ -184,32 +192,43 @@ impl Workers {
                     }
                 };
                 let mut current: Option<PreviewJob> = None;
+                let mut full: Option<PreviewJob> = None;
                 let mut prefetch: std::collections::VecDeque<PreviewJob> = std::collections::VecDeque::new();
                 loop {
-                    if current.is_none() && prefetch.is_empty() {
+                    if current.is_none() && full.is_none() && prefetch.is_empty() {
                         match prx.recv() {
-                            Ok(j) => queue(j, &mut current, &mut prefetch),
+                            Ok(j) => queue(j, &mut current, &mut full, &mut prefetch),
                             Err(_) => return,
                         }
                     }
                     // Only the newest request for the candidate matters (the user may have
                     // scrolled on); neighbours wait their turn.
                     while let Ok(j) = prx.try_recv() {
-                        queue(j, &mut current, &mut prefetch);
+                        queue(j, &mut current, &mut full, &mut prefetch);
                     }
-                    let job = match current.take() {
+                    let job = match current.take().or_else(|| full.take()) {
                         Some(j) => j,
                         None => match prefetch.pop_front() {
                             Some(j) => j,
                             None => continue,
                         },
                     };
-                    let image = preview_picture(&mut store, job.id);
+                    let image = if job.full {
+                        store.image_png(job.id).ok().flatten().and_then(|png| image::decode_png(&png))
+                    } else {
+                        preview_picture(&mut store, job.id)
+                    };
                     // a neighbour that is not an image (or could not be decoded) has nothing to cache
                     if job.prefetch && image.is_none() {
                         continue;
                     }
-                    let result = PreviewResult { generation: job.generation, id: job.id, image, prefetch: job.prefetch };
+                    let result = PreviewResult {
+                        generation: job.generation,
+                        id: job.id,
+                        image,
+                        prefetch: job.prefetch,
+                        full: job.full,
+                    };
                     if rtx.send(result).is_err() {
                         return; // the app is shutting down
                     }
@@ -229,14 +248,21 @@ impl Workers {
 
     pub fn request_preview(&self, id: i64, generation: u64) {
         if let Some(tx) = &self.preview_tx {
-            let _ = tx.send(PreviewJob { id, generation, prefetch: false });
+            let _ = tx.send(PreviewJob { id, generation, prefetch: false, full: false });
+        }
+    }
+
+    /// Asks for the whole picture of an image clip (the expanded viewer zooms into it).
+    pub fn request_full(&self, id: i64, generation: u64) {
+        if let Some(tx) = &self.preview_tx {
+            let _ = tx.send(PreviewJob { id, generation, prefetch: false, full: true });
         }
     }
 
     /// Asks for the picture of a clip next to the candidate, so it is ready when scrolled to.
     pub fn request_prefetch(&self, id: i64) {
         if let Some(tx) = &self.preview_tx {
-            let _ = tx.send(PreviewJob { id, generation: 0, prefetch: true });
+            let _ = tx.send(PreviewJob { id, generation: 0, prefetch: true, full: false });
         }
     }
 }

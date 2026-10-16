@@ -73,6 +73,40 @@ pub struct OverlayInfo {
     pub scale: f32,
     /// Window size in device pixels (may be smaller than requested on a small display).
     pub size_px: (u32, u32),
+    /// Screen position of the window's top-left corner.
+    pub origin_px: (i32, i32),
+    /// The monitor it is on, `(x, y, w, h)` in screen pixels, and the part of it not taken by
+    /// task bars and panels. The expanded viewer opens on this monitor.
+    pub monitor_px: (i32, i32, u32, u32),
+    pub work_px: (i32, i32, u32, u32),
+}
+
+impl OverlayInfo {
+    /// A plain 1920 x 1080 monitor (until the overlay has been shown, and in tests).
+    pub fn new(scale: f32, size_px: (u32, u32)) -> OverlayInfo {
+        OverlayInfo {
+            scale,
+            size_px,
+            origin_px: (0, 0),
+            monitor_px: (0, 0, 1920, 1080),
+            work_px: (0, 0, 1920, 1040),
+        }
+    }
+}
+
+/// What the user did in a save dialog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SaveChoice {
+    Path(PathBuf),
+    Cancelled,
+    /// This system has no save dialog to show: the controller saves to the Desktop instead.
+    Unavailable,
+}
+
+/// Recognises text in a picture (Windows' built-in OCR, Tesseract on Linux). Runs on a worker
+/// thread; nothing leaves the computer.
+pub trait TextRecognizer: Send + Sync {
+    fn recognize(&self, img: &pasteroll_core::image::Rgba) -> Result<String, String>;
 }
 
 /// Result of a clipboard capture. Not `Debug`-printable with content.
@@ -139,6 +173,43 @@ pub trait Platform {
     fn overlay_present(&mut self, frame: &Frame);
     fn overlay_hide(&mut self);
 
+    // ---------------------------------------------------------------- expanded viewer
+    /// Shows the viewer window (without taking focus, above the overlay) at `rect` = `(x, y, w, h)`
+    /// screen pixels, or moves and resizes it there. `rounded` is false in fullscreen.
+    fn viewer_show(&mut self, rect: (i32, i32, u32, u32), rounded: bool) {
+        let _ = (rect, rounded);
+    }
+    /// Draws a frame in the viewer's current rectangle. Animation frames may be smaller than the
+    /// window (same shape): they are stretched to fill it.
+    fn viewer_present(&mut self, frame: &Frame) {
+        let _ = frame;
+    }
+    fn viewer_hide(&mut self) {}
+    /// The viewer is open: input goes to it (the wheel turns raw, the arrow keys, Home, End, F3 and
+    /// F11 are taken, a click elsewhere closes it instead of pasting there).
+    fn viewer_mode(&mut self, on: bool) {
+        let _ = on;
+    }
+    /// Something is animating: deliver ticks more often (about every 10 ms) until it stops.
+    fn animating(&mut self, on: bool) {
+        let _ = on;
+    }
+    /// Is Shift held right now (Shift+click on the delete button deletes for good)?
+    fn shift_held(&self) -> bool {
+        false
+    }
+    /// Asks where to save a clip. `name` is the suggested file name, `ext` its extension. The
+    /// platform takes care of input and focus around the dialog and gives the keyboard back to
+    /// `target` afterwards.
+    fn save_dialog(&mut self, name: &str, ext: &str, target: &Target) -> SaveChoice {
+        let _ = (name, ext, target);
+        SaveChoice::Unavailable
+    }
+    /// Local date and time of a Unix time, "YYYY-MM-DD HH:MM".
+    fn format_time(&self, secs: i64) -> String {
+        crate::controller::utc_date_time(secs)
+    }
+
     // ---------------------------------------------------------------- input
     /// Start/stop swallowing the wheel and the session keys. Starting a session bumps the
     /// generation returned by [`Platform::input_generation`].
@@ -146,6 +217,8 @@ pub trait Platform {
     fn input_generation(&self) -> u64;
     /// Called every tick: proof the UI thread is alive (the input hooks stop swallowing otherwise).
     fn heartbeat(&mut self);
+    /// The user is still using the session (or reading in the viewer): restart the hooks' time limit.
+    fn input_keepalive(&mut self) {}
     /// Wait for Alt/Win to be released (a held one would turn the paste chord into something else).
     fn modifiers_released(&mut self, timeout: Duration) -> bool;
     /// Check a paste-at-click. `first` is true on the first poll after the click (reset state).

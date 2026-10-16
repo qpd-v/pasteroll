@@ -26,9 +26,11 @@
 
 mod app;
 mod clipboard;
+mod dialogs;
 mod hooks;
 mod input;
 mod keystore;
+mod ocr;
 mod overlay;
 mod platform;
 mod probe;
@@ -123,7 +125,7 @@ fn open(db: &Path) -> Result<(Store, config::Config, winsys::FileLock), String> 
     Ok((store, cfg, lock))
 }
 
-fn seed(db: &Path) -> i32 {
+fn seed(db: &Path, args: &[String]) -> i32 {
     // Synthetic content only; the same kind of clips the demo used.
     let clips = [
         "The quick brown fox jumps over the lazy dog. A second sentence follows it.",
@@ -154,7 +156,54 @@ fn seed(db: &Path) -> i32 {
     if let Some(png) = pasteroll_core::image::encode_png(&img) {
         let _ = s.add_image_png(&png, now);
     }
-    println!("seeded {} clips, 1 file list and 1 image into {}", clips.len(), db.display());
+    // A long text (for scrolling and finding in the expanded viewer) and a picture of text (for
+    // zooming and Extract text): Pasteroll's own carousel, drawn at twice the size.
+    let long: String = (1..=400)
+        .map(|i| format!("Line {i:03}: the expanded viewer scrolls long clips; find any word, such as needle {i}.\n"))
+        .collect();
+    let _ = s.add_text_from(&long, now, Some("notepad.exe"));
+    let mut r = pasteroll_render::Renderer::new();
+    let vm = pasteroll_render::ViewModel {
+        rows: ["Invoice 2026-10 total 1,284.50 EUR", "Meeting notes: ship the spike", "Quarterly report draft"]
+            .iter()
+            .map(|t| pasteroll_render::RowView {
+                kind: pasteroll_render::RowKind::Text,
+                pinned: false,
+                title: (*t).to_owned(),
+                meta: String::new(),
+                highlights: vec![],
+            })
+            .collect(),
+        active: 0,
+        body: pasteroll_render::Body::Text {
+            display: "Invoice 2026-10\nTotal due: 1,284.50 EUR\nPay by 31 October".into(),
+            selection: None,
+            scroll: 0.0,
+        },
+        ..pasteroll_render::ViewModel::default()
+    };
+    let f = r.render(&vm, (pasteroll_render::WIDTH, pasteroll_render::HEIGHT), 2.0);
+    let mut px = f.bgra;
+    for p in px.chunks_exact_mut(4) {
+        p.swap(0, 2);
+    }
+    let shot = pasteroll_core::image::Rgba { width: f.width, height: f.height, pixels: px };
+    if let Some(png) = pasteroll_core::image::encode_png(&shot) {
+        let _ = s.add_image_png_from(&png, now, Some("snippingtool.exe"));
+    }
+    // `--image FILE` (repeatable) adds pictures of your own, for trying the viewer on them
+    let mut extra = 0;
+    for w in args.windows(2).filter(|w| w[0] == "--image") {
+        match std::fs::read(&w[1]) {
+            Ok(png) if pasteroll_core::image::decode_png(&png).is_some() => {
+                if s.add_image_png_from(&png, now, Some("seed")).is_ok() {
+                    extra += 1;
+                }
+            }
+            _ => eprintln!("not a PNG picture: {}", w[1]),
+        }
+    }
+    println!("seeded {} clips, 1 file list and {} images into {}", clips.len() + 1, 2 + extra, db.display());
     0
 }
 
@@ -523,7 +572,7 @@ fn main() {
             }
         }
         "clipboard-selftest" => selftest::run(),
-        "seed" => seed(&db),
+        "seed" => seed(&db, &args),
         "status" => status(&db),
         "config" => config_cmd(&db, &args),
         "exclude" => exclude(&db, &args),
@@ -616,6 +665,8 @@ fn main() {
         // Test support, debug builds only: end this process in a controlled way (tests/crash.rs).
         #[cfg(debug_assertions)]
         "crash-test" => match args.get(1).map(String::as_str) {
+            // the crash note goes where the app writes it: the history folder's pasteroll.log
+            _ if { if let Some(d) = db.parent() { winsys::set_crash_log(d.join("pasteroll.log")) } false } => 0,
             Some("panic") => panic!("simulated failure containing clip text: hunter2"),
             Some("access") => unsafe {
                 std::ptr::write_volatile(std::ptr::null_mut::<u8>(), 1);

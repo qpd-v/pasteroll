@@ -18,6 +18,11 @@
 //! deletions (otherwise old page images, including deleted ciphertext, would linger there), and
 //! `incremental_vacuum` returns freed pages to the OS.
 //!
+//! Recycle bin: [`Store::trash`] only marks a clip (`trashed` = the time it was binned); it then
+//! disappears from history, searches and the limits, and [`Store::restore`] brings it back where it
+//! was. Binned clips are removed for good after [`TRASH_DAYS`] days, or at once by
+//! [`Store::delete`] / [`Store::empty_trash`]. Copying the same content again restores it.
+//!
 //! A database that was not created by this app, or by another schema version, is refused rather
 //! than touched (`application_id` and `user_version`).
 
@@ -32,8 +37,10 @@ use zeroize::Zeroize;
 
 /// "CARS" - marks a database as ours.
 const APPLICATION_ID: i64 = 0x4341_5253;
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 const SECS_PER_DAY: i64 = 86_400;
+/// Clips stay in the recycle bin this long before they are removed for good.
+pub const TRASH_DAYS: i64 = 30;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -132,6 +139,15 @@ pub struct ClipInfo {
     pub files: usize,
     /// First part of the text, or the file paths, or "image WxH".
     pub search: String,
+    /// When the clip was last copied (Unix seconds), 0 when unknown (clips stored by older versions).
+    pub copied_at: i64,
+    /// The program it was copied from, empty when unknown.
+    pub source: String,
+    /// Day numbers (days since 1970) the clip was first stored and last copied or pasted.
+    pub created_day: i64,
+    pub touched_day: i64,
+    /// When it was moved to the recycle bin (Unix seconds); `None` for a clip in history.
+    pub trashed: Option<i64>,
 }
 
 /// One entry for the in-memory search index.
@@ -218,9 +234,11 @@ CREATE TABLE IF NOT EXISTS clips(
     uid         BLOB    NOT NULL,
     body        BLOB    NOT NULL,
     search      BLOB    NOT NULL,
-    hash        BLOB    NOT NULL UNIQUE
+    hash        BLOB    NOT NULL UNIQUE,
+    trashed     INTEGER
 );
 CREATE INDEX IF NOT EXISTS clips_order ON clips(ord DESC, id DESC);
+CREATE INDEX IF NOT EXISTS clips_trashed ON clips(trashed) WHERE trashed IS NOT NULL;
 CREATE INDEX IF NOT EXISTS clips_unpinned_order ON clips(pinned, ord);
 CREATE INDEX IF NOT EXISTS clips_touched ON clips(pinned, touched_day);
 CREATE TABLE IF NOT EXISTS meta(
@@ -270,7 +288,15 @@ impl Store {
             if app_id != APPLICATION_ID {
                 return Err(StoreError::Foreign(app_id));
             }
-            if version != SCHEMA_VERSION {
+            if version == 4 {
+                // 0.1.0-beta.1 histories: add the recycle bin column (every clip stays in history)
+                conn.execute_batch(
+                    "BEGIN IMMEDIATE;
+                     ALTER TABLE clips ADD COLUMN trashed INTEGER;
+                     PRAGMA user_version = 5;
+                     COMMIT;",
+                )?;
+            } else if version != SCHEMA_VERSION {
                 return Err(StoreError::Schema(version));
             }
         } else {
@@ -294,11 +320,13 @@ impl Store {
 
     fn recount(&mut self) -> Result<(), StoreError> {
         let (count, bytes): (i64, i64) = self.conn.query_row(
-            "SELECT COUNT(*), COALESCE(SUM(size), 0) FROM clips WHERE pinned = 0",
+            "SELECT COUNT(*), COALESCE(SUM(size), 0) FROM clips WHERE pinned = 0 AND trashed IS NULL",
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
-        let pins: i64 = self.conn.query_row("SELECT COUNT(*) FROM clips WHERE pinned = 1", [], |r| r.get(0))?;
+        let pins: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM clips WHERE pinned = 1 AND trashed IS NULL", [], |r| r.get(0))?;
         self.count = count;
         self.bytes = bytes;
         self.pins = pins;
@@ -350,22 +378,25 @@ impl Store {
         if !Self::key_current(&tx, &self.vault)? {
             return Err(StoreError::StaleKey);
         }
-        let existing: Option<(i64, i64, i64)> = tx
-            .query_row("SELECT id, size, pinned FROM clips WHERE hash = ?1", [&hash[..]], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        let existing: Option<(i64, i64, i64, Option<i64>)> = tx
+            .query_row("SELECT id, size, pinned, trashed FROM clips WHERE hash = ?1", [&hash[..]], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
             })
             .optional()?;
         let max: Option<f64> = tx.query_row("SELECT MAX(ord) FROM clips", [], |r| r.get(0))?;
         let ord = max.map_or(1.0, |m| m + 1.0);
         let today = day(now);
+        let mut restored = false;
         let (id, delta_count, delta_bytes) = match existing {
-            Some((id, old_size, pinned)) => {
+            Some((id, old_size, pinned, trashed)) => {
+                // copying a binned clip again brings it back (as a fresh, unpinned clip)
+                restored = trashed.is_some();
                 tx.execute(
-                    "UPDATE clips SET ord = ?1, touched_day = ?2, uid = ?3, body = ?4, search = ?5, size = ?6 \
-                     WHERE id = ?7",
+                    "UPDATE clips SET ord = ?1, touched_day = ?2, uid = ?3, body = ?4, search = ?5, size = ?6, \
+                     trashed = NULL, pinned = CASE WHEN trashed IS NULL THEN pinned ELSE 0 END WHERE id = ?7",
                     params![ord, today, &uid[..], body, search, size, id],
                 )?;
-                (id, 0, if pinned == 0 { size - old_size } else { 0 })
+                (id, 0, if pinned == 0 && !restored { size - old_size } else { 0 })
             }
             None => {
                 tx.execute(
@@ -377,19 +408,32 @@ impl Store {
             }
         };
         tx.commit()?;
-        self.count += delta_count;
-        self.bytes += delta_bytes;
+        if restored {
+            self.recount()?;
+        } else {
+            self.count += delta_count;
+            self.bytes += delta_bytes;
+        }
         self.trim_if_over()?;
         Ok(id)
     }
 
     pub fn add_text(&mut self, text: &str, now: i64) -> Result<i64, StoreError> {
-        self.add(Kind::Text, text.as_bytes(), Record::for_text(text), now)
+        self.add_text_from(text, now, None)
+    }
+
+    /// As [`Store::add_text`], remembering the program the copy came from.
+    pub fn add_text_from(&mut self, text: &str, now: i64, source: Option<&str>) -> Result<i64, StoreError> {
+        self.add(Kind::Text, text.as_bytes(), Record::for_text(text).with_origin(now, source), now)
     }
 
     pub fn add_image_png(&mut self, png: &[u8], now: i64) -> Result<i64, StoreError> {
+        self.add_image_png_from(png, now, None)
+    }
+
+    pub fn add_image_png_from(&mut self, png: &[u8], now: i64, source: Option<&str>) -> Result<i64, StoreError> {
         let (w, h) = png_dimensions(png).unwrap_or((0, 0));
-        let id = self.add(Kind::Image, png, Record::for_image(w, h), now)?;
+        let id = self.add(Kind::Image, png, Record::for_image(w, h).with_origin(now, source), now)?;
         // the preview picture is made now, off the scrolling path (a copy that was already stored
         // keeps the one it has)
         if self.thumb(id)?.is_none() {
@@ -429,7 +473,11 @@ impl Store {
     }
 
     pub fn add_files(&mut self, paths: &[String], now: i64) -> Result<i64, StoreError> {
-        self.add(Kind::Files, paths.join("\n").as_bytes(), Record::for_files(paths), now)
+        self.add_files_from(paths, now, None)
+    }
+
+    pub fn add_files_from(&mut self, paths: &[String], now: i64, source: Option<&str>) -> Result<i64, StoreError> {
+        self.add(Kind::Files, paths.join("\n").as_bytes(), Record::for_files(paths).with_origin(now, source), now)
     }
 
     // ------------------------------------------------------------------ limits
@@ -454,7 +502,7 @@ impl Store {
         while self.count > max_c || self.bytes > max_b {
             let batch: Vec<(i64, i64)> = {
                 let mut stmt = self.conn.prepare_cached(
-                    "SELECT id, size FROM clips WHERE pinned = 0 ORDER BY ord ASC, id ASC LIMIT 256",
+                    "SELECT id, size FROM clips WHERE pinned = 0 AND trashed IS NULL ORDER BY ord ASC, id ASC LIMIT 256",
                 )?;
                 let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
                 rows.collect::<Result<_, _>>()?
@@ -491,12 +539,14 @@ impl Store {
         let mut removed = 0usize;
         if let Some(days) = self.limits.max_age_days {
             let cutoff = day(now) - i64::from(days);
-            removed += self
-                .conn
-                .execute("DELETE FROM clips WHERE pinned = 0 AND touched_day < ?1", [cutoff])?;
+            removed += self.conn.execute(
+                "DELETE FROM clips WHERE pinned = 0 AND trashed IS NULL AND touched_day < ?1",
+                [cutoff],
+            )?;
             self.recount()?;
         }
         removed += self.trim_to_limits()?;
+        removed += self.purge_trash(now)?;
         if removed > 0 {
             self.scrub()?;
         }
@@ -508,7 +558,7 @@ impl Store {
         let cutoff = limits.max_age_days.map(|d| day(now) - i64::from(d));
         let mut stmt = self
             .conn
-            .prepare("SELECT size, touched_day FROM clips WHERE pinned = 0 ORDER BY ord ASC, id ASC")?;
+            .prepare("SELECT size, touched_day FROM clips WHERE pinned = 0 AND trashed IS NULL ORDER BY ord ASC, id ASC")?;
         let rows: Vec<(i64, i64)> =
             stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_, _>>()?;
         let mut plan = PrunePlan::default();
@@ -560,15 +610,18 @@ impl Store {
         }))
     }
 
-    /// Row description without opening the body.
+    /// Row description without opening the body (clips in the recycle bin included).
     pub fn info(&self, id: i64) -> Result<Option<ClipInfo>, StoreError> {
-        let row: Option<(i64, i64, Vec<u8>, Vec<u8>)> = self
+        type Row = (i64, i64, Vec<u8>, Vec<u8>, i64, i64, Option<i64>);
+        let row: Option<Row> = self
             .conn
-            .query_row("SELECT kind, pinned, uid, search FROM clips WHERE id = ?1", [id], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-            })
+            .query_row(
+                "SELECT kind, pinned, uid, search, created_day, touched_day, trashed FROM clips WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
+            )
             .optional()?;
-        Ok(row.and_then(|(k, pinned, uid, sealed)| {
+        Ok(row.and_then(|(k, pinned, uid, sealed, created_day, touched_day, trashed)| {
             let rec = self.open_record(&uid, &sealed)?;
             Some(ClipInfo {
                 id,
@@ -579,6 +632,11 @@ impl Store {
                 height: rec.height,
                 files: rec.files as usize,
                 search: rec.text,
+                copied_at: rec.copied_at,
+                source: rec.source,
+                created_day,
+                touched_day,
+                trashed,
             })
         }))
     }
@@ -597,9 +655,18 @@ impl Store {
 
     /// The newest `limit` clips' search records, newest first (bounds the index's memory).
     pub fn search_rows_newest(&self, limit: usize) -> Result<Vec<SearchRow>, StoreError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, ord, kind, pinned, uid, search FROM clips ORDER BY ord DESC, id DESC LIMIT ?1",
-        )?;
+        self.rows_where("trashed IS NULL", limit)
+    }
+
+    /// Search records of the clips in the recycle bin, newest first.
+    pub fn trash_rows(&self) -> Result<Vec<SearchRow>, StoreError> {
+        self.rows_where("trashed IS NOT NULL", i64::MAX as usize)
+    }
+
+    fn rows_where(&self, cond: &str, limit: usize) -> Result<Vec<SearchRow>, StoreError> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT id, ord, kind, pinned, uid, search FROM clips WHERE {cond} ORDER BY ord DESC, id DESC LIMIT ?1"
+        ))?;
         let rows = stmt.query_map([limit.min(i64::MAX as usize) as i64], |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?, r.get::<_, Vec<u8>>(4)?, r.get::<_, Vec<u8>>(5)?))
         })?;
@@ -665,27 +732,102 @@ impl Store {
 
     // ------------------------------------------------------------------ changing
 
+    /// Deletes a clip for good (from history or from the recycle bin).
     pub fn delete(&mut self, id: i64) -> Result<bool, StoreError> {
-        let row: Option<(i64, i64)> = self
+        let row: Option<(i64, i64, Option<i64>)> = self
             .conn
-            .query_row("SELECT size, pinned FROM clips WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .query_row("SELECT size, pinned, trashed FROM clips WHERE id = ?1", [id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
             .optional()?;
-        let Some((size, pinned)) = row else { return Ok(false) };
+        let Some((size, pinned, trashed)) = row else { return Ok(false) };
         self.conn.execute("DELETE FROM clips WHERE id = ?1", [id])?;
-        if pinned != 0 {
-            self.pins -= 1;
-        } else {
-            self.count -= 1;
-            self.bytes -= size;
+        if trashed.is_none() {
+            if pinned != 0 {
+                self.pins -= 1;
+            } else {
+                self.count -= 1;
+                self.bytes -= size;
+            }
         }
         self.scrub()?;
         Ok(true)
     }
 
-    /// Deletes every clip (optionally keeping pinned ones). Returns how many were removed.
+    // ------------------------------------------------------------------ recycle bin
+
+    /// Moves a clip from history to the recycle bin. `false` if it is not in history.
+    pub fn trash(&mut self, id: i64, now: i64) -> Result<bool, StoreError> {
+        let n = self.conn.execute("UPDATE clips SET trashed = ?1 WHERE id = ?2 AND trashed IS NULL", params![now, id])?;
+        if n > 0 {
+            self.recount()?;
+        }
+        Ok(n > 0)
+    }
+
+    /// Brings a clip back from the recycle bin to its old place in history. A pin it had is kept
+    /// unless the pin limit has been reached meanwhile. `false` if it is not in the bin.
+    pub fn restore(&mut self, id: i64) -> Result<bool, StoreError> {
+        let pinned: Option<i64> = self
+            .conn
+            .query_row("SELECT pinned FROM clips WHERE id = ?1 AND trashed IS NOT NULL", [id], |r| r.get(0))
+            .optional()?;
+        let Some(pinned) = pinned else { return Ok(false) };
+        let keep_pin = pinned != 0 && self.pins < i64::from(self.limits.max_pins);
+        self.conn.execute(
+            "UPDATE clips SET trashed = NULL, pinned = ?1 WHERE id = ?2",
+            params![i64::from(keep_pin), id],
+        )?;
+        self.recount()?;
+        self.trim_if_over()?;
+        Ok(true)
+    }
+
+    /// The ordering key of a clip (in history or the bin).
+    pub fn order_of(&self, id: i64) -> Result<Option<f64>, StoreError> {
+        Ok(self.conn.query_row("SELECT ord FROM clips WHERE id = ?1", [id], |r| r.get(0)).optional()?)
+    }
+
+    pub fn is_trashed(&self, id: i64) -> Result<bool, StoreError> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM clips WHERE id = ?1 AND trashed IS NOT NULL)",
+            [id],
+            |r| r.get(0),
+        )?)
+    }
+
+    pub fn trash_count(&self) -> Result<i64, StoreError> {
+        Ok(self.conn.query_row("SELECT COUNT(*) FROM clips WHERE trashed IS NOT NULL", [], |r| r.get(0))?)
+    }
+
+    /// Deletes everything in the recycle bin for good. Returns how many clips were removed.
+    pub fn empty_trash(&mut self) -> Result<usize, StoreError> {
+        let n = self.conn.execute("DELETE FROM clips WHERE trashed IS NOT NULL", [])?;
+        if n > 0 {
+            self.scrub()?;
+        }
+        Ok(n)
+    }
+
+    /// Removes binned clips older than [`TRASH_DAYS`], and the oldest ones beyond the clip limit
+    /// (the bin never holds more than history may).
+    fn purge_trash(&mut self, now: i64) -> Result<usize, StoreError> {
+        let cutoff = now - TRASH_DAYS * SECS_PER_DAY;
+        let mut n = self.conn.execute("DELETE FROM clips WHERE trashed IS NOT NULL AND trashed < ?1", [cutoff])?;
+        let keep = self.limits.max_clips.min(i64::MAX as u64) as i64;
+        n += self.conn.execute(
+            "DELETE FROM clips WHERE id IN (SELECT id FROM clips WHERE trashed IS NOT NULL \
+             ORDER BY trashed DESC, id DESC LIMIT -1 OFFSET ?1)",
+            [keep],
+        )?;
+        Ok(n)
+    }
+
+    /// Deletes every clip (optionally keeping pinned ones), the recycle bin included. Returns how
+    /// many were removed.
     pub fn clear(&mut self, keep_pinned: bool) -> Result<usize, StoreError> {
         let n = if keep_pinned {
-            self.conn.execute("DELETE FROM clips WHERE pinned = 0", [])?
+            self.conn.execute("DELETE FROM clips WHERE pinned = 0 OR trashed IS NOT NULL", [])?
         } else {
             self.conn.execute("DELETE FROM clips", [])?
         };
@@ -699,7 +841,9 @@ impl Store {
     pub fn set_pinned(&mut self, id: i64, want: bool) -> Result<PinResult, StoreError> {
         let row: Option<(i64, i64)> = self
             .conn
-            .query_row("SELECT size, pinned FROM clips WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .query_row("SELECT size, pinned FROM clips WHERE id = ?1 AND trashed IS NULL", [id], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
             .optional()?;
         let Some((size, pinned)) = row else { return Ok(PinResult::Missing) };
         let is = pinned != 0;
@@ -740,9 +884,9 @@ impl Store {
         Ok(())
     }
 
-    /// Exact row count (pinned and unpinned).
+    /// Exact number of clips in history (pinned and unpinned; the recycle bin is not counted).
     pub fn count(&self) -> Result<i64, StoreError> {
-        Ok(self.conn.query_row("SELECT COUNT(*) FROM clips", [], |r| r.get(0))?)
+        Ok(self.conn.query_row("SELECT COUNT(*) FROM clips WHERE trashed IS NULL", [], |r| r.get(0))?)
     }
 
     // ------------------------------------------------------------------ meta, key check, rotation
@@ -1029,9 +1173,10 @@ impl HistorySource for Store {
     type Error = StoreError;
 
     fn snapshot(&mut self) -> Result<Option<Snapshot>, StoreError> {
-        let (max_order, max_id) = self.conn.query_row("SELECT MAX(ord), MAX(id) FROM clips", [], |r| {
-            Ok((r.get::<_, Option<f64>>(0)?, r.get::<_, Option<i64>>(1)?))
-        })?;
+        let (max_order, max_id) =
+            self.conn.query_row("SELECT MAX(ord), MAX(id) FROM clips WHERE trashed IS NULL", [], |r| {
+                Ok((r.get::<_, Option<f64>>(0)?, r.get::<_, Option<i64>>(1)?))
+            })?;
         Ok(max_order.zip(max_id).map(|(max_order, max_id)| Snapshot { max_order, max_id }))
     }
 
@@ -1048,11 +1193,11 @@ impl HistorySource for Store {
         };
         let sql = match after {
             None => format!(
-                "SELECT id, ord FROM clips WHERE ord <= ?1 AND id <= ?2 \
+                "SELECT id, ord FROM clips WHERE ord <= ?1 AND id <= ?2 AND trashed IS NULL \
                  ORDER BY ord {order}, id {order} LIMIT ?3"
             ),
             Some(_) => format!(
-                "SELECT id, ord FROM clips WHERE ord <= ?1 AND id <= ?2 \
+                "SELECT id, ord FROM clips WHERE ord <= ?1 AND id <= ?2 AND trashed IS NULL \
                  AND (ord {cmp} ?4 OR (ord = ?4 AND id {cmp} ?5)) \
                  ORDER BY ord {order}, id {order} LIMIT ?3"
             ),
@@ -1071,7 +1216,7 @@ impl HistorySource for Store {
     fn exists(&mut self, id: i64) -> Result<bool, StoreError> {
         Ok(self
             .conn
-            .query_row("SELECT EXISTS(SELECT 1 FROM clips WHERE id = ?1)", [id], |r| r.get(0))?)
+            .query_row("SELECT EXISTS(SELECT 1 FROM clips WHERE id = ?1 AND trashed IS NULL)", [id], |r| r.get(0))?)
     }
 }
 
@@ -1620,6 +1765,129 @@ mod tests {
         assert!(s.delete(ids[0]).unwrap());
         assert!(!s.exists(ids[0]).unwrap());
         assert!(!s.delete(ids[0]).unwrap());
+    }
+
+    #[test]
+    fn a_binned_clip_leaves_history_and_comes_back_in_place() {
+        let (mut s, ids) = store_with(&["a", "b", "c"]);
+        assert!(s.trash(ids[1], 5_000).unwrap());
+        assert!(!s.trash(ids[1], 5_000).unwrap(), "already in the bin");
+        assert!(!s.exists(ids[1]).unwrap());
+        assert!(s.is_trashed(ids[1]).unwrap());
+        assert_eq!((s.count().unwrap(), s.trash_count().unwrap(), s.stats().clips), (2, 1, 2));
+        assert!(s.search_rows().unwrap().iter().all(|r| r.id != ids[1]));
+        assert_eq!(s.trash_rows().unwrap().iter().map(|r| r.id).collect::<Vec<_>>(), vec![ids[1]]);
+        // its content can still be read (the viewer shows binned clips)
+        assert_eq!(s.text(ids[1]).unwrap().as_deref(), Some("b"));
+        assert_eq!(s.info(ids[1]).unwrap().unwrap().trashed, Some(5_000));
+        let sess = Session::open(&mut s).unwrap().unwrap();
+        let (items, _) = sess.window_items();
+        assert_eq!(items.iter().map(|i| i.id).collect::<Vec<_>>(), vec![ids[2], ids[0]]);
+        drop(sess);
+
+        assert!(s.restore(ids[1]).unwrap());
+        assert!(!s.restore(ids[1]).unwrap(), "not in the bin any more");
+        assert_eq!((s.count().unwrap(), s.trash_count().unwrap(), s.stats().clips), (3, 0, 3));
+        let sess = Session::open(&mut s).unwrap().unwrap();
+        let (items, _) = sess.window_items();
+        assert_eq!(items.iter().map(|i| i.id).collect::<Vec<_>>(), vec![ids[2], ids[1], ids[0]], "same place");
+    }
+
+    #[test]
+    fn a_pin_survives_the_bin_and_a_binned_clip_cannot_be_pinned() {
+        let (mut s, ids) = store_with(&["a", "b"]);
+        assert_eq!(s.set_pinned(ids[0], true).unwrap(), PinResult::Pinned);
+        s.trash(ids[0], 1).unwrap();
+        assert_eq!(s.stats().pins, 0);
+        assert_eq!(s.set_pinned(ids[0], true).unwrap(), PinResult::Missing);
+        s.restore(ids[0]).unwrap();
+        assert!(s.info(ids[0]).unwrap().unwrap().pinned);
+        assert_eq!(s.stats().pins, 1);
+    }
+
+    #[test]
+    fn copying_a_binned_clip_again_restores_it() {
+        let (mut s, ids) = store_with(&["a", "b"]);
+        s.trash(ids[0], 1).unwrap();
+        let again = s.add_text("a", 2_000).unwrap();
+        assert_eq!(again, ids[0]);
+        assert!(!s.is_trashed(ids[0]).unwrap());
+        assert_eq!((s.count().unwrap(), s.stats().clips, s.trash_count().unwrap()), (2, 2, 0));
+        let sess = Session::open(&mut s).unwrap().unwrap();
+        assert_eq!(sess.current().id, ids[0], "it is the newest clip now");
+    }
+
+    #[test]
+    fn the_bin_is_emptied_after_thirty_days_and_on_request() {
+        let (mut s, ids) = store_with(&["a", "b", "c"]);
+        s.set_limits(limits(1_000, 1_000, None)).unwrap();
+        let now = 100 * DAY;
+        s.trash(ids[0], now - 31 * DAY).unwrap();
+        s.trash(ids[1], now - DAY).unwrap();
+        s.maintain(now).unwrap();
+        assert_eq!(s.trash_rows().unwrap().iter().map(|r| r.id).collect::<Vec<_>>(), vec![ids[1]]);
+        assert!(s.info(ids[0]).unwrap().is_none(), "gone for good");
+        assert_eq!(s.empty_trash().unwrap(), 1);
+        assert_eq!((s.trash_count().unwrap(), s.count().unwrap()), (0, 1));
+        // deleting from the bin is permanent and does not disturb the history counters
+        s.trash(ids[2], now).unwrap();
+        assert!(s.delete(ids[2]).unwrap());
+        assert_eq!((s.stats().clips, s.trash_count().unwrap()), (0, 0));
+    }
+
+    #[test]
+    fn the_bin_does_not_count_against_the_limits() {
+        let mut s = mem();
+        s.set_limits(limits(3, 1_000, None)).unwrap();
+        let ids: Vec<i64> = (0..3).map(|i| s.add_text(&format!("clip {i}"), 1_000).unwrap()).collect();
+        s.trash(ids[0], 1_000).unwrap();
+        for i in 3..5 {
+            s.add_text(&format!("clip {i}"), 1_000).unwrap();
+        }
+        s.maintain(1_000).unwrap();
+        assert!(s.is_trashed(ids[0]).unwrap(), "the limit trims history, not the bin");
+        assert_eq!(s.count().unwrap(), 3);
+    }
+
+    #[test]
+    fn clear_empties_the_bin_too() {
+        let (mut s, ids) = store_with(&["a", "b"]);
+        s.set_pinned(ids[1], true).unwrap();
+        s.trash(ids[0], 1).unwrap();
+        s.clear(true).unwrap();
+        assert_eq!((s.count().unwrap(), s.trash_count().unwrap()), (1, 0));
+    }
+
+    #[test]
+    fn info_tells_when_and_where_a_clip_was_copied() {
+        let mut s = mem();
+        let id = s.add_text_from("hello", 3 * DAY + 5, Some("notepad.exe")).unwrap();
+        let i = s.info(id).unwrap().unwrap();
+        assert_eq!((i.copied_at, i.source.as_str(), i.created_day, i.touched_day), (3 * DAY + 5, "notepad.exe", 3, 3));
+        let img = s.add_image_png_from(&png(2, 2, 1), 9, None).unwrap();
+        assert_eq!(s.info(img).unwrap().unwrap().source, "");
+    }
+
+    #[test]
+    fn a_version_4_history_is_upgraded_in_place() {
+        let (dir, db) = temp_db("upgrade4");
+        let id = {
+            let mut s = Store::open(&db, vault()).unwrap();
+            let id = s.add_text("kept", 1_000).unwrap();
+            s.conn
+                .execute_batch(
+                    "DROP INDEX clips_trashed; ALTER TABLE clips DROP COLUMN trashed; PRAGMA user_version = 4;",
+                )
+                .unwrap();
+            id
+        };
+        let mut s = Store::open(&db, vault()).unwrap();
+        let v: i64 = s.conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        assert_eq!(s.text(id).unwrap().as_deref(), Some("kept"));
+        assert!(s.trash(id, 5).unwrap() && s.restore(id).unwrap());
+        drop(s);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

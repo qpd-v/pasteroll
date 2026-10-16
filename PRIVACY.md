@@ -28,8 +28,16 @@ network activity. The only files it writes are in its own data folder
 ## How it is stored
 
 Each clip is encrypted before it is written to the database (see [SECURITY.md](SECURITY.md) for
-the design and its limits). History is removed automatically when it passes the limits you set
-(count, total size, age); pinned clips are kept until you delete them.
+the design and its limits); so are the time it was copied and the program it came from. History is
+removed automatically when it passes the limits you set (count, total size, age); pinned clips are
+kept until you delete them.
+
+A clip you delete goes to the recycle bin first, still encrypted, and is removed for good after 30
+days (or at once with *Delete permanently*, Shift+Delete, or `pasteroll clear`).
+
+*Extract text* in the expanded viewer recognises text on this computer only (Windows' built-in
+recognition, or Tesseract on Linux, which reads the picture through a pipe, not a file). *Save
+as* writes a file only where you choose.
 
 ## Your controls
 

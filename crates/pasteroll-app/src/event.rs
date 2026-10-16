@@ -22,6 +22,23 @@ pub enum Key {
     CtrlA,
     /// A typed character (layout- and shift-aware), for the search box.
     Char(char),
+    // The keys below matter mostly in the expanded viewer. Left, Right, Home, End, F3 and F11 are
+    // only taken from the application underneath while the viewer is open.
+    Left,
+    Right,
+    Home,
+    End,
+    F3,
+    ShiftF3,
+    F11,
+    /// Delete for good (after a confirmation), not to the recycle bin.
+    ShiftDelete,
+    CtrlC,
+    CtrlE,
+    CtrlF,
+    CtrlI,
+    CtrlS,
+    CtrlZ,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +47,18 @@ pub enum MouseKind {
     Up,
     Move,
     DoubleClick,
+    /// The pointer left the window.
+    Leave,
+}
+
+/// A wheel turn while the expanded viewer is open (the carousel turns the wheel into steps).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Wheel {
+    /// In 120ths of a notch; positive is away from the user (up), or right when `horizontal`.
+    pub delta: i32,
+    pub horizontal: bool,
+    pub ctrl: bool,
+    pub shift: bool,
 }
 
 /// A mouse event over the overlay, in device pixels relative to its top-left corner.
@@ -53,7 +82,12 @@ pub enum Event {
     /// Some other click outside the overlay: close without pasting.
     ClickCancel(u64),
     Mouse(MouseEvent),
-    /// ~25-40 ms timer.
+    /// Mouse input over the expanded viewer's window, in its device pixels.
+    ViewerMouse(MouseEvent),
+    Wheel(Wheel, u64),
+    /// A click outside Pasteroll's windows while the viewer is open (it closes the viewer).
+    ClickOutside(u64),
+    /// ~25-40 ms timer (faster while something is animating).
     Tick,
     /// A worker finished something; check for results.
     Wake,

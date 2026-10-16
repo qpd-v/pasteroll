@@ -157,6 +157,7 @@ const HIGHLIGHT_MAX_RANGES: usize = 8;
 
 /// A [`HistorySource`] over a fixed list of matches. Existence is still checked against the real
 /// history, so a clip deleted since the search ran is skipped.
+#[derive(Clone)]
 pub struct MatchSource<S> {
     items: Vec<Item>,
     inner: S,

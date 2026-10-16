@@ -5,7 +5,7 @@ use crate::clipboard::{self, Formats};
 use crate::hooks::Hooks;
 use crate::overlay::OverlayWindow;
 use crate::{input, winsys};
-use pasteroll_app::{ClickPoll, OverlayInfo, PasteKey, Payload, Platform, Target};
+use pasteroll_app::{ClickPoll, OverlayInfo, PasteKey, Payload, Platform, SaveChoice, Target};
 use pasteroll_render::Frame;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -20,6 +20,10 @@ pub struct WinPlatform {
     /// The hidden message window that owns the clipboard and receives our commands.
     pub hwnd: HWND,
     pub overlay: OverlayWindow,
+    /// The expanded viewer's window.
+    pub viewer: OverlayWindow,
+    /// Ticks come every 10 ms (an animation is running) instead of every 25 ms.
+    fast_ticks: bool,
     pub hooks: Option<Hooks>,
     formats: Formats,
     own_pid: u32,
@@ -76,10 +80,12 @@ fn target_of(root: HWND) -> Target {
 }
 
 impl WinPlatform {
-    pub fn new(hwnd: HWND, overlay: OverlayWindow, hooks: Option<Hooks>) -> WinPlatform {
+    pub fn new(hwnd: HWND, overlay: OverlayWindow, viewer: OverlayWindow, hooks: Option<Hooks>) -> WinPlatform {
         WinPlatform {
             hwnd,
             overlay,
+            viewer,
+            fast_ticks: false,
             hooks,
             formats: Formats::register(),
             own_pid: std::process::id(),
@@ -102,6 +108,7 @@ impl Platform for WinPlatform {
         let root = root_of(unsafe { GetForegroundWindow() });
         if root.0.is_null()
             || root == self.overlay.hwnd()
+            || root == self.viewer.hwnd()
             || is_taskbar(root)
             || (pid_of(root) == self.own_pid && !self.allow_own_process)
         {
@@ -141,6 +148,54 @@ impl Platform for WinPlatform {
 
     fn overlay_hide(&mut self) {
         self.overlay.hide();
+    }
+
+    fn viewer_show(&mut self, rect: (i32, i32, u32, u32), rounded: bool) {
+        self.viewer.show_rect(rect, rounded);
+    }
+
+    fn viewer_present(&mut self, frame: &Frame) {
+        self.viewer.present(frame);
+    }
+
+    fn viewer_hide(&mut self) {
+        self.viewer.hide();
+    }
+
+    fn viewer_mode(&mut self, on: bool) {
+        crate::hooks::set_viewer_mode(on);
+    }
+
+    fn animating(&mut self, on: bool) {
+        if on != self.fast_ticks {
+            self.fast_ticks = on;
+            unsafe {
+                // the same timer id: this replaces the period
+                SetTimer(Some(self.hwnd), crate::app::TIMER_TICK, if on { 10 } else { 25 }, None);
+            }
+        }
+    }
+
+    fn shift_held(&self) -> bool {
+        unsafe { (GetAsyncKeyState(VK_SHIFT.0 as i32) as u16 & 0x8000) != 0 }
+    }
+
+    fn save_dialog(&mut self, name: &str, ext: &str, target: &Target) -> SaveChoice {
+        // the dialog needs the keyboard: stop swallowing it while the dialog is up
+        self.input_active(false);
+        // the keyboard goes back to the program the session is for
+        let back = HWND(target.id as usize as *mut _);
+        let choice = crate::dialogs::save_file(self.viewer.hwnd(), name, ext, back);
+        self.input_active(true);
+        choice
+    }
+
+    fn format_time(&self, secs: i64) -> String {
+        crate::dialogs::local_time(secs).unwrap_or_else(|| pasteroll_app::controller::utc_date_time(secs))
+    }
+
+    fn input_keepalive(&mut self) {
+        crate::hooks::keepalive();
     }
 
     fn input_active(&mut self, active: bool) {

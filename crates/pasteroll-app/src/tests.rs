@@ -40,6 +40,17 @@ struct Fake {
     heartbeats: u32,
     /// Custom filters the user has saved through the overlay.
     saved_filters: Vec<pasteroll_core::config::CustomFilter>,
+    /// The expanded viewer's window: where it is (while shown) and what it was given.
+    viewer_rect: Option<(i32, i32, u32, u32)>,
+    viewer_frames: u32,
+    viewer_mode: bool,
+    animating: bool,
+    keepalives: u32,
+    shift: bool,
+    /// What the save dialog answers.
+    save_choice: SaveChoice,
+    /// The last carousel frame presented (to see it dimmed behind the viewer).
+    last_overlay: Option<pasteroll_render::Frame>,
 }
 
 fn target(id: u64, exe: &str) -> Target {
@@ -71,6 +82,14 @@ impl Fake {
             secs: 1_700_000_000,
             heartbeats: 0,
             saved_filters: Vec::new(),
+            viewer_rect: None,
+            viewer_frames: 0,
+            viewer_mode: false,
+            animating: false,
+            keepalives: 0,
+            shift: false,
+            save_choice: SaveChoice::Unavailable,
+            last_overlay: None,
         }
     }
 }
@@ -90,11 +109,46 @@ impl Platform for Fake {
     }
     fn overlay_show(&mut self, _at: (i32, i32)) -> OverlayInfo {
         self.shown += 1;
-        OverlayInfo { scale: 1.0, size_px: (520, 440) }
+        let mut info = OverlayInfo::new(1.0, (520, 440));
+        info.origin_px = (316, 320);
+        info
     }
     fn overlay_present(&mut self, frame: &pasteroll_render::Frame) {
         assert_eq!((frame.width, frame.height), (520, 440));
         self.frames += 1;
+        self.last_overlay = Some(frame.clone());
+    }
+    fn viewer_show(&mut self, rect: (i32, i32, u32, u32), _rounded: bool) {
+        self.viewer_rect = Some(rect);
+    }
+    fn viewer_present(&mut self, frame: &pasteroll_render::Frame) {
+        let r = self.viewer_rect.expect("the viewer is shown before it is drawn");
+        // full size, or a smaller animation frame of the same shape
+        assert!(frame.width <= r.2 && frame.height <= r.3);
+        let (a, b) = (frame.width as f32 / frame.height as f32, r.2 as f32 / r.3 as f32);
+        assert!((a - b).abs() / b < 0.05, "{}x{} in {:?}", frame.width, frame.height, r);
+        if !self.animating {
+            assert_eq!((frame.width, frame.height), (r.2, r.3), "a still frame fills its window");
+        }
+        self.viewer_frames += 1;
+    }
+    fn viewer_hide(&mut self) {
+        self.viewer_rect = None;
+    }
+    fn viewer_mode(&mut self, on: bool) {
+        self.viewer_mode = on;
+    }
+    fn animating(&mut self, on: bool) {
+        self.animating = on;
+    }
+    fn input_keepalive(&mut self) {
+        self.keepalives += 1;
+    }
+    fn shift_held(&self) -> bool {
+        self.shift
+    }
+    fn save_dialog(&mut self, _name: &str, _ext: &str, _target: &Target) -> SaveChoice {
+        self.save_choice.clone()
     }
     fn overlay_hide(&mut self) {
         self.hidden += 1;
@@ -1798,4 +1852,468 @@ fn closing_the_overlay_forgets_the_pictures() {
         "a new session starts without cached pictures (privacy)"
     );
     let _ = g;
+}
+
+// ---------------------------------------------------------------- expanded viewer
+
+impl H {
+    /// Runs the timer until the viewer's animation is over.
+    fn settle(&mut self) {
+        for _ in 0..60 {
+            if !self.c.viewer_animating() {
+                break;
+            }
+            self.p.now_ms += 16;
+            self.send(Event::Tick);
+        }
+        assert!(!self.c.viewer_animating(), "the animation must end");
+    }
+
+    fn expand(&mut self, g: u64) {
+        self.send(Event::Key(Key::CtrlE, g));
+        assert!(self.c.viewer_is_open());
+        self.settle();
+    }
+
+    fn vkey(&mut self, g: u64, k: Key) {
+        self.send(Event::Key(k, g));
+    }
+
+    /// Clicks the centre of a viewer element found with `pick`.
+    fn vclick(&mut self, pick: impl Fn(&pasteroll_render::VGeom, &ViewerView) -> pasteroll_render::Rect) {
+        let view = self.c.viewer_view().unwrap();
+        let size = self.c.viewer_size_dip().unwrap();
+        let g = pasteroll_render::viewer_geometry(&view, size);
+        let r = pick(&g, &view);
+        let at = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+        self.send(Event::ViewerMouse(MouseEvent { kind: MouseKind::Down, x: at.0, y: at.1 }));
+        self.send(Event::ViewerMouse(MouseEvent { kind: MouseKind::Up, x: at.0, y: at.1 }));
+    }
+
+    fn tool(&mut self, t: Tool) {
+        self.vclick(|g, v| g.tools[v.tools.iter().position(|x| x.tool == t).expect("tool shown")]);
+    }
+
+    fn viewer_text(&self) -> String {
+        match self.c.viewer_view().unwrap().body {
+            ViewerBody::Text { display, .. } => display,
+            other => panic!("not text: {other:?}"),
+        }
+    }
+}
+
+use pasteroll_render::{Tool, ViewerBody, ViewerView, VHit};
+
+#[test]
+fn expanding_grows_the_card_into_three_quarters_of_the_monitor() {
+    let mut h = H::new(&[Clip::Text("older"), Clip::Text("hello viewer")]);
+    let g = h.open();
+    h.send(Event::Key(Key::CtrlE, g));
+    assert!(h.c.viewer_is_open() && h.p.viewer_mode && h.p.animating);
+    // the first frame sits exactly on the card
+    let first = h.p.viewer_rect.unwrap();
+    let vm = h.vm();
+    let card = geometry(&vm, (520.0, 440.0), 1.0).rows[vm.active].unwrap();
+    assert_eq!(first, (316 + card.x.round() as i32, 320 + card.y.round() as i32, card.w.round() as u32, card.h.round() as u32));
+    h.p.now_ms += 100;
+    h.send(Event::Tick);
+    let mid = h.p.viewer_rect.unwrap();
+    assert!(mid.2 > first.2 && mid.2 < 1440, "growing: {mid:?}");
+    h.settle();
+    // 75% of 1920 x 1080, centred in the free area (0, 0, 1920, 1040)
+    assert_eq!(h.p.viewer_rect, Some((240, 115, 1440, 810)));
+    assert!(!h.p.animating);
+    assert_eq!(h.viewer_text(), "hello viewer");
+    // the carousel behind it is dimmed
+    let dim = h.p.last_overlay.clone().unwrap();
+    let (r, gch, b) = dim.pixel(5, 5);
+    assert!(u32::from(r) + u32::from(gch) + u32::from(b) < 28 + 28 + 32, "dimmed: {:?}", (r, gch, b));
+}
+
+#[test]
+fn the_card_button_expands_too() {
+    let mut h = H::new(&[Clip::Text("a"), Clip::Text("b")]);
+    h.open();
+    let vm = h.vm();
+    let g = geometry(&vm, (520.0, 440.0), 1.0);
+    let e = g.expand.expect("the active card has an expand button");
+    h.mouse(MouseKind::Move, (e.x + 5.0, e.y + 5.0));
+    assert_eq!(h.vm().hover, Some(Hit::Expand));
+    h.mouse(MouseKind::Down, (e.x + 5.0, e.y + 5.0));
+    assert!(h.c.viewer_is_open());
+}
+
+#[test]
+fn browsing_in_the_viewer_leaves_the_carousel_where_it_was() {
+    let mut h = H::new(&[Clip::Text("a"), Clip::Text("b"), Clip::Text("c"), Clip::Text("d")]);
+    let g = h.open();
+    h.step_older(g); // carousel on "c"
+    let before = h.c.current_id();
+    h.expand(g);
+    h.vkey(g, Key::Right);
+    assert_eq!(h.viewer_text(), "b");
+    h.vkey(g, Key::Right);
+    assert_eq!(h.viewer_text(), "a");
+    h.vkey(g, Key::Left);
+    assert_eq!(h.viewer_text(), "b");
+    // the wheel and the arrow keys never reach the carousel
+    h.send(Event::Step(Step::Older, g));
+    h.send(Event::Wheel(Wheel { delta: -120, horizontal: false, ctrl: false, shift: false }, g));
+    // typing searches inside the clip, not history
+    h.vkey(g, Key::Char('b'));
+    assert_eq!(h.c.query(), Some(""));
+    assert_eq!(h.c.current_id(), before);
+    h.vkey(g, Key::Escape); // closes the find bar
+    h.vkey(g, Key::Escape); // collapses
+    assert!(h.c.viewer_animating());
+    h.settle();
+    assert!(!h.c.viewer_is_open() && !h.p.viewer_mode);
+    assert_eq!(h.p.viewer_rect, None);
+    assert_eq!(h.c.current_id(), before, "back exactly where it was");
+    assert!(h.c.is_open(), "the carousel stays open");
+}
+
+#[test]
+fn the_back_button_returns_to_the_carousel() {
+    let mut h = H::new(&[Clip::Text("a"), Clip::Text("b")]);
+    let g = h.open();
+    let before = h.c.current_id();
+    h.expand(g);
+    h.vkey(g, Key::Right);
+    h.vclick(|g, _| g.back);
+    assert!(h.c.viewer_animating(), "it shrinks back");
+    h.settle();
+    assert!(!h.c.viewer_is_open() && h.c.is_open());
+    assert_eq!(h.c.current_id(), before);
+    // from fullscreen too
+    h.expand(g);
+    h.vkey(g, Key::F11);
+    h.settle();
+    h.vclick(|g, _| g.back);
+    h.settle();
+    assert!(!h.c.viewer_is_open() && h.c.is_open());
+}
+
+#[test]
+fn the_carousel_takes_no_input_under_the_viewer() {
+    let mut h = H::new(&[Clip::Text("a"), Clip::Text("b")]);
+    let g = h.open();
+    h.expand(g);
+    let before = h.c.current_id();
+    let vm = h.vm();
+    let row = geometry(&vm, (520.0, 440.0), 1.0).rows.iter().flatten().next().copied().unwrap();
+    h.mouse(MouseKind::Down, (row.x + 5.0, row.y + 5.0));
+    h.send(Event::ClickPaste(g));
+    assert_eq!(h.c.current_id(), before);
+    assert!(h.p.pastes.is_empty());
+    // a click elsewhere closes the viewer instead of pasting there
+    h.send(Event::ClickOutside(g));
+    h.settle();
+    assert!(!h.c.viewer_is_open() && h.c.is_open());
+}
+
+#[test]
+fn fullscreen_comes_first_and_escape_leaves_it_first() {
+    let mut h = H::new(&[Clip::Text("a")]);
+    let g = h.open();
+    h.expand(g);
+    h.vkey(g, Key::F11);
+    h.settle();
+    assert!(h.c.viewer_fullscreen());
+    assert_eq!(h.p.viewer_rect, Some((0, 0, 1920, 1080)));
+    h.vkey(g, Key::Escape);
+    h.settle();
+    assert!(!h.c.viewer_fullscreen() && h.c.viewer_is_open());
+    assert_eq!(h.p.viewer_rect, Some((240, 115, 1440, 810)));
+    h.vclick(|g, _| g.fullscreen);
+    h.settle();
+    assert!(h.c.viewer_fullscreen());
+    h.vkey(g, Key::Escape);
+    h.settle();
+    h.vkey(g, Key::Escape);
+    h.settle();
+    assert!(!h.c.viewer_is_open());
+}
+
+#[test]
+fn copy_takes_the_whole_clip_or_the_selection() {
+    let mut h = H::new(&[Clip::Text("alpha beta gamma")]);
+    let g = h.open();
+    h.expand(g);
+    h.vkey(g, Key::CtrlC);
+    assert_eq!(h.pasted_texts(), vec!["alpha beta gamma".to_owned()]);
+    assert!(h.p.pastes.is_empty(), "copy does not paste");
+    // a double-click selects a word, Ctrl+C copies just that
+    let view = h.c.viewer_view().unwrap();
+    let size = h.c.viewer_size_dip().unwrap();
+    let gm = pasteroll_render::viewer_geometry(&view, size);
+    let at = (gm.text.x + 3.0, gm.text.y + 8.0);
+    h.send(Event::ViewerMouse(MouseEvent { kind: MouseKind::DoubleClick, x: at.0, y: at.1 }));
+    h.tool(Tool::Copy);
+    assert_eq!(h.pasted_texts().last().unwrap(), "alpha");
+    assert!(h.c.viewer_is_open() && h.c.is_open());
+}
+
+#[test]
+fn paste_from_the_viewer_pastes_the_clip_it_shows() {
+    let mut h = H::new(&[Clip::Text("first"), Clip::Text("second")]);
+    let g = h.open();
+    h.expand(g);
+    h.vkey(g, Key::Right);
+    assert_eq!(h.viewer_text(), "first");
+    h.tool(Tool::Paste);
+    assert_eq!(h.pasted_texts(), vec!["first".to_owned()]);
+    assert_eq!(h.p.pastes.len(), 1);
+    assert!(!h.c.is_open() && !h.c.viewer_is_open() && h.p.viewer_rect.is_none());
+}
+
+#[test]
+fn deleting_in_the_viewer_uses_the_bin_and_ctrl_z_brings_it_back() {
+    let mut h = H::new(&[Clip::Text("a"), Clip::Text("b"), Clip::Text("c")]);
+    let g = h.open();
+    h.expand(g);
+    let c_id = h.c.viewer_clip().unwrap();
+    h.tool(Tool::Delete);
+    assert_eq!(h.viewer_text(), "b", "the next clip is shown");
+    assert!(h.c.store().borrow().is_trashed(c_id).unwrap());
+    h.vkey(g, Key::CtrlZ);
+    assert_eq!(h.c.viewer_clip(), Some(c_id));
+    assert!(!h.c.store().borrow().is_trashed(c_id).unwrap());
+    // Shift+Delete asks first, then deletes for good
+    h.vkey(g, Key::ShiftDelete);
+    assert!(h.c.viewer_view().unwrap().confirm.is_some());
+    h.vkey(g, Key::Escape);
+    assert!(h.c.viewer_view().unwrap().confirm.is_none());
+    assert_eq!(h.c.viewer_clip(), Some(c_id), "Esc keeps it");
+    h.vkey(g, Key::ShiftDelete);
+    h.vclick(|g, _| g.confirm_ok.unwrap());
+    assert!(h.c.store().borrow().info(c_id).unwrap().is_none(), "gone for good");
+    assert_eq!(h.viewer_text(), "b");
+    // the carousel was on the deleted clip: closing lands it on the next one
+    h.vkey(g, Key::Escape);
+    h.settle();
+    assert_eq!(newest_text(&mut h), "b");
+}
+
+#[test]
+fn the_carousel_delete_key_and_button_use_the_bin() {
+    let mut h = H::new(&[Clip::Text("a"), Clip::Text("b"), Clip::Text("c")]);
+    let g = h.open();
+    let c_id = h.c.current_id().unwrap();
+    h.send(Event::Key(Key::Delete, g));
+    assert_eq!(newest_text(&mut h), "b");
+    assert!(h.c.store().borrow().is_trashed(c_id).unwrap());
+    h.send(Event::Key(Key::CtrlZ, g));
+    assert_eq!(h.c.current_id(), Some(c_id), "undo shows it again");
+    // the bin button; Shift+click asks to delete for good, a second Shift+click does it
+    let vm = h.vm();
+    let d = geometry(&vm, (520.0, 440.0), 1.0).delete.unwrap();
+    let at = (d.x + 5.0, d.y + 5.0);
+    h.p.shift = true;
+    h.mouse(MouseKind::Down, at);
+    assert!(h.vm().footer.contains("permanently"));
+    assert!(!h.c.store().borrow().is_trashed(c_id).unwrap());
+    h.mouse(MouseKind::Down, at);
+    assert!(h.c.store().borrow().info(c_id).unwrap().is_none());
+    h.p.shift = false;
+    // a plain click bins it (the list is shorter now: the button has moved)
+    let b_id = h.c.current_id().unwrap();
+    let vm = h.vm();
+    let d = geometry(&vm, (520.0, 440.0), 1.0).delete.unwrap();
+    h.mouse(MouseKind::Down, (d.x + 5.0, d.y + 5.0));
+    assert!(h.c.store().borrow().is_trashed(b_id).unwrap());
+}
+
+#[test]
+fn the_recycle_bin_filter_lists_binned_clips_and_restores_them() {
+    let mut h = H::new(&[Clip::Text("a"), Clip::Text("b"), Clip::Text("c")]);
+    let g = h.open();
+    let c_id = h.c.current_id().unwrap();
+    h.send(Event::Key(Key::Delete, g));
+    let bin = filters::labels(&[]).iter().position(|l| l == "Recycle bin").unwrap();
+    h.send(Event::Key(Key::Tab, g));
+    for _ in 0..bin {
+        h.send(Event::Step(Step::Older, g));
+    }
+    h.send(Event::Key(Key::Down, g));
+    // the dropdown is driven by Up/Down; pick with Enter
+    let _ = bin;
+    h.send(Event::Key(Key::Escape, g));
+    // choose the bin through the controller's public API instead of counting dropdown rows
+    h.send(Event::Key(Key::Tab, g));
+    for _ in 0..bin {
+        h.send(Event::Key(Key::Down, g));
+    }
+    h.send(Event::Key(Key::Enter, g));
+    assert_eq!(h.c.filter_label().as_deref(), Some("Recycle bin"));
+    assert_eq!(h.c.current_id(), Some(c_id));
+    let vm = h.vm();
+    assert!(vm.in_trash);
+    let gm = geometry(&vm, (520.0, 440.0), 1.0);
+    let r = gm.restore.expect("a restore button in the bin");
+    h.mouse(MouseKind::Down, (r.x + 5.0, r.y + 5.0));
+    assert!(!h.c.store().borrow().is_trashed(c_id).unwrap());
+    assert!(h.vm().rows.is_empty(), "the bin is empty again");
+}
+
+#[test]
+fn pictures_zoom_and_fit() {
+    let mut h = H::new(&[Clip::Image]);
+    let g = h.open();
+    h.expand(g);
+    let zoom = |h: &H| match h.c.viewer_view().unwrap().body {
+        ViewerBody::Image { zoom, .. } => zoom,
+        _ => panic!("not a picture"),
+    };
+    assert_eq!(zoom(&h), None, "opens fitted");
+    h.vkey(g, Key::Char('+'));
+    let z1 = zoom(&h).unwrap();
+    h.send(Event::Wheel(Wheel { delta: 120, horizontal: false, ctrl: true, shift: false }, g));
+    assert!(zoom(&h).unwrap() > z1);
+    h.vkey(g, Key::Char('0'));
+    assert_eq!(zoom(&h), None);
+    h.tool(Tool::FitActual);
+    assert_eq!(zoom(&h), Some(1.0), "actual size at scale 1");
+    assert!(h.c.viewer_view().unwrap().zoom_label.contains("100%"));
+    h.vkey(g, Key::CtrlC);
+    assert!(matches!(h.p.clipboard.last(), Some(Payload::Image(_))));
+}
+
+struct FakeOcr;
+impl TextRecognizer for FakeOcr {
+    fn recognize(&self, img: &pasteroll_core::image::Rgba) -> Result<String, String> {
+        Ok(format!("Text in a {}x{} picture", img.width, img.height))
+    }
+}
+
+#[test]
+fn extract_text_shows_the_recognised_text_and_copy_takes_it() {
+    let mut h = H::new(&[Clip::Image]);
+    h.c.set_ocr(Arc::new(FakeOcr));
+    let g = h.open();
+    h.expand(g);
+    h.tool(Tool::More);
+    let view = h.c.viewer_view().unwrap();
+    let i = view.menu.as_ref().unwrap().iter().position(|m| m.label.starts_with("Extract text")).unwrap();
+    h.vclick(|g, _| g.menu_items[i]);
+    for _ in 0..200 {
+        h.send(Event::Wake);
+        if matches!(h.c.viewer_view().unwrap().body, ViewerBody::Text { .. }) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(h.viewer_text(), "Text in a 6x4 picture");
+    h.vkey(g, Key::CtrlC);
+    assert_eq!(h.pasted_texts(), vec!["Text in a 6x4 picture".to_owned()]);
+    h.vkey(g, Key::Escape); // back to the picture
+    assert!(matches!(h.c.viewer_view().unwrap().body, ViewerBody::Image { .. }));
+    assert!(h.c.viewer_is_open());
+}
+
+#[test]
+fn find_counts_matches_and_steps_through_them() {
+    let mut h = H::new(&[Clip::Text("one two one three ONE")]);
+    let g = h.open();
+    h.expand(g);
+    h.vkey(g, Key::CtrlF);
+    for c in "one".chars() {
+        h.vkey(g, Key::Char(c));
+    }
+    let f = h.c.viewer_view().unwrap().find.unwrap();
+    assert_eq!((f.count, f.current), (3, Some(0)));
+    h.vkey(g, Key::Enter);
+    h.vkey(g, Key::F3);
+    assert_eq!(h.c.viewer_view().unwrap().find.unwrap().current, Some(2));
+    h.vkey(g, Key::ShiftF3);
+    assert_eq!(h.c.viewer_view().unwrap().find.unwrap().current, Some(1));
+    assert!(h.p.pastes.is_empty(), "Enter steps through matches while finding");
+}
+
+#[test]
+fn save_as_writes_the_clip_where_the_user_chose_or_to_the_desktop() {
+    let mut h = H::new(&[Clip::Text("save me")]);
+    let dir = h.dir.join("out");
+    std::fs::create_dir_all(&dir).unwrap();
+    h.p.save_choice = SaveChoice::Path(dir.join("chosen.txt"));
+    let g = h.open();
+    h.expand(g);
+    h.vkey(g, Key::CtrlS);
+    assert_eq!(std::fs::read_to_string(dir.join("chosen.txt")).unwrap(), "save me");
+    h.p.save_choice = SaveChoice::Unavailable;
+    h.p.desktop = Some(dir.clone());
+    h.vkey(g, Key::CtrlS);
+    let files: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    assert!(files.iter().any(|f| f.starts_with("Pasteroll text") && f.ends_with(".txt")), "{files:?}");
+    h.p.save_choice = SaveChoice::Cancelled;
+    h.vkey(g, Key::CtrlS);
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
+    assert!(h.c.viewer_is_open());
+}
+
+#[test]
+fn info_tells_what_the_clip_is() {
+    let mut h = H::new(&[Clip::Text("two\nlines")]);
+    let g = h.open();
+    h.expand(g);
+    h.vkey(g, Key::CtrlI);
+    let info = h.c.viewer_view().unwrap().info.unwrap();
+    let get = |k: &str| info.iter().find(|(l, _)| l == k).map(|(_, v)| v.clone());
+    assert_eq!(get("Type").as_deref(), Some("Text"));
+    assert!(get("Size").unwrap().starts_with("9 characters, 2 lines, 2 words"));
+    assert!(get("Copied").is_some() && get("From").is_some());
+}
+
+#[test]
+fn the_viewer_stays_open_while_reading_but_not_forever() {
+    let mut h = H::new(&[Clip::Text("long read")]);
+    let g = h.open();
+    h.expand(g);
+    let before = h.p.keepalives;
+    for _ in 0..10 {
+        h.p.now_ms += 30_000;
+        h.send(Event::Tick);
+    }
+    assert!(h.c.viewer_is_open(), "five minutes of reading");
+    assert!(h.p.keepalives > before, "the hooks are kept alive meanwhile");
+    h.p.now_ms += 400_000;
+    h.send(Event::Tick);
+    assert!(!h.c.is_open() && !h.c.viewer_is_open() && h.p.viewer_rect.is_none());
+    let _ = g;
+}
+
+#[test]
+fn closing_the_viewer_gives_the_carousel_its_full_time_again() {
+    let mut h = H::new(&[Clip::Text("a")]);
+    let g = h.open();
+    h.p.now_ms += 50_000;
+    h.expand(g);
+    h.p.now_ms += 120_000;
+    h.send(Event::Tick);
+    assert!(h.c.viewer_is_open());
+    h.vkey(g, Key::Escape);
+    h.settle();
+    h.send(Event::Tick);
+    assert!(h.c.is_open(), "not closed at once for having been open long");
+    h.p.now_ms += 56_000;
+    h.send(Event::Tick);
+    assert!(!h.c.is_open());
+}
+
+#[test]
+fn hovering_a_toolbar_button_explains_it() {
+    let mut h = H::new(&[Clip::Text("x")]);
+    let g = h.open();
+    h.expand(g);
+    let view = h.c.viewer_view().unwrap();
+    let size = h.c.viewer_size_dip().unwrap();
+    let gm = pasteroll_render::viewer_geometry(&view, size);
+    let i = view.tools.iter().position(|t| t.tool == Tool::Pin).unwrap();
+    let r = gm.tools[i];
+    h.send(Event::ViewerMouse(MouseEvent { kind: MouseKind::Move, x: r.x + 4.0, y: r.y + 4.0 }));
+    assert_eq!(h.c.viewer_view().unwrap().hover, Some(VHit::Tool(Tool::Pin)));
+    h.tool(Tool::Pin);
+    let view = h.c.viewer_view().unwrap();
+    assert!(view.tools.iter().any(|t| t.tool == Tool::Pin && t.on));
+    assert!(view.subtitle.contains("Pinned"));
 }

@@ -6,12 +6,14 @@
 //! arrives re-entrantly is dropped instead of aliased.
 
 use crate::clipboard::{self, WinClipboard};
-use crate::hooks::{Command, Hooks, WM_PASTEROLL, WM_PASTEROLL_CHAR};
+use crate::hooks::{Command, Hooks, WM_PASTEROLL, WM_PASTEROLL_CHAR, WM_PASTEROLL_WHEEL};
 use crate::keystore;
 use crate::overlay::OverlayWindow;
 use crate::platform::WinPlatform;
 use crate::tray::Tray;
-use pasteroll_app::{Controller, Event, IngestPolicy, Key, Logger, PasteKeys, PastePolicy, StoreFactory, Waker};
+use pasteroll_app::{
+    Controller, Event, IngestPolicy, Key, Logger, PasteKeys, PastePolicy, StoreFactory, Waker, Wheel,
+};
 use pasteroll_core::Step;
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -25,7 +27,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 /// A worker finished: deliver `Event::Wake`.
 const WM_WAKE: u32 = WM_APP + 221;
-const TIMER_TICK: usize = 1;
+pub const TIMER_TICK: usize = 1;
 
 pub struct Options {
     pub db: PathBuf,
@@ -99,6 +101,22 @@ fn to_event(cmd: Command, gen: u64) -> Event {
         Command::Tab => Event::Key(Key::Tab, gen),
         Command::ClickPaste => Event::ClickPaste(gen),
         Command::ClickCancel => Event::ClickCancel(gen),
+        Command::ClickOutside => Event::ClickOutside(gen),
+        Command::Left => Event::Key(Key::Left, gen),
+        Command::Right => Event::Key(Key::Right, gen),
+        Command::Home => Event::Key(Key::Home, gen),
+        Command::End => Event::Key(Key::End, gen),
+        Command::F3 => Event::Key(Key::F3, gen),
+        Command::ShiftF3 => Event::Key(Key::ShiftF3, gen),
+        Command::F11 => Event::Key(Key::F11, gen),
+        Command::ShiftDelete => Event::Key(Key::ShiftDelete, gen),
+        Command::CtrlA => Event::Key(Key::CtrlA, gen),
+        Command::CtrlC => Event::Key(Key::CtrlC, gen),
+        Command::CtrlE => Event::Key(Key::CtrlE, gen),
+        Command::CtrlF => Event::Key(Key::CtrlF, gen),
+        Command::CtrlI => Event::Key(Key::CtrlI, gen),
+        Command::CtrlS => Event::Key(Key::CtrlS, gen),
+        Command::CtrlZ => Event::Key(Key::CtrlZ, gen),
     }
 }
 
@@ -109,6 +127,17 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 if let Some(cmd) = Command::from_usize(wparam.0) {
                     dispatch(to_event(cmd, lparam.0 as u64));
                 }
+                LRESULT(0)
+            }
+            WM_PASTEROLL_WHEEL => {
+                let flags = wparam.0 >> 16;
+                let w = Wheel {
+                    delta: i32::from((wparam.0 & 0xFFFF) as u16 as i16),
+                    horizontal: flags & 1 != 0,
+                    ctrl: flags & 2 != 0,
+                    shift: flags & 4 != 0,
+                };
+                dispatch(Event::Wheel(w, lparam.0 as u64));
                 LRESULT(0)
             }
             WM_PASTEROLL_CHAR => {
@@ -170,6 +199,9 @@ pub fn create(opts: &Options) -> Result<HWND> {
         Ok(None) => {}
         Err(e) => eprintln!("[pasteroll] key rotation failed (will be retried at the next start): {e}"),
     }
+    if let Some(dir) = opts.db.parent() {
+        crate::winsys::set_crash_log(dir.join("pasteroll.log"));
+    }
     let history_lock = keystore::lock_history(&opts.db, false).map_err(|e| windows::core::Error::new(E_FAIL, e))?;
     let mut store = keystore::open_store(&opts.db).map_err(|e| windows::core::Error::new(E_FAIL, e))?;
     store.set_limits(limits).map_err(|e| windows::core::Error::new(E_FAIL, e.to_string()))?;
@@ -202,6 +234,8 @@ pub fn create(opts: &Options) -> Result<HWND> {
         )?;
         let overlay = OverlayWindow::create()?;
         overlay.set_size(cfg.size_percent);
+        let viewer = OverlayWindow::create_viewer()?;
+        crate::hooks::set_viewer_window(viewer.hwnd());
         let hooks = if opts.hooks { Some(Hooks::start(hwnd, overlay.hwnd(), opts.accept_injected)?) } else { None };
         if opts.capture {
             clipboard::listen(hwnd)?;
@@ -231,7 +265,8 @@ pub fn create(opts: &Options) -> Result<HWND> {
         );
         controller.set_paste_policy(PastePolicy::new(cfg.warn_multiline_in_terminals, &cfg.terminal_apps));
         controller.set_custom_filters(cfg.custom_filters.clone());
-        let platform = WinPlatform::new(hwnd, overlay, hooks).with_db(&opts.db);
+        controller.set_ocr(Arc::new(crate::ocr::WinOcr));
+        let platform = WinPlatform::new(hwnd, overlay, viewer, hooks).with_db(&opts.db);
         SetTimer(Some(hwnd), TIMER_TICK, 25, None);
         let rt = Runtime {
             controller,

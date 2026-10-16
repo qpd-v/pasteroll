@@ -33,7 +33,12 @@ Pasteroll encrypts the history at rest. It is **not** a defence against malware 
   useless without the passphrase. Keep it, and the passphrase, away from the computer.
 - **Input handling**: global input hooks are used to open the carousel and to swallow keys while
   it is open. Input injected by other programs is ignored by design. While the carousel is open
-  only text keys are consumed.
+  only text keys are consumed. The carousel lets go after at most 60 seconds; the expanded viewer,
+  which is for reading, keeps the keys while it is open and closes after 10 minutes without
+  input. Either way, input is released if the program stops responding (Windows: within half a
+  second; Linux: the program exits after 4 seconds so the X server drops its grabs).
+- **Recycle bin**: a deleted clip stays in the database, encrypted, for 30 days (so it can be
+  restored), unless it is deleted permanently. Permanent deletion overwrites it as before.
 - **No network**: see [PRIVACY.md](PRIVACY.md).
 
 ## Known issues and accepted risks

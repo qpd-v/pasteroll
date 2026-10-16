@@ -71,6 +71,35 @@ impl<S: HistorySource> Session<S> {
         &mut self.src
     }
 
+    /// Opens on `at` (which must still exist within the source), with its neighbours either side
+    /// loaded, as if the user had stepped to it. Falls back to the newest clip when `at` is gone.
+    pub fn open_at(mut src: S, at: &Item) -> Result<Option<Self>, S::Error> {
+        let Some(snap) = src.snapshot()? else {
+            return Ok(None);
+        };
+        let inside = at.order <= snap.max_order && at.id <= snap.max_id;
+        if !inside || !src.exists(at.id)? {
+            return Self::open(src);
+        }
+        let mut items = src.page(snap, Some((at.order, at.id)), Dir::Newer, BATCH_SIZE)?;
+        items.reverse();
+        let cur = items.len();
+        items.push(at.clone());
+        items.extend(src.page(snap, Some((at.order, at.id)), Dir::Older, BATCH_SIZE)?);
+        Ok(Some(Self { src, snap, items, cur, batch: BATCH_SIZE, cache: CACHE_SIZE }))
+    }
+
+    /// Moves to the clip with this id if it is in the in-memory window. `false` otherwise.
+    pub fn select(&mut self, id: i64) -> bool {
+        match self.items.iter().position(|i| i.id == id) {
+            Some(i) => {
+                self.cur = i;
+                true
+            }
+            None => false,
+        }
+    }
+
     pub fn older(&mut self) -> Result<Moved, S::Error> {
         let mut wrapped = false;
         if self.cur + 1 >= self.items.len() && !self.load(Dir::Older)? {
@@ -199,6 +228,21 @@ impl<S: HistorySource> Session<S> {
     }
 }
 
+impl<S: HistorySource + Clone> Session<S> {
+    /// An independent copy at the same place: stepping one does not move the other (the expanded
+    /// viewer browses with a fork while the carousel underneath keeps its place).
+    pub fn fork(&self) -> Self {
+        Self {
+            src: self.src.clone(),
+            snap: self.snap,
+            items: self.items.clone(),
+            cur: self.cur,
+            batch: self.batch,
+            cache: self.cache,
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -292,6 +336,78 @@ pub(crate) mod tests {
     #[test]
     fn empty_history_does_not_open() {
         assert!(Session::open(Fake::default()).unwrap().is_none());
+    }
+
+    #[test]
+    fn open_at_lands_on_the_clip_with_both_neighbours() {
+        let mut f = Fake::with_n(250);
+        let mut s = Session::open_at(&mut f, &Item { id: 120, order: 120.0 }).unwrap().unwrap();
+        assert_eq!(s.current().id, 120);
+        s.older().unwrap();
+        assert_eq!(s.current().id, 119);
+        s.newer().unwrap();
+        s.newer().unwrap();
+        assert_eq!(s.current().id, 121);
+        // the newest end still wraps as usual
+        let mut s = Session::open_at(&mut f, &Item { id: 250, order: 250.0 }).unwrap().unwrap();
+        assert_eq!(s.newer().unwrap(), Moved::Wrapped);
+        assert_eq!(s.current().id, 1);
+    }
+
+    #[test]
+    fn open_at_a_missing_clip_opens_on_the_newest() {
+        let mut f = Fake::with_n(5);
+        f.deleted.insert(3);
+        let s = Session::open_at(&mut f, &Item { id: 3, order: 3.0 }).unwrap().unwrap();
+        assert_eq!(s.current().id, 5);
+    }
+
+    #[test]
+    fn a_fork_steps_on_its_own() {
+        let f = Fake::with_n(5);
+        let snap = Snapshot { max_order: 5.0, max_id: 5 };
+        let items = (1..=5).rev().map(|id| Item { id, order: id as f64 }).collect();
+        let mut a = Session { src: Shared(&f), snap, items, cur: 0, batch: 2, cache: 4 };
+        a.older().unwrap();
+        let mut b = a.fork();
+        b.older().unwrap();
+        b.older().unwrap();
+        assert_eq!((a.current().id, b.current().id), (4, 2));
+        assert!(a.select(2) && a.current().id == 2);
+        assert!(!a.select(99));
+    }
+
+    /// A shareable read-only view of a [`Fake`], so a session over it can be forked.
+    #[derive(Clone, Copy)]
+    struct Shared<'a>(&'a Fake);
+
+    impl HistorySource for Shared<'_> {
+        type Error = Never;
+        fn snapshot(&mut self) -> Result<Option<Snapshot>, Never> {
+            unreachable!()
+        }
+        fn page(&mut self, snap: Snapshot, after: Option<(f64, i64)>, dir: Dir, limit: usize) -> Result<Vec<Item>, Never> {
+            let mut v: Vec<Item> = self
+                .0
+                .clips
+                .iter()
+                .filter(|c| !self.0.deleted.contains(&c.id) && c.order <= snap.max_order && c.id <= snap.max_id)
+                .cloned()
+                .collect();
+            v.sort_by(|a, b| Fake::key(a).partial_cmp(&Fake::key(b)).unwrap());
+            if dir == Dir::Older {
+                v.reverse();
+            }
+            let v = v.into_iter().filter(|c| match (after, dir) {
+                (None, _) => true,
+                (Some(e), Dir::Older) => Fake::key(c) < e,
+                (Some(e), Dir::Newer) => Fake::key(c) > e,
+            });
+            Ok(v.take(limit).collect())
+        }
+        fn exists(&mut self, id: i64) -> Result<bool, Never> {
+            Ok(self.0.clips.iter().any(|c| c.id == id) && !self.0.deleted.contains(&id))
+        }
     }
 
     #[test]

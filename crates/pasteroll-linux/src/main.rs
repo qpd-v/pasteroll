@@ -14,6 +14,8 @@ fn main() {
 #[cfg(unix)]
 mod clipboard;
 #[cfg(unix)]
+mod dialogs;
+#[cfg(unix)]
 mod install;
 #[cfg(unix)]
 mod keys;

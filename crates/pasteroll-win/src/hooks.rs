@@ -16,6 +16,11 @@
 //!   so they cannot fire a shortcut in the window underneath;
 //! - clicks are never swallowed: they reach the target app, which is what places the caret.
 //!
+//! While the expanded viewer is open ("viewer mode") the wheel is posted raw (with Ctrl and Shift)
+//! instead of as steps, Left / Right / Home / End / F3 / F11 are taken too, and a click outside the
+//! viewer posts `ClickOutside` (it closes the viewer) instead of arming a paste-at-click. The viewer
+//! extends the session limit with [`keepalive`] while it is in use.
+//!
 //! Injected events are ignored unless `accept_injected` is set (the self-test uses that).
 
 use pasteroll_core::{Step, WheelAccumulator};
@@ -32,6 +37,9 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 pub const WM_PASTEROLL: u32 = WM_APP + 220;
 /// A typed character for the search box: `wParam` is the UTF-16 unit, `lParam` the generation.
 pub const WM_PASTEROLL_CHAR: u32 = WM_APP + 222;
+/// A wheel turn in viewer mode: `wParam` low 16 bits the delta (i16), bit 16 horizontal, bit 17
+/// Ctrl, bit 18 Shift; `lParam` the generation.
+pub const WM_PASTEROLL_WHEEL: u32 = WM_APP + 223;
 const HOOK_KEYBOARD_ON: u32 = WM_APP + 230;
 const HOOK_KEYBOARD_OFF: u32 = WM_APP + 231;
 
@@ -55,6 +63,23 @@ pub enum Command {
     ClickPaste,
     /// Right/other click outside the overlay: close without pasting.
     ClickCancel,
+    Left,
+    Right,
+    Home,
+    End,
+    F3,
+    ShiftF3,
+    F11,
+    ShiftDelete,
+    CtrlA,
+    CtrlC,
+    CtrlE,
+    CtrlF,
+    CtrlI,
+    CtrlS,
+    CtrlZ,
+    /// A click outside the expanded viewer (viewer mode only).
+    ClickOutside,
 }
 
 impl Command {
@@ -62,7 +87,8 @@ impl Command {
         use Command::*;
         [
             Activate, Older, Newer, Confirm, Cancel, PageUp, PageDown, Delete, CtrlDelete, TogglePin, Backspace,
-            CtrlBackspace, Tab, ClickPaste, ClickCancel,
+            CtrlBackspace, Tab, ClickPaste, ClickCancel, Left, Right, Home, End, F3, ShiftF3, F11, ShiftDelete,
+            CtrlA, CtrlC, CtrlE, CtrlF, CtrlI, CtrlS, CtrlZ, ClickOutside,
         ]
         .into_iter()
             .find(|c| *c as usize == v)
@@ -115,6 +141,32 @@ const HEARTBEAT_MAX_MS: u64 = 500;
 const SESSION_MAX_MS: u64 = 60_000;
 static HEARTBEAT: AtomicU64 = AtomicU64::new(0);
 static SESSION_STARTED: AtomicU64 = AtomicU64::new(0);
+/// The expanded viewer's window, and whether it is open.
+static VIEWER: AtomicIsize = AtomicIsize::new(0);
+static VIEWER_MODE: AtomicBool = AtomicBool::new(false);
+
+/// The viewer window (so clicks on it count as "inside").
+pub fn set_viewer_window(h: HWND) {
+    VIEWER.store(h.0 as isize, SeqCst);
+}
+
+/// The expanded viewer opened or closed.
+pub fn set_viewer_mode(on: bool) {
+    VIEWER_MODE.store(on, SeqCst);
+    S.wheel.lock().map(|mut w| w.reset()).ok();
+}
+
+fn viewer_mode() -> bool {
+    VIEWER_MODE.load(SeqCst)
+}
+
+/// The viewer is in use: the session's time limit starts again. Only the viewer calls this; the
+/// heartbeat still has to prove the UI thread alive.
+pub fn keepalive() {
+    if S.active.load(SeqCst) {
+        SESSION_STARTED.store(tick_count(), SeqCst);
+    }
+}
 
 fn tick_count() -> u64 {
     unsafe { GetTickCount64() }
@@ -301,6 +353,18 @@ fn post(cmd: Command) {
     }
 }
 
+fn post_wheel(delta: i16, horizontal: bool, ctrl: bool, shift: bool) {
+    let flags = usize::from(horizontal) | (usize::from(ctrl) << 1) | (usize::from(shift) << 2);
+    unsafe {
+        let _ = PostMessageW(
+            Some(HWND(S.owner.load(SeqCst) as *mut _)),
+            WM_PASTEROLL_WHEEL,
+            WPARAM(delta as u16 as usize | (flags << 16)),
+            LPARAM(S.generation.load(SeqCst) as isize),
+        );
+    }
+}
+
 fn post_char(unit: u16) {
     unsafe {
         let _ = PostMessageW(
@@ -318,7 +382,14 @@ fn modifiers() -> (bool, bool, bool, bool) {
 }
 
 fn inside_overlay(pt: POINT) -> bool {
-    unsafe { WindowFromPoint(pt).0 as isize == S.overlay.load(SeqCst) }
+    let h = unsafe { WindowFromPoint(pt).0 as isize };
+    h == S.overlay.load(SeqCst) || (h != 0 && h == VIEWER.load(SeqCst))
+}
+
+/// In viewer mode only the viewer itself counts: the dimmed carousel behind it is backdrop.
+fn inside_viewer(pt: POINT) -> bool {
+    let h = unsafe { WindowFromPoint(pt).0 as isize };
+    h != 0 && h == VIEWER.load(SeqCst)
 }
 
 /// Activation: Ctrl+Shift+middle-click (a middle-click chord that is rarely used by programs).
@@ -365,6 +436,9 @@ fn mouse_event(msg: u32, ev: &MSLLHOOKSTRUCT) -> bool {
     if !active {
         return false;
     }
+    if viewer_mode() {
+        return viewer_mouse_event(msg, ev);
+    }
     match msg {
         WM_MOUSEWHEEL => {
             let delta = (ev.mouseData >> 16) as u16 as i16;
@@ -405,6 +479,27 @@ fn mouse_event(msg: u32, ev: &MSLLHOOKSTRUCT) -> bool {
         WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN => {
             if !inside_overlay(ev.pt) {
                 post(Command::ClickCancel);
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+/// Mouse handling while the viewer is open. `true` = swallow.
+fn viewer_mouse_event(msg: u32, ev: &MSLLHOOKSTRUCT) -> bool {
+    match msg {
+        WM_MOUSEWHEEL | WM_MOUSEHWHEEL => {
+            let delta = (ev.mouseData >> 16) as u16 as i16;
+            let (ctrl, shift, _, _) = modifiers();
+            post_wheel(delta, msg == WM_MOUSEHWHEEL, ctrl, shift);
+            true
+        }
+        WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN => {
+            // never a paste-at-click while the viewer is open: a click elsewhere closes it
+            S.down_outside.store(false, SeqCst);
+            if !inside_viewer(ev.pt) {
+                post(Command::ClickOutside);
             }
             false
         }
@@ -484,7 +579,23 @@ fn classify(vk: usize, scan: u32) -> Option<Out> {
         VK_TAB if plain => Some(Command::Tab),
         VK_BACK if plain || (shift && !ctrl && !alt && !win) => Some(Command::Backspace),
         VK_BACK if ctrl_only => Some(Command::CtrlBackspace),
+        VK_DELETE if shift && !ctrl && !alt && !win => Some(Command::ShiftDelete),
         VIRTUAL_KEY(0x50) if ctrl_only => Some(Command::TogglePin), // Ctrl+P
+        VIRTUAL_KEY(0x41) if ctrl_only => Some(Command::CtrlA),
+        VIRTUAL_KEY(0x43) if ctrl_only => Some(Command::CtrlC),
+        VIRTUAL_KEY(0x45) if ctrl_only => Some(Command::CtrlE),
+        VIRTUAL_KEY(0x46) if ctrl_only => Some(Command::CtrlF),
+        VIRTUAL_KEY(0x49) if ctrl_only => Some(Command::CtrlI),
+        VIRTUAL_KEY(0x53) if ctrl_only => Some(Command::CtrlS),
+        VIRTUAL_KEY(0x5A) if ctrl_only => Some(Command::CtrlZ),
+        // the viewer's navigation keys belong to the application underneath otherwise
+        VK_LEFT if plain && viewer_mode() => Some(Command::Left),
+        VK_RIGHT if plain && viewer_mode() => Some(Command::Right),
+        VK_HOME if plain && viewer_mode() => Some(Command::Home),
+        VK_END if plain && viewer_mode() => Some(Command::End),
+        VK_F3 if plain && viewer_mode() => Some(Command::F3),
+        VK_F3 if shift && !ctrl && !alt && !win && viewer_mode() => Some(Command::ShiftF3),
+        VK_F11 if plain && viewer_mode() => Some(Command::F11),
         _ => None,
     };
     if let Some(c) = direct {
@@ -523,9 +634,18 @@ fn key_event(msg: u32, ev: &KBDLLHOOKSTRUCT) -> bool {
         // auto-repeat of a swallowed key: keep going for the keys that should repeat, drain the rest
         if session_live() {
             match classify(vk, ev.scanCode) {
-                Some(Out::Cmd(c @ (Command::Newer | Command::Older | Command::Backspace | Command::CtrlBackspace))) => {
-                    post(c)
-                }
+                Some(Out::Cmd(
+                    c @ (Command::Newer
+                    | Command::Older
+                    | Command::Backspace
+                    | Command::CtrlBackspace
+                    | Command::Left
+                    | Command::Right
+                    | Command::PageUp
+                    | Command::PageDown
+                    | Command::F3
+                    | Command::ShiftF3),
+                )) => post(c),
                 Some(Out::Char(c)) => post_char(c),
                 _ => {}
             }

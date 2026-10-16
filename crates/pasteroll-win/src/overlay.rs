@@ -1,5 +1,6 @@
-//! The overlay window: a topmost, non-activating popup that shows the frame the portable renderer
-//! produced and forwards mouse input to the controller.
+//! The overlay windows: topmost, non-activating popups that show the frames the portable renderer
+//! produced and forward mouse input to the controller. One is the carousel; the other is the
+//! expanded viewer, which the controller moves and resizes every frame while it animates.
 //!
 //! It draws nothing itself. Because it is `WS_EX_NOACTIVATE` and answers `WM_MOUSEACTIVATE` with
 //! `MA_NOACTIVATE`, clicking or dragging in it never moves the foreground or the keyboard focus
@@ -14,13 +15,25 @@ use windows::Win32::Graphics::Dwm::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
-use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
+};
 use windows::Win32::UI::WindowsAndMessaging::*;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Role {
+    #[default]
+    Carousel,
+    Viewer,
+}
 
 #[derive(Default)]
 struct State {
     frame: Option<Frame>,
     scale: f32,
+    role: Role,
+    /// A leave notification has been asked for.
+    tracking: bool,
 }
 
 pub struct OverlayWindow {
@@ -28,6 +41,16 @@ pub struct OverlayWindow {
     state: Box<RefCell<State>>,
     /// The carousel size setting (percent of normal).
     size: std::cell::Cell<u32>,
+    /// The corner style last set (the viewer has square corners in fullscreen).
+    rounded: std::cell::Cell<bool>,
+}
+
+fn set_rounded(hwnd: HWND, rounded: bool) {
+    // Windows 11: DWMWCP_ROUND or DWMWCP_DONOTROUND. Older versions just fail; ignore.
+    let pref = if rounded { 2u32 } else { 1u32 };
+    unsafe {
+        let _ = DwmSetWindowAttribute(hwnd, DWMWINDOWATTRIBUTE(33), &pref as *const _ as *const _, 4);
+    }
 }
 
 fn blit(hwnd: HWND, hdc: HDC, frame: &Frame) {
@@ -70,6 +93,15 @@ fn blit(hwnd: HWND, hdc: HDC, frame: &Frame) {
 
 impl OverlayWindow {
     pub fn create() -> Result<OverlayWindow> {
+        Self::create_as(Role::Carousel)
+    }
+
+    /// The expanded viewer's window.
+    pub fn create_viewer() -> Result<OverlayWindow> {
+        Self::create_as(Role::Viewer)
+    }
+
+    fn create_as(role: Role) -> Result<OverlayWindow> {
         unsafe {
             let hinst = GetModuleHandleW(None)?;
             let class = WNDCLASSW {
@@ -82,7 +114,7 @@ impl OverlayWindow {
             };
             RegisterClassW(&class); // already registered is fine
 
-            let state = Box::new(RefCell::new(State { frame: None, scale: 1.0 }));
+            let state = Box::new(RefCell::new(State { frame: None, scale: 1.0, role, tracking: false }));
             let param = &*state as *const RefCell<State> as *const core::ffi::c_void;
             let hwnd = CreateWindowExW(
                 WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
@@ -99,11 +131,15 @@ impl OverlayWindow {
                 Some(param),
             )?;
             // Windows 11: rounded corners and a quiet border. Older versions just fail; ignore.
-            let round = 2u32; // DWMWCP_ROUND
-            let _ = DwmSetWindowAttribute(hwnd, DWMWINDOWATTRIBUTE(33), &round as *const _ as *const _, 4);
-            let border = (58u32 << 16) | (50u32 << 8) | 50u32; // COLORREF 0x00BBGGRR
+            set_rounded(hwnd, true);
+            // the viewer draws its own accent edge, like the active card it grew from
+            let border = if role == Role::Viewer {
+                0xFFFF_FFFEu32 // DWMWA_COLOR_NONE
+            } else {
+                (58u32 << 16) | (50u32 << 8) | 50u32 // COLORREF 0x00BBGGRR
+            };
             let _ = DwmSetWindowAttribute(hwnd, DWMWINDOWATTRIBUTE(34), &border as *const _ as *const _, 4);
-            Ok(OverlayWindow { hwnd, state, size: std::cell::Cell::new(100) })
+            Ok(OverlayWindow { hwnd, state, size: std::cell::Cell::new(100), rounded: std::cell::Cell::new(true) })
         }
     }
 
@@ -135,7 +171,12 @@ impl OverlayWindow {
             let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
             let mut scale = 1.0f32;
             let (mut x, mut y, mut w, mut h) = (anchor.x, anchor.y, WIDTH as i32, HEIGHT as i32);
+            let mut mon = (0, 0, 1920u32, 1080u32);
+            let mut work = (0, 0, 1920u32, 1040u32);
             if GetMonitorInfoW(monitor, &mut info).as_bool() {
+                let (m, wk) = (info.rcMonitor, info.rcWork);
+                mon = (m.left, m.top, (m.right - m.left).max(1) as u32, (m.bottom - m.top).max(1) as u32);
+                work = (wk.left, wk.top, (wk.right - wk.left).max(1) as u32, (wk.bottom - wk.top).max(1) as u32);
                 let (mut dx, mut dy) = (96u32, 96u32);
                 let _ = GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
                 scale = dx as f32 / 96.0;
@@ -150,7 +191,26 @@ impl OverlayWindow {
                 s.scale = scale;
             }
             let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), x, y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
-            OverlayInfo { scale, size_px: (w as u32, h as u32) }
+            OverlayInfo { scale, size_px: (w as u32, h as u32), origin_px: (x, y), monitor_px: mon, work_px: work }
+        }
+    }
+
+    /// Shows the window at `rect` (screen pixels), on top, without activating it.
+    pub fn show_rect(&self, rect: (i32, i32, u32, u32), rounded: bool) {
+        if self.rounded.get() != rounded {
+            self.rounded.set(rounded);
+            set_rounded(self.hwnd, rounded);
+        }
+        unsafe {
+            let _ = SetWindowPos(
+                self.hwnd,
+                Some(HWND_TOPMOST),
+                rect.0,
+                rect.1,
+                rect.2.max(1) as i32,
+                rect.3.max(1) as i32,
+                SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOCOPYBITS,
+            );
         }
     }
 
@@ -185,6 +245,9 @@ impl Drop for OverlayWindow {
     }
 }
 
+/// Sent once the pointer leaves a window that asked for it with TrackMouseEvent.
+const WM_MOUSELEAVE: u32 = 0x02A3;
+
 fn xy(lparam: LPARAM) -> (f32, f32) {
     (
         (lparam.0 & 0xFFFF) as u16 as i16 as f32,
@@ -200,6 +263,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             return DefWindowProcW(hwnd, msg, wparam, lparam);
         }
         let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const RefCell<State>;
+        let role = if ptr.is_null() { Role::Carousel } else { (*ptr).try_borrow().map(|s| s.role).unwrap_or_default() };
+        let send = |kind: MouseKind, x: f32, y: f32| {
+            let m = MouseEvent { kind, x, y };
+            crate::app::dispatch(match role {
+                Role::Carousel => Event::Mouse(m),
+                Role::Viewer => Event::ViewerMouse(m),
+            });
+        };
         match msg {
             // The point of the whole design: a click here never takes activation or focus.
             WM_MOUSEACTIVATE => return LRESULT(MA_NOACTIVATE as isize),
@@ -221,18 +292,41 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 SetCapture(hwnd);
                 let (x, y) = xy(lparam);
                 let kind = if msg == WM_LBUTTONDBLCLK { MouseKind::DoubleClick } else { MouseKind::Down };
-                crate::app::dispatch(Event::Mouse(MouseEvent { kind, x, y }));
+                send(kind, x, y);
                 return LRESULT(0);
             }
             WM_MOUSEMOVE => {
+                // ask once for a WM_MOUSELEAVE, so hover highlights go out when the pointer does
+                if !ptr.is_null() {
+                    if let Ok(mut s) = (*ptr).try_borrow_mut() {
+                        if !s.tracking {
+                            let mut tme = TRACKMOUSEEVENT {
+                                cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
+                                dwFlags: TME_LEAVE,
+                                hwndTrack: hwnd,
+                                dwHoverTime: 0,
+                            };
+                            s.tracking = TrackMouseEvent(&mut tme).is_ok();
+                        }
+                    }
+                }
                 let (x, y) = xy(lparam);
-                crate::app::dispatch(Event::Mouse(MouseEvent { kind: MouseKind::Move, x, y }));
+                send(MouseKind::Move, x, y);
+                return LRESULT(0);
+            }
+            WM_MOUSELEAVE => {
+                if !ptr.is_null() {
+                    if let Ok(mut s) = (*ptr).try_borrow_mut() {
+                        s.tracking = false;
+                    }
+                }
+                send(MouseKind::Leave, 0.0, 0.0);
                 return LRESULT(0);
             }
             WM_LBUTTONUP => {
                 let (x, y) = xy(lparam);
                 let _ = ReleaseCapture();
-                crate::app::dispatch(Event::Mouse(MouseEvent { kind: MouseKind::Up, x, y }));
+                send(MouseKind::Up, x, y);
                 return LRESULT(0);
             }
             _ => {}
