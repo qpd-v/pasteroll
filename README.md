@@ -9,10 +9,13 @@ edges and please [report them](https://github.com/qpd-v/pasteroll/issues).
 
 | | Windows 10 / 11 | Linux (X11) |
 |---|---|---|
-| Download | `pasteroll-0.1.0-beta.2-windows-x64-setup.exe` or `pasteroll-0.1.0-beta.2-windows-x64-portable.zip` | `pasteroll-0.1.0-beta.2-linux-x86_64.tar.gz` or `pasteroll_0.1.0-beta.2_amd64.deb` |
+| Download | [Setup EXE](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.2/pasteroll-0.1.0-beta.2-windows-x64-setup.exe) · [Portable ZIP](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.2/pasteroll-0.1.0-beta.2-windows-x64-portable.zip) | [Static archive](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.2/pasteroll-0.1.0-beta.2-linux-x86_64.tar.gz) · [Debian/Ubuntu .deb](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.2/pasteroll_0.1.0-beta.2_amd64.deb) |
 | Tray icon | yes | StatusNotifier (KDE, GNOME with AppIndicator, Ubuntu) or XEmbed |
 | Wayland | n/a | not supported; use an X11 session (see below) |
 | macOS | not available | |
+
+[Release notes and testing status](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.2) ·
+[SHA256SUMS](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.2/SHA256SUMS)
 
 ## Features
 

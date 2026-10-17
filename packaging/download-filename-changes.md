@@ -2,8 +2,9 @@
 
 Line numbers below are the original locations inspected during release preparation. The README
 replacements have now been applied under the user's instruction to finish the work unattended.
-The website remains read only under the earlier explicit restriction; apply its listed changes
-separately before announcing the release.
+The user approved release and download publication on 2026-10-17. The beta.2 GitHub prerelease
+is public. The website replacements below link directly to its setup, portable, archive and
+.deb artifacts. Feature videos and GIFs will be added separately after approval.
 
 ## README.md in this repository - applied
 
