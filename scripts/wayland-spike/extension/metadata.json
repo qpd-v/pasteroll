@@ -1,0 +1,7 @@
+{
+  "uuid": "wayland-spike@pasteroll.com",
+  "name": "Pasteroll isolated Wayland experiment",
+  "description": "Disposable phase-one test; not the Pasteroll application or a production extension.",
+  "shell-version": ["46"],
+  "session-modes": ["user"]
+}
