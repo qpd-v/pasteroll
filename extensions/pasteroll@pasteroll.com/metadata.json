@@ -1,0 +1,8 @@
+{
+  "uuid": "pasteroll@pasteroll.com",
+  "name": "Pasteroll GNOME companion (development)",
+  "description": "Local clipboard and overlay bridge. Development foundations; mouse activation is unavailable.",
+  "shell-version": ["46"],
+  "session-modes": ["user"],
+  "url": "https://github.com/qpd-v/pasteroll"
+}

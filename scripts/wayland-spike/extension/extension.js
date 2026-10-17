@@ -46,8 +46,10 @@ export default class WaylandSpike extends Extension {
             });
         });
         this._inputId = Clutter.event_add_filter(null, (event, _actor) => this._input(event));
-        this._accelerator = global.display.grab_accelerator('<Control><Shift>space', Meta.KeyBindingFlags.NONE);
-        Main.wm.allowKeybinding(Meta.external_binding_name_for_action(this._accelerator), Shell.ActionMode.NORMAL);
+        this._accelerator = GLib.getenv('PASTEROLL_PHASE2') === '1' ? 0 :
+            global.display.grab_accelerator('<Control><Shift>space', Meta.KeyBindingFlags.NONE);
+        if (this._accelerator)
+            Main.wm.allowKeybinding(Meta.external_binding_name_for_action(this._accelerator), Shell.ActionMode.NORMAL);
         this._acceleratorId = global.display.connect('accelerator-activated', (_, action) => {
             if (action === this._accelerator && !this._overlay) {
                 this._event('diagnostic-keyboard-activation');
@@ -81,6 +83,7 @@ export default class WaylandSpike extends Extension {
             history: this._history.length, selected: this._selected,
             historyLengths: this._history.map(t => t.length),
             visible: this._overlay !== null, events: this._events,
+            bridgeVisible: Main.uiGroup.get_children().some(actor => actor.name === 'pasteroll-wayland-overlay'),
             pointer: global.get_pointer().slice(0, 2),
             focus: global.display.focus_window?.get_title() ?? null});
     }

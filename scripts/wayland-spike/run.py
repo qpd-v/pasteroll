@@ -18,7 +18,8 @@ import time
 sys.dont_write_bytecode = True
 SOURCE = Path(__file__).resolve().parent
 ROOT = SOURCE.parents[1]
-OUT = ROOT / 'target-dev/wayland-phase1'
+PHASE2 = '--phase2' in sys.argv or os.environ.get('PASTEROLL_PHASE2') == '1'
+OUT = ROOT / 'target-dev' / ('wayland-phase2' if PHASE2 else 'wayland-phase1')
 UUID = 'wayland-spike@pasteroll.com'
 
 def sanitize(value):
@@ -231,7 +232,11 @@ def main():
     OUT.mkdir(parents=True, exist_ok=True)
     if '--session' in sys.argv:
         assert os.environ.get('HOME', '').startswith('/tmp/pasteroll-wayland-'), 'private home required'
-        session()
+        if PHASE2:
+            from phase2 import session as phase2_session
+            phase2_session()
+        else:
+            session()
         return
     with tempfile.TemporaryDirectory(prefix='pasteroll-wayland-') as temporary:
         private = Path(temporary)
@@ -241,6 +246,8 @@ def main():
         take.mkdir()
         env['PASTEROLL_SPIKE_OUTPUT'] = str(take)
         env['PASTEROLL_SPIKE_TAKE'] = take_name
+        if PHASE2:
+            env['PASTEROLL_PHASE2'] = '1'
         env.update(HOME=str(private / 'home'), XDG_DATA_HOME=str(private / 'data'),
                    XDG_CONFIG_HOME=str(private / 'config'), XDG_CACHE_HOME=str(private / 'cache'),
                    XDG_RUNTIME_DIR=str(private / 'runtime'), XDG_SESSION_TYPE='wayland',
@@ -253,6 +260,13 @@ def main():
             Path(env[key]).mkdir(mode=0o700, parents=True, exist_ok=True)
         extension = Path(env['XDG_DATA_HOME']) / 'gnome-shell/extensions' / UUID
         shutil.copytree(SOURCE / 'extension', extension)
+        if PHASE2:
+            production = Path(env['XDG_DATA_HOME']) / 'gnome-shell/extensions/pasteroll@pasteroll.com'
+            shutil.copytree(ROOT / 'extensions/pasteroll@pasteroll.com', production)
+            probe = Path(env['HOME']) / '.local/bin/pasteroll'
+            probe.parent.mkdir(parents=True)
+            shutil.copy2(ROOT / 'target-dev/linux/debug/examples/wayland-probe', probe)
+            probe.chmod(0o700)
         # A separate empty bus satisfies Shell's system-bus connection without
         # exposing the host's accounts, login manager, power or clipboard services.
         env['DBUS_SYSTEM_BUS_ADDRESS'] = 'unix:path=' + str(private / 'system-bus')

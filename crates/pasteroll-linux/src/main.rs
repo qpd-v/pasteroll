@@ -31,6 +31,9 @@ mod sni;
 mod sys;
 #[cfg(unix)]
 mod x;
+// Foundations are portable enough for protocol tests on Windows; the transport is Unix-only.
+#[allow(dead_code)]
+mod wayland;
 
 #[cfg(unix)]
 mod cli {
@@ -427,7 +430,7 @@ mod cli {
             "usage: pasteroll run | status | config [show|path|init|set KEY VALUE] | exclude PROGRAM | \
              clear --yes [--keep-pinned] | repair --yes | rotate-key | key-export --out FILE | \
              key-import --in FILE [--force] | reset-history --yes | seed | \
-             stop | install | uninstall [--remove-data --yes] | autostart [on|off]\n\
+             stop | wayland-check | install | uninstall [--remove-data --yes] | autostart [on|off]\n\
              options: --db FILE   --no-capture   --max-seconds N   --yes"
         );
         2
@@ -444,6 +447,14 @@ mod cli {
             Err(e) => return fail(e),
         };
         match cmd {
+            "wayland-check" => {
+                use crate::wayland::session::{self, Backend};
+                match session::current() {
+                    Backend::Gnome => match crate::wayland::bridge::check() { Ok(()) => 0, Err(e) => fail(e.to_string()) },
+                    Backend::UnsupportedWayland => fail("This Wayland desktop has no Pasteroll backend yet"),
+                    _ => fail("wayland-check requires a GNOME Wayland session"),
+                }
+            },
             "stop" => match sys::stop_running(&db) { Ok(()) => 0, Err(e) => fail(e) },
             "run" => crate::run::run(
                 db,
