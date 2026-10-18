@@ -7,6 +7,43 @@ pub enum Backend {
     Unavailable,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Launch {
+    X11,
+    GnomeKeyboard,
+    GnomeMouse,
+}
+
+/// Pick a backend without ever treating a Wayland display's XWayland socket as native X11.
+pub fn choose(
+    explicit: Option<&str>,
+    keyboard_opt_in: bool,
+    detected: Backend,
+) -> Result<Launch, String> {
+    match explicit {
+        None => match detected {
+            Backend::X11 if !keyboard_opt_in => Ok(Launch::X11),
+            Backend::X11 => Err("--wayland-keyboard only applies to --backend gnome".into()),
+            Backend::Gnome if keyboard_opt_in => Err(
+                "GNOME Wayland needs an explicit backend. Use: pasteroll run --backend gnome --wayland-keyboard".into(),
+            ),
+            Backend::Gnome => Ok(Launch::GnomeMouse),
+            Backend::UnsupportedWayland => Err(
+                "This Wayland desktop has no Pasteroll backend. --backend x11 only covers XWayland applications.".into(),
+            ),
+            Backend::Unavailable => Err("No graphical X11 or GNOME Wayland session was detected".into()),
+        },
+        Some("x11") if keyboard_opt_in => Err("--wayland-keyboard can only be used with --backend gnome".into()),
+        Some("x11") => Ok(Launch::X11),
+        Some("gnome") if detected != Backend::Gnome => Err(
+            "--backend gnome requires a GNOME Wayland session with the Pasteroll companion enabled".into(),
+        ),
+        Some("gnome") if !keyboard_opt_in => Ok(Launch::GnomeMouse),
+        Some("gnome") => Ok(Launch::GnomeKeyboard),
+        Some(other) => Err(format!("unknown backend {other:?}; use x11 or gnome")),
+    }
+}
+
 pub fn detect(
     session: Option<&str>,
     wayland: Option<&str>,
@@ -78,5 +115,25 @@ mod tests {
             detect(Some("wayland"), None, Some(":0"), Some("GNOME")),
             Backend::Gnome
         );
+    }
+
+    #[test]
+    fn launch_selection_makes_wayland_opt_in_and_xwayland_escape_explicit() {
+        assert_eq!(choose(None, false, Backend::X11), Ok(Launch::X11));
+        assert_eq!(choose(None, false, Backend::Gnome), Ok(Launch::GnomeMouse));
+        assert!(choose(None, true, Backend::Gnome).is_err());
+        assert!(choose(None, false, Backend::UnsupportedWayland).is_err());
+        assert_eq!(choose(Some("x11"), false, Backend::Gnome), Ok(Launch::X11));
+        assert!(choose(Some("x11"), true, Backend::X11).is_err());
+        assert_eq!(
+            choose(Some("gnome"), false, Backend::Gnome),
+            Ok(Launch::GnomeMouse)
+        );
+        assert_eq!(
+            choose(Some("gnome"), true, Backend::Gnome),
+            Ok(Launch::GnomeKeyboard)
+        );
+        assert!(choose(Some("gnome"), true, Backend::X11).is_err());
+        assert!(choose(Some("kde"), false, Backend::UnsupportedWayland).is_err());
     }
 }

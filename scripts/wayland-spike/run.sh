@@ -1,5 +1,5 @@
 #!/bin/bash
-# Phase-one research only. No live display, bus, clipboard, profile or network.
+# Isolated Phase 1/2/3 launcher. No live display, bus, clipboard, profile or network.
 set -euo pipefail
 spike_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
 spike_uid=$(id -u)
@@ -15,6 +15,12 @@ exec sudo -n unshare --mount --net --pid --fork --mount-proc sh -eu -c '
     spike_gid="$2"
     spike_script="$3/scripts/wayland-spike/run.py"
     shift 3
+    case " $* " in
+        *" --mouse "*)
+            mkdir -p /dev/input
+            mount -t tmpfs -o mode=755 tmpfs /dev/input
+            ;;
+    esac
     exec setpriv --reuid "$spike_uid" --regid "$spike_gid" --clear-groups \
         env -i PATH=/usr/bin:/bin LANG=C.UTF-8 \
         PASTEROLL_WAYLAND_SPIKE=1 python3 "$spike_script" "$@"

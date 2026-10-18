@@ -1,4 +1,4 @@
-// Development backend foundations. No arbitrary-input or test-injection API is exported.
+// Native GNOME Wayland companion. No arbitrary-input or test-injection API is exported.
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import {Bridge} from './bridge.js';
 

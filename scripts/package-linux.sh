@@ -13,5 +13,5 @@ sysroot="$(rustc --print sysroot)"
 # Encoded arguments also work when the checkout or home folder contains spaces. Use a generic
 # home prefix without /home/ so the artifact scanner can flag any unremapped Linux home paths.
 export CARGO_ENCODED_RUSTFLAGS="--remap-path-prefix=$HOME=/user"$'\x1f'"--remap-path-prefix=$sysroot=/rust"$'\x1f'"--remap-path-prefix=$root=/src"
-cargo build --release --locked --offline --target "$target" --target-dir "$root/target" -p pasteroll-linux
+cargo build --release --locked --offline --target "$target" --target-dir "$root/target" -p pasteroll-linux --bin pasteroll
 python3 scripts/package-linux.py

@@ -13,8 +13,66 @@ const XML = `<node><interface name="com.pasteroll.WaylandSpike">
   <method name="State"><arg type="s" direction="out"/></method>
   <method name="Input"><arg type="s" direction="in"/></method>
   <method name="FocusTarget"/>
+  <method name="FocusWindow"><arg type="s" direction="in"/></method>
   <method name="Snapshot"><arg type="s" direction="in"/><arg type="b" direction="out"/></method>
 </interface></node>`;
+
+function actor_rect(actor) {
+    try {
+        const [x, y] = actor.get_transformed_position();
+        return [Math.round(x), Math.round(y), Math.round(actor.width), Math.round(actor.height)];
+    } catch (_) {
+        return [0, 0, 0, 0];
+    }
+}
+
+function actor_text(actor) {
+    for (const key of ['text', 'label']) {
+        try {
+            if (typeof actor[key] === 'string' && actor[key])
+                return actor[key].slice(0, 300);
+        } catch (_) { /* Not every actor exposes every property. */ }
+    }
+    try {
+        return actor.get_accessible_name?.() || '';
+    } catch (_) {
+        return '';
+    }
+}
+
+function actor_accessible(actor) {
+    try {
+        return actor.get_accessible_name?.() || '';
+    } catch (_) {
+        return '';
+    }
+}
+
+function actor_style(actor) {
+    try {
+        return actor.style_class ?? '';
+    } catch (_) {
+        return '';
+    }
+}
+
+function actor_tree(root, depth = 0, limit = 10) {
+    if (!root || depth > limit)
+        return [];
+    const out = [];
+    let child = null;
+    try { child = root.get_first_child(); } catch (_) { child = null; }
+    while (child && out.length < 1200) {
+        const text = actor_text(child);
+        if (child.name || text || child.visible)
+            out.push({name: child.name ?? '', text, rect: actor_rect(child),
+                style: actor_style(child), accessible: actor_accessible(child),
+                visible: child.visible, mapped: child.mapped,
+                children: actor_tree(child, depth + 1, limit)});
+        try { child = child.get_next_sibling(); } catch (_) { child = null; }
+    }
+    return out;
+}
 
 export default class WaylandSpike extends Extension {
     enable() {
@@ -46,7 +104,8 @@ export default class WaylandSpike extends Extension {
             });
         });
         this._inputId = Clutter.event_add_filter(null, (event, _actor) => this._input(event));
-        this._accelerator = GLib.getenv('PASTEROLL_PHASE2') === '1' ? 0 :
+        this._accelerator = (GLib.getenv('PASTEROLL_PHASE2') === '1' ||
+            GLib.getenv('PASTEROLL_PHASE3') === '1') ? 0 :
             global.display.grab_accelerator('<Control><Shift>space', Meta.KeyBindingFlags.NONE);
         if (this._accelerator)
             Main.wm.allowKeybinding(Meta.external_binding_name_for_action(this._accelerator), Shell.ActionMode.NORMAL);
@@ -79,13 +138,50 @@ export default class WaylandSpike extends Extension {
     }
 
     State() {
+        const companion = Main.extensionManager.lookup('pasteroll@pasteroll.com')?.stateObj?._bridge;
+        const focus = global.display.focus_window;
+        const focusActor = focus ? global.get_window_actors().find(a => a.meta_window === focus) : null;
+        const monitor = Main.layoutManager.primaryMonitor;
+        const work = Main.layoutManager.getWorkAreaForMonitor(monitor?.index ?? 0);
+        let monitorScale = 1;
+        try {
+            if (monitor)
+                monitorScale = global.display.get_monitor_scale(monitor.index) || 1;
+        } catch (_) {
+            monitorScale = monitor?.geometry_scale || 1;
+        }
+        const panel = {};
+        for (const [key, actor] of Object.entries(Main.panel.statusArea ?? {})) {
+            let menu = null;
+            try { menu = actor.menu ?? null; } catch (_) { menu = null; }
+            panel[key] = {name: actor.name ?? '', text: actor_text(actor), rect: actor_rect(actor),
+                visible: actor.visible, menuOpen: menu?.isOpen ?? false,
+                children: actor_tree(actor, 0, 10)};
+        }
         return JSON.stringify({wayland: Meta.is_wayland_compositor(),
+            companion: companion ? {snapshot: companion._snapshot(),
+                mouseReady: companion._inputHelper?.ready ?? false,
+                mouseArmed: companion._mouseArmed ?? false,
+                mouseTicket: companion._mouseTicket?.ticket ?? 0,
+                pendingReads: companion._reads.size, inputActive: companion._inputActive,
+                generation: companion._generation, revoked: companion._revokedGeneration,
+                peer: companion._peer !== null} : null,
             history: this._history.length, selected: this._selected,
             historyLengths: this._history.map(t => t.length),
             visible: this._overlay !== null, events: this._events,
             bridgeVisible: Main.uiGroup.get_children().some(actor => actor.name === 'pasteroll-wayland-overlay'),
             pointer: global.get_pointer().slice(0, 2),
-            focus: global.display.focus_window?.get_title() ?? null});
+            modifiers: global.get_pointer()[2],
+            focus: focus ? {title: focus.get_title() ?? '', pid: focus.get_pid(),
+                class: focus.get_wm_class() ?? '', rect: focusActor ? actor_rect(focusActor) : null} : null,
+            monitor: monitor ? [monitor.x, monitor.y, monitor.width, monitor.height, monitorScale] : null,
+            workArea: work ? [work.x, work.y, work.width, work.height] : null,
+            namedActors: Main.uiGroup.get_children().filter(a => a.name).map(a =>
+                ({name: a.name, rect: actor_rect(a), visible: a.visible, mapped: a.mapped})).slice(0, 100),
+            stage: Main.uiGroup.get_children().filter(a => a.visible).slice(0, 30).map(a =>
+                ({name: a.name ?? '', text: actor_text(a), rect: actor_rect(a),
+                    children: actor_tree(a, 0, 10)})),
+            panel});
     }
 
     // Explicit synthetic input only, on the test compositor's private seat.
@@ -119,8 +215,19 @@ export default class WaylandSpike extends Extension {
         this._target = target;
     }
 
+    FocusWindow(title) {
+        const target = global.get_window_actors().map(a => a.meta_window)
+            .find(w => (w.get_title() ?? '') === title);
+        if (!target)
+            throw new Error('Native test target is absent');
+        Main.overview.hide();
+        target.move_resize_frame(false, 70, 85, 720, 430);
+        target.activate(global.get_current_time());
+        this._target = target;
+    }
+
     async SnapshotAsync([name], invocation) {
-        if (!/^frame-[0-9]{4}\.png$/.test(name)) {
+        if (!/^(frame-[0-9]{4}|snap-[a-z0-9-]+)\.png$/.test(name)) {
             invocation.return_dbus_error('com.pasteroll.WaylandSpike.InvalidName', 'Invalid frame name');
             return;
         }

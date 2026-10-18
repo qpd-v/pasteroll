@@ -2,8 +2,6 @@
 #[cfg(not(unix))]
 fn main() {}
 #[cfg(unix)]
-#[path = "../src/wayland/mod.rs"]
-#[allow(dead_code)]
 mod wayland;
 
 #[cfg(unix)]
@@ -46,6 +44,15 @@ fn main() {
             "caps" => {
                 assert!(!c.capabilities.mouse_activation());
                 assert!(c.capabilities.keyboard_activation());
+                assert!(c.capabilities.paste());
+                assert!(c.capabilities.viewer());
+                assert!(c.capabilities.settings());
+            }
+            "context" => {
+                let context = c.context().expect("context");
+                assert!(context.scale > 0.0);
+                assert!(context.monitor.2 > 0 && context.monitor.3 > 0);
+                assert!(context.work.2 > 0 && context.work.3 > 0);
             }
             "text" => assert!(
                 matches!(c.capture(4096), Ok(Captured::Text(s)) if s == "Native Wayland fixture")
@@ -90,11 +97,13 @@ fn main() {
                 );
             }
             "no-opt-in" => assert!(matches!(
-                c.show(500, 250, 400, 300, false),
+                c.arm_keyboard(true, false),
                 Err(Error::KeyboardOptInRequired)
             )),
             "show" => {
+                generation = c.input_active(true).expect("input generation");
                 let shown = c.show(500, 250, 400, 300, true).unwrap();
+                assert_eq!(shown.0, generation, "Show must keep the active generation");
                 generation = shown.0;
                 assert!(generation > 0);
                 let mut renderer = Renderer::new();
@@ -115,10 +124,27 @@ fn main() {
                 };
                 assert_eq!(c.present(generation - 1, &frame), Err(Error::Stale));
             }
+            "viewer" => {
+                assert!(generation > 0);
+                c.viewer_show(generation, 620, 222, 320, 240, true)
+                    .expect("viewer show");
+                let frame = pasteroll_render::Frame {
+                    width: 2,
+                    height: 2,
+                    bgra: vec![31, 80, 60, 255].repeat(4),
+                };
+                c.viewer_present(generation, &frame)
+                    .expect("viewer present");
+                c.viewer_hide(generation).expect("viewer hide");
+            }
+            "suspend" => c.suspend(generation, true).expect("suspend"),
+            "resume" => c.suspend(generation, false).expect("resume"),
             "poll" => {
                 let events = c.poll().unwrap();
                 for event in &events {
-                    let _ = protocol::event(*event, generation).unwrap();
+                    if !(20..=26).contains(&event.0) {
+                        let _ = protocol::event(*event, generation).unwrap();
+                    }
                 }
                 println!(
                     "events {}",
@@ -133,7 +159,10 @@ fn main() {
             }
             "hide" => c.hide(generation).unwrap(),
             "arm" => c.arm_keyboard(true, true).unwrap(),
-            "disarm" => c.arm_keyboard(false, false).unwrap(),
+            "disarm" => {
+                if c.input_active(false).is_ok() {}
+                c.arm_keyboard(false, true).unwrap()
+            }
             "lost" => assert!(c.snapshot().is_err()),
             _ => panic!("unknown integration command"),
         }

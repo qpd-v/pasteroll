@@ -1,0 +1,201 @@
+.pasteroll-panel-icon {
+    icon-size: 16px;
+}
+
+.pasteroll-overlay,
+.pasteroll-viewer {
+    background-color: transparent;
+}
+
+.pasteroll-backdrop {
+    background-color: rgba(18, 21, 28, 0.72);
+}
+
+.pasteroll-dialog {
+    background-color: #252a35;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 14px;
+    padding: 18px;
+    spacing: 12px;
+    color: #f3f0e9;
+    box-shadow: 0 10px 34px rgba(0, 0, 0, 0.48);
+}
+
+.pasteroll-dialog-heading {
+    spacing: 10px;
+}
+
+.pasteroll-dialog-title {
+    font-size: 19px;
+    font-weight: 700;
+    color: #f5f2eb;
+}
+
+.pasteroll-close-button {
+    width: 30px;
+    min-height: 30px;
+    border-radius: 8px;
+    color: #d7d9df;
+}
+
+.pasteroll-close-button:hover {
+    background-color: rgba(255, 255, 255, 0.10);
+}
+
+.pasteroll-dialog-scroll {
+    padding-right: 4px;
+}
+
+.pasteroll-dialog-content {
+    padding: 2px 8px 8px 2px;
+    spacing: 10px;
+}
+
+.pasteroll-dialog-actions {
+    spacing: 8px;
+    padding-top: 4px;
+}
+
+.pasteroll-button {
+    min-height: 32px;
+    padding: 4px 14px;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    background-color: rgba(255, 255, 255, 0.06);
+    color: #f3f0e9;
+}
+
+.pasteroll-button:hover {
+    background-color: rgba(255, 255, 255, 0.12);
+}
+
+.pasteroll-button-primary {
+    background-color: #3b7f6b;
+    border-color: #58a88d;
+    color: #ffffff;
+}
+
+.pasteroll-button-primary:hover {
+    background-color: #468f78;
+}
+
+.pasteroll-button-danger {
+    background-color: #8b3d3d;
+    border-color: #bd5b5b;
+    color: #ffffff;
+}
+
+.pasteroll-button-danger:hover {
+    background-color: #a34a4a;
+}
+
+.pasteroll-section-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: #a9ded0;
+    margin-top: 8px;
+    padding-bottom: 2px;
+}
+
+.pasteroll-setting-row {
+    spacing: 16px;
+    padding: 8px 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.pasteroll-setting-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: #f1efe9;
+}
+
+.pasteroll-setting-description,
+.pasteroll-dialog-note,
+.pasteroll-welcome-text {
+    font-size: 12px;
+    color: #c5c8d0;
+}
+
+.pasteroll-welcome-text {
+    font-size: 14px;
+    line-height: 1.35;
+}
+
+.pasteroll-dialog-note {
+    font-style: italic;
+}
+
+.pasteroll-danger-note {
+    font-size: 13px;
+    font-weight: 600;
+    color: #ffb6b6;
+}
+
+.pasteroll-choice {
+    spacing: 6px;
+}
+
+.pasteroll-step-button,
+.pasteroll-small-button {
+    min-height: 28px;
+    padding: 2px 9px;
+    border-radius: 7px;
+    border: 1px solid rgba(255, 255, 255, 0.13);
+    background-color: rgba(255, 255, 255, 0.05);
+    color: #eef0f3;
+}
+
+.pasteroll-step-button:hover,
+.pasteroll-small-button:hover {
+    background-color: rgba(255, 255, 255, 0.12);
+}
+
+.pasteroll-choice-value {
+    min-width: 72px;
+    text-align: center;
+    font-weight: 600;
+    color: #ffffff;
+}
+
+.pasteroll-toggle {
+    min-width: 54px;
+    min-height: 28px;
+    padding: 2px 9px;
+    border-radius: 14px;
+    background-color: rgba(255, 255, 255, 0.08);
+    color: #e7e9ed;
+}
+
+.pasteroll-toggle-on {
+    background-color: #3b7f6b;
+    color: #ffffff;
+}
+
+.pasteroll-app-list {
+    padding-left: 12px;
+}
+
+.pasteroll-app-row,
+.pasteroll-app-entry-row {
+    spacing: 8px;
+}
+
+.pasteroll-app-name {
+    font-family: monospace;
+    font-size: 12px;
+    color: #f0eee8;
+}
+
+.pasteroll-empty-list {
+    font-size: 12px;
+    color: #9398a3;
+}
+
+.pasteroll-inline-error {
+    font-size: 12px;
+    color: #ffb6b6;
+}
+
+.pasteroll-dialog StEntry {
+    min-height: 30px;
+}

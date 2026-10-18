@@ -1,6 +1,45 @@
 # Local release process
 
-Current candidate: **0.1.0-beta.2**. Builds are unsigned. All work runs locally; no CI, automatic
+Current version: **0.1.0-beta.3** (experimental prerelease).
+
+The user explicitly approved publishing this prerelease without physical GNOME
+acceptance. Record those checks as NOT TESTED; keep the GNOME 46 experimental
+limitations visible. Complete acceptance before broadening support claims.
+
+The README download links target beta.3 after publication.
+Never update an existing beta.2 asset with these candidate builds.
+
+### Additional GNOME 46 gate
+
+Build the optional GNOME archive and Debian package with `bash scripts/package-gnome.sh`.
+Use `PASTEROLL_BUILD_ROOT` for its build cache and `PASTEROLL_PACKAGE_OUTPUT` for a
+fresh output folder. With a Windows-managed worktree, supply `SOURCE_DATE_EPOCH`
+from Windows Git. Run `python3 scripts/test-gnome-packaging.py` with the same output
+folder, and scan both development artifacts independently. They supplement the
+standard X11 packages and keep `-gnome-development` in their names until acceptance.
+Generate one six-package manifest using `python scripts/checksums.py --with-gnome`.
+Verify it with `python scripts/checksums.py --with-gnome --verify` and run
+`powershell -NoProfile -File scripts/verify-release-local.ps1 -WithGnome -CheckSource`.
+The four-package commands elsewhere in this guide are for an X11-only release;
+use `--with-gnome` when preparing the six-package candidate.
+The GNOME Debian package has explicit GNOME 46, glibc, libevdev and systemd dependencies
+and maintainer scripts; the statements below about no dependencies/scripts apply
+only to the standard X11 Debian package.
+
+Outstanding physical acceptance on GNOME 46:
+
+- Install with normal dependency resolution on a clean machine; fresh helper is disabled.
+- Enable companion/helper, use physical Ctrl+Shift+middle-click, wheel and all button
+  releases in native GTK, Qt, browser and terminal windows. Check ordinary mouse input.
+- Test text/images/files, selection paste, viewer/editor, target focus and clipboard ownership.
+- Lock/unlock, suspend/resume, logout/login, autostart, helper restart and mouse unplug/replug.
+- Check scaling, device settings and multi-monitor placement on the supported configuration.
+- Remove/upgrade the packages; input returns normally and user history is retained.
+
+Synthetic kernel input, headless GNOME, fake logind and staged dpkg checks do not
+complete physical acceptance. Record environment and results before broadening support claims.
+
+Builds are unsigned. All work runs locally; no CI, automatic
 updates or installer downloads are introduced. Publishing, committing, pushing and tagging remain
 manual actions requiring the user's instruction.
 
@@ -93,10 +132,10 @@ These clean only build outputs for the named package, not source or user data.
 
 | Asset | Purpose |
 |---|---|
-| `pasteroll-0.1.0-beta.2-windows-x64-setup.exe` | Windows wizard, per-user/all-users |
-| `pasteroll-0.1.0-beta.2-windows-x64-portable.zip` | Portable executable, empty marker, README/licenses |
-| `pasteroll-0.1.0-beta.2-linux-x86_64.tar.gz` | Static Linux binary, `install.sh`, desktop entry/icons/licenses |
-| `pasteroll_0.1.0-beta.2_amd64.deb` | Debian/Ubuntu; internal version `0.1.0~beta.2` |
+| `pasteroll-0.1.0-beta.3-windows-x64-setup.exe` | Windows wizard, per-user/all-users |
+| `pasteroll-0.1.0-beta.3-windows-x64-portable.zip` | Portable executable, empty marker, README/licenses |
+| `pasteroll-0.1.0-beta.3-linux-x86_64.tar.gz` | Static Linux binary, `install.sh`, desktop entry/icons/licenses |
+| `pasteroll_0.1.0-beta.3_amd64.deb` | Debian/Ubuntu; internal version `0.1.0~beta.3` |
 | `SHA256SUMS` | SHA-256 hashes of exactly the four files above |
 
 The `.deb` has no maintainer scripts or package dependencies. Optional recommendations are
@@ -236,7 +275,7 @@ in scratch directories are separate evidence from this checklist.
 - [ ] Install system-wide with `sudo ./install.sh --system` twice. Confirm `/usr/local` locations,
   readable icons/licenses, no root history, and independent data for a second account.
 - [ ] Remove with `sudo ./install.sh --system --uninstall`; confirm data and unrelated files survive.
-- [ ] Install the `.deb` with `sudo dpkg -i pasteroll_0.1.0-beta.2_amd64.deb`; confirm menu/icons and startup.
+- [ ] Install the `.deb` with `sudo dpkg -i pasteroll_0.1.0-beta.3_amd64.deb`; confirm menu/icons and startup.
 - [ ] Upgrade/reinstall the `.deb`, remove it, reinstall it, then purge it. Confirm history survives each path.
 - [ ] Test portable mode from an extracted archive with `portable.txt`, including disabled installation/autostart.
 - [ ] Optionally test local OCR and save dialogs with Tesseract/Zenity installed separately.
@@ -245,7 +284,7 @@ in scratch directories are separate evidence from this checklist.
 
 Before publishing, require all of: native tests/package checks pass, the final personal-string scan
 passes, hashes match, clean-machine checks are accepted, download wording is updated, and the source
-has been explicitly approved for commit/push/tag. The remote tag **v0.1.0-beta.2** must point to
+has been explicitly approved for commit/push/tag. The remote tag **v0.1.0-beta.3** must point to
 the reviewed source that produced these files. Rebuild if any shipped source, input or packaging
 text changes. No tool in this process creates or pushes a tag.
 
@@ -253,27 +292,29 @@ After the user has created/pushed the correct tag, this is the exact PowerShell 
 from the repository root. **Do not execute it as part of preparation:**
 
 ```powershell
-gh release create v0.1.0-beta.2 `
+gh release create v0.1.0-beta.3 `
   --repo qpd-v/pasteroll `
   --verify-tag `
   --prerelease `
-  --title "Pasteroll 0.1.0-beta.2" `
-  --notes-file packaging/release-notes-0.1.0-beta.2.md `
-  dist/pasteroll-0.1.0-beta.2-windows-x64-setup.exe `
-  dist/pasteroll-0.1.0-beta.2-windows-x64-portable.zip `
-  dist/pasteroll-0.1.0-beta.2-linux-x86_64.tar.gz `
-  dist/pasteroll_0.1.0-beta.2_amd64.deb `
+  --title "Pasteroll 0.1.0-beta.3" `
+  --notes-file packaging/release-notes-0.1.0-beta.3.md `
+  dist/pasteroll-0.1.0-beta.3-windows-x64-setup.exe `
+  dist/pasteroll-0.1.0-beta.3-windows-x64-portable.zip `
+  dist/pasteroll-0.1.0-beta.3-linux-x86_64.tar.gz `
+  dist/pasteroll_0.1.0-beta.3_amd64.deb `
+  dist/pasteroll-0.1.0-beta.3-linux-x86_64-gnome-development.tar.gz `
+  dist/pasteroll_0.1.0-beta.3_amd64-gnome-development.deb `
   dist/SHA256SUMS
 ```
 
 `--verify-tag` prevents accidental tagging of an older remote branch. This command uploads exactly
-the four packages and their manifest. It creates a public prerelease; it is not a local preview.
+the six packages and their manifest. It creates a public prerelease; it is not a local preview.
 No release, commit, push or tag has been authorized merely by running preparation scripts.
 
 To stage the same assets for final review, add `--draft` to the creation command. A draft is not
-publicly downloadable. Inspect its notes, tag and exactly five uploaded assets, download them into
+publicly downloadable. Inspect its notes, tag and exactly seven uploaded assets, download them into
 a separate local directory, and verify their hashes. Publishing an existing draft after explicit
-approval uses `gh release edit v0.1.0-beta.2 --repo qpd-v/pasteroll --draft=false --prerelease`.
+approval uses `gh release edit v0.1.0-beta.3 --repo qpd-v/pasteroll --draft=false --prerelease`.
 Do not run `release create` a second time for an existing draft.
 
 ## 7. Website demo recordings

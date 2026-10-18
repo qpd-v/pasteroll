@@ -3,12 +3,15 @@ use pasteroll_app::{Captured, Event, Key, MouseEvent, MouseKind, Payload, Skip, 
 use pasteroll_core::Step;
 use zeroize::Zeroize;
 
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 pub const CLIPBOARD: u32 = 1;
 pub const OVERLAY: u32 = 2;
 pub const INPUT: u32 = 4;
 pub const KEYBOARD_ACTIVATION: u32 = 8;
 pub const MOUSE_ACTIVATION: u32 = 16;
+pub const PASTE: u32 = 32;
+pub const VIEWER: u32 = 64;
+pub const SETTINGS: u32 = 128;
 pub const MAX_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_EVENTS: usize = 256;
@@ -38,7 +41,7 @@ impl std::fmt::Display for Error {
             Self::Bounds => "Wayland transfer exceeds the supported bounds",
             Self::Stale => "Wayland session or clipboard changed",
             Self::Protocol => "GNOME companion returned an invalid response",
-            Self::KeyboardOptInRequired => "GNOME mouse activation is unavailable; keyboard experiments require explicit opt-in",
+            Self::KeyboardOptInRequired => "GNOME mouse activation needs the host helper; keyboard activation requires explicit opt-in",
         })
     }
 }
@@ -61,6 +64,15 @@ impl Capabilities {
     }
     pub fn keyboard_activation(self) -> bool {
         self.0 & KEYBOARD_ACTIVATION != 0
+    }
+    pub fn paste(self) -> bool {
+        self.0 & PASTE != 0
+    }
+    pub fn viewer(self) -> bool {
+        self.0 & VIEWER != 0
+    }
+    pub fn settings(self) -> bool {
+        self.0 & SETTINGS != 0
     }
     pub fn allow_interaction(self, keyboard_opt_in: bool) -> Result<(), Error> {
         if self.mouse_activation() || keyboard_opt_in && self.keyboard_activation() {
@@ -285,6 +297,22 @@ pub fn event(
             },
             generation,
         )),
+        9..=12 => Some(Event::ViewerMouse(MouseEvent {
+            kind: match kind {
+                9 => MouseKind::Down,
+                10 => MouseKind::Up,
+                11 => MouseKind::Move,
+                _ => MouseKind::DoubleClick,
+            },
+            x: a as f32,
+            y: b as f32,
+        })),
+        13 => Some(Event::ViewerMouse(MouseEvent {
+            kind: MouseKind::Leave,
+            x: a as f32,
+            y: b as f32,
+        })),
+        14 => Some(Event::ClickOutside(generation)),
         _ => return Err(Error::Protocol),
     })
 }
@@ -295,7 +323,7 @@ mod tests {
     #[test]
     fn stale_events_and_incompatible_peers_are_rejected() {
         assert!(matches!(
-            Capabilities::negotiate(2, 15),
+            Capabilities::negotiate(1, 15),
             Err(Error::Version)
         ));
         assert_eq!(
@@ -305,6 +333,8 @@ mod tests {
         assert!(Capabilities(15).allow_interaction(true).is_ok());
         assert_eq!(event((2, 4, 0xff0d, 0, 0), 5), Err(Error::Stale));
         assert_eq!(event((123, 5, 0, 0, 0), 5), Err(Error::Protocol));
+        assert_eq!(event((6, 4, 0, 0, 0), 5), Err(Error::Stale));
+        assert_eq!(event((14, 4, 0, 0, 0), 5), Err(Error::Stale));
     }
     #[test]
     fn malformed_and_overlarge_clipboards_are_not_ingested() {
@@ -370,5 +400,40 @@ mod tests {
             event((2, 3, 0x7a, 0, 5), 3),
             Ok(Some(Event::Key(Key::CtrlY, 3)))
         );
+    }
+
+    #[test]
+    fn phase_three_capabilities_and_viewer_events_are_opt_in_and_generation_bound() {
+        let bits = CLIPBOARD | OVERLAY | INPUT | KEYBOARD_ACTIVATION | PASTE | VIEWER | SETTINGS;
+        let caps = Capabilities::negotiate(VERSION, bits).unwrap();
+        assert!(caps.paste() && caps.viewer() && caps.settings());
+        assert!(!caps.mouse_activation());
+        assert_eq!(
+            event((9, 7, 12, 34, 0), 7),
+            Ok(Some(Event::ViewerMouse(MouseEvent {
+                kind: MouseKind::Down,
+                x: 12.0,
+                y: 34.0,
+            })))
+        );
+        assert_eq!(
+            event((12, 7, 1, 2, 0), 7),
+            Ok(Some(Event::ViewerMouse(MouseEvent {
+                kind: MouseKind::DoubleClick,
+                x: 1.0,
+                y: 2.0,
+            })))
+        );
+        assert_eq!(
+            event((13, 7, 0, 0, 0), 7),
+            Ok(Some(Event::ViewerMouse(MouseEvent {
+                kind: MouseKind::Leave,
+                x: 0.0,
+                y: 0.0,
+            })))
+        );
+        assert_eq!(event((14, 7, 0, 0, 0), 7), Ok(Some(Event::ClickOutside(7))));
+        assert_eq!(event((20, 7, 0, 0, 0), 7), Err(Error::Protocol));
+        assert_eq!(event((25, 7, 0, 0, 0), 7), Err(Error::Protocol));
     }
 }

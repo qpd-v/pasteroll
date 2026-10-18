@@ -10,7 +10,7 @@ python3 scripts/test-linux-packaging.py
 Prerequisites are a recent Rust toolchain with `x86_64-unknown-linux-musl` already installed,
 `musl-tools`, Python 3 (3.11+ for the package tests), binutils, and `dpkg-deb`. The scripts never
 install tools or download dependencies. Cargo builds with `--locked --offline`. The generated files
-are `dist/pasteroll-0.1.0-beta.2-linux-x86_64.tar.gz` and `dist/pasteroll_0.1.0-beta.2_amd64.deb`.
+are `dist/pasteroll-0.1.0-beta.3-linux-x86_64.tar.gz` and `dist/pasteroll_0.1.0-beta.3_amd64.deb`.
 
 The build uses `dpkg-deb` because it is a standard Debian/Ubuntu tool and needs no added Cargo
 dependency. It verifies the executable has no ELF interpreter or shared-library dependencies.
@@ -20,8 +20,8 @@ Build paths are remapped, archive owner names are omitted, and the Debian payloa
 ## Archive
 
 ```sh
-tar xzf pasteroll-0.1.0-beta.2-linux-x86_64.tar.gz
-cd pasteroll-0.1.0-beta.2-linux-x86_64
+tar xzf pasteroll-0.1.0-beta.3-linux-x86_64.tar.gz
+cd pasteroll-0.1.0-beta.3-linux-x86_64
 ./install.sh                      # per-user install using the app's existing installer
 sudo ./install.sh --system        # alternative: all users, under /usr/local
 ```
@@ -56,7 +56,7 @@ archive installer. To remove a portable copy, quit it and remove its folder.
 ## Debian / Ubuntu
 
 ```sh
-sudo dpkg -i pasteroll_0.1.0-beta.2_amd64.deb
+sudo dpkg -i pasteroll_0.1.0-beta.3_amd64.deb
 sudo dpkg -r pasteroll            # keeps all accounts' data
 ```
 

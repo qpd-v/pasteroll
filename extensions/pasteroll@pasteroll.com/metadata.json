@@ -1,7 +1,7 @@
 {
   "uuid": "pasteroll@pasteroll.com",
-  "name": "Pasteroll GNOME companion (development)",
-  "description": "Local clipboard and overlay bridge. Development foundations; mouse activation is unavailable.",
+  "name": "Pasteroll GNOME companion",
+  "description": "Local clipboard, carousel, viewer and settings for GNOME Wayland. Mouse activation uses the optional Pasteroll host helper; keyboard mode is opt-in.",
   "shell-version": ["46"],
   "session-modes": ["user"],
   "url": "https://github.com/qpd-v/pasteroll"

@@ -1,6 +1,6 @@
 # Derive local identity scan terms without printing or persisting their values.
 # Run from any folder: powershell -NoProfile -File scripts/verify-release-local.ps1
-param([switch]$CheckSource)
+param([switch]$CheckSource, [switch]$WithGnome)
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $previous = $env:PASTEROLL_SCAN_WORDS
@@ -61,7 +61,9 @@ try {
     Write-Output ('Derived private scan terms: ' + $terms.Count + '; configured Git email available: ' + [bool]$gitEmail)
     Write-Output ('Local account display name checked: ' + $displayNameAvailable)
     Write-Output ('Published repository-owner name classified as public: ' + $publicNameExcluded)
-    & python (Join-Path $PSScriptRoot 'verify-release.py')
+    $scanArgs = @()
+    if ($WithGnome) { $scanArgs += '--with-gnome' }
+    & python (Join-Path $PSScriptRoot 'verify-release.py') @scanArgs
     if ($LASTEXITCODE -ne 0) { throw 'The private-string release scan did not pass.' }
     if ($CheckSource) {
         & python (Join-Path $PSScriptRoot 'verify-source.py')

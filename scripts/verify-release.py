@@ -11,9 +11,10 @@ from release_artifacts import ROOT, artifact_names, digest, release_version, ver
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--generic-only", action="store_true", help="preliminary check; never a full personal-string gate")
+    parser.add_argument("--with-gnome", action="store_true", help="also require and scan both GNOME development packages")
     args = parser.parse_args()
     try:
-        names = artifact_names(release_version())
+        names = artifact_names(release_version(), with_gnome=args.with_gnome)
         verify_checksums(ROOT / "dist", names)
         staged = ROOT / "target/windows-packaging/setup"
         if digest(staged / "pasteroll.exe") != digest(ROOT / "target/release/pasteroll.exe"):
@@ -29,7 +30,7 @@ def main():
             if result.returncode:
                 return result.returncode
         print("PRELIMINARY PASS: personal-word gate was not required." if args.generic_only else
-              "PASS: personal-string scans completed for all four release artifacts and supported payloads.")
+              f"PASS: personal-string scans completed for all {len(names)} release artifacts and supported payloads.")
         print("Setup coverage: raw installer plus exact staged inputs; its proprietary compressed stream is not decoded.")
         return 0
     except (OSError, ValueError):

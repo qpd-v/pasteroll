@@ -125,6 +125,19 @@ class ReleaseTools(unittest.TestCase):
             write_checksums(self.temp, names)
         self.assertEqual((self.temp / "SHA256SUMS").read_text(), "previous manifest\n")
 
+    def test_gnome_manifest_requires_both_optional_packages(self):
+        names = artifact_names("0.1.0-beta.3", with_gnome=True)
+        self.assertEqual(len(names), 6)
+        for name in names[:-1]:
+            (self.temp / name).write_bytes(b"fixture")
+        with self.assertRaises(ValueError):
+            write_checksums(self.temp, names)
+        (self.temp / names[-1]).write_bytes(b"fixture")
+        write_checksums(self.temp, names)
+        verify_checksums(self.temp, names)
+        with self.assertRaises(ValueError):
+            verify_checksums(self.temp, artifact_names("0.1.0-beta.3"))
+
     def test_manifest_rejects_extra_or_duplicate_entries(self):
         names = artifact_names("0.1.0-beta.2")
         for name in names:

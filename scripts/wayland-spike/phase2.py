@@ -66,8 +66,8 @@ def session():
         # The fixture has now received an actual Wayland input serial.
         rejected = False
         try:
-            call('com.pasteroll.Gnome', 'Handshake', GLib.Variant('(u)', (1,)),
-                path='/com/pasteroll/Gnome', interface='com.pasteroll.Gnome.Bridge1')
+            call('com.pasteroll.Gnome', 'Handshake', GLib.Variant('(u)', (2,)),
+                path='/com/pasteroll/Gnome', interface='com.pasteroll.Gnome.Bridge2')
         except GLib.Error as error:
             rejected = 'AccessDenied' in str(error)
         check('unapproved executable cannot attach to the bridge', rejected)
@@ -88,6 +88,7 @@ def session():
             return True
         check('real Rust client completes owner-pinned handshake', response() == 'ready')
         check('missing mouse capability is reported explicitly', request('caps'))
+        check('Context uses the nested geometry and scale signature', request('context'))
         check('keyboard interaction cannot be silently selected', request('no-opt-in'))
         mime_set('text/plain;charset=utf-8', b'Native Wayland fixture')
         check('Rust captures native Wayland UTF-8 text', request('text'))
@@ -115,6 +116,11 @@ def session():
         wait(lambda: state()['bridgeVisible'])
         time.sleep(.4)
         check('Rust renderer frame appears on GNOME surface', state()['bridgeVisible'])
+        check('Bridge2 viewer transfer accepts device-pixel frames', request('viewer'))
+        check('Bridge2 suspend/resume keeps the active generation', request('suspend'))
+        time.sleep(3.4)  # A legitimate native dialog can outlive the regular watchdog.
+        request('resume')
+        check('a suspended dialog preserves the surface past the watchdog timeout', state()['bridgeVisible'])
         call('com.pasteroll.WaylandSpike', 'Snapshot', GLib.Variant('(s)', ('frame-0000.png',)))
         check('stale frame generation is rejected', request('stale-frame'))
         send('scroll', down=True)

@@ -17,7 +17,10 @@ fn require_nonportable() -> Result<(), String> {
 }
 
 fn home() -> Result<PathBuf, String> {
-    std::env::var_os("HOME").filter(|v| !v.is_empty()).map(PathBuf::from).ok_or_else(|| "HOME is not set".to_string())
+    std::env::var_os("HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .ok_or_else(|| "HOME is not set".to_string())
 }
 
 fn data_home() -> Result<PathBuf, String> {
@@ -43,7 +46,12 @@ fn desktop_path() -> Result<PathBuf, String> {
 }
 
 fn icon_path() -> Result<PathBuf, String> {
-    Ok(data_home()?.join("icons").join("hicolor").join("256x256").join("apps").join("pasteroll.png"))
+    Ok(data_home()?
+        .join("icons")
+        .join("hicolor")
+        .join("256x256")
+        .join("apps")
+        .join("pasteroll.png"))
 }
 
 fn autostart_path() -> Result<PathBuf, String> {
@@ -60,26 +68,74 @@ pub fn desktop_entry(exe: &Path, autostart: bool) -> String {
     };
     let mut s = String::from("[Desktop Entry]\nType=Application\nName=Pasteroll\n");
     s.push_str("Comment=Clipboard history you can scroll through and paste from\n");
-    s.push_str(&format!("Exec={exec}\nIcon=pasteroll\nTerminal=false\nCategories=Utility;\nStartupNotify=false\n"));
+    s.push_str(&format!(
+        "Exec={exec}\nIcon=pasteroll\nTerminal=false\nCategories=Utility;\nStartupNotify=false\n"
+    ));
     if autostart {
         s.push_str("X-GNOME-Autostart-enabled=true\n");
     }
     s
 }
 
+const WAYLAND_BACKEND_MARKER: &str = "X-Pasteroll-Backend=gnome-wayland";
+const WAYLAND_EXEC_MARKER: &str = "X-Pasteroll-Executable=";
+
+/// A startup entry that keeps both the backend and keyboard choice explicit.
+#[cfg(test)]
+pub fn wayland_desktop_entry(exe: &Path, autostart: bool) -> String {
+    wayland_desktop_entry_mode(exe, autostart, true)
+}
+
+pub fn wayland_desktop_entry_mode(exe: &Path, autostart: bool, keyboard: bool) -> String {
+    let mut s = desktop_entry(exe, autostart);
+    s = s.replace(
+        " run\n",
+        if keyboard {
+            " run --backend gnome --wayland-keyboard\n"
+        } else {
+            " run --backend gnome\n"
+        },
+    );
+    s.push_str(WAYLAND_BACKEND_MARKER);
+    s.push('\n');
+    s.push_str(if keyboard {
+        "X-Pasteroll-KeyboardOptIn=true\n"
+    } else {
+        "X-Pasteroll-KeyboardOptIn=false\n"
+    });
+    s.push_str(&format!("{WAYLAND_EXEC_MARKER}{}\n", exe.display()));
+    s
+}
+
+fn wayland_entry_is_ours(text: &str, exe: &Path) -> bool {
+    wayland_entry_marked(text)
+        && text.lines().any(|line| {
+            line.strip_prefix(WAYLAND_EXEC_MARKER)
+                .is_some_and(|path| Path::new(path) == exe)
+        })
+}
+
+fn wayland_entry_marked(text: &str) -> bool {
+    text.lines().any(|line| line == WAYLAND_BACKEND_MARKER)
+}
+
 fn write_file(path: &Path, data: &[u8], mode: u32) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     }
     let tmp = path.with_extension("new");
     std::fs::write(&tmp, data).map_err(|e| format!("cannot write {}: {e}", tmp.display()))?;
-    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode)).map_err(|e| e.to_string())?;
+    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))
+        .map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, path).map_err(|e| format!("cannot place {}: {e}", path.display()))
 }
 
 pub fn autostart_enabled() -> bool {
-    if pasteroll_core::paths::is_portable() { return false; }
+    if pasteroll_core::paths::is_portable() {
+        return false;
+    }
     autostart_path().map(|p| p.exists()).unwrap_or(false)
 }
 
@@ -99,19 +155,71 @@ pub fn set_autostart(on: bool) -> Result<(), String> {
     }
 }
 
+/// Enables or removes only this executable's GNOME Wayland startup entry.
+pub fn set_wayland_autostart(on: bool) -> Result<(), String> {
+    set_wayland_autostart_mode(on, true)
+}
+
+pub fn set_wayland_autostart_mode(on: bool, keyboard: bool) -> Result<(), String> {
+    require_nonportable()?;
+    let path = autostart_path()?;
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    if on {
+        if path.exists() {
+            let existing = std::fs::read_to_string(&path).map_err(|_| {
+                "an existing sign-in entry could not be read; nothing was changed".to_string()
+            })?;
+            if !wayland_entry_is_ours(&existing, &exe) {
+                return Err("a sign-in entry from another installation already exists; it was left untouched".into());
+            }
+        }
+        write_file(
+            &path,
+            wayland_desktop_entry_mode(&exe, true, keyboard).as_bytes(),
+            0o644,
+        )
+    } else {
+        match std::fs::read_to_string(&path) {
+            Ok(existing) if wayland_entry_is_ours(&existing, &exe) => std::fs::remove_file(&path)
+                .map_err(|_| "the sign-in entry could not be removed".to_string()),
+            Ok(_) => Err(
+                "the sign-in entry belongs to another installation; it was left untouched".into(),
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err("the sign-in entry could not be read; nothing was changed".into()),
+        }
+    }
+}
+
 pub fn install() -> Result<String, String> {
     require_nonportable()?;
     let src = std::env::current_exe().map_err(|e| e.to_string())?;
     let dst = bin_path()?;
     if std::fs::canonicalize(&src).ok() != std::fs::canonicalize(&dst).ok() {
-        let bytes = std::fs::read(&src).map_err(|e| format!("cannot read {}: {e}", src.display()))?;
+        let bytes =
+            std::fs::read(&src).map_err(|e| format!("cannot read {}: {e}", src.display()))?;
         write_file(&dst, &bytes, 0o755)?;
     }
-    write_file(&desktop_path()?, desktop_entry(&dst, false).as_bytes(), 0o644)?;
+    write_file(
+        &desktop_path()?,
+        desktop_entry(&dst, false).as_bytes(),
+        0o644,
+    )?;
     write_file(&icon_path()?, pasteroll_core::logo::LOGO_PNG, 0o644)?;
     // an existing autostart entry follows the program to its new place
     if autostart_enabled() {
-        write_file(&autostart_path()?, desktop_entry(&dst, true).as_bytes(), 0o644)?;
+        let path = autostart_path()?;
+        let previous = std::fs::read_to_string(&path).unwrap_or_default();
+        let wayland = wayland_entry_marked(&previous);
+        let keyboard = previous
+            .lines()
+            .any(|line| line == "X-Pasteroll-KeyboardOptIn=true");
+        let entry = if wayland {
+            wayland_desktop_entry_mode(&dst, true, keyboard)
+        } else {
+            desktop_entry(&dst, true)
+        };
+        write_file(&path, entry.as_bytes(), 0o644)?;
     }
     Ok(format!(
         "Installed to {}. Find Pasteroll in your application menu, or run `{} run`. \
@@ -124,7 +232,12 @@ pub fn install() -> Result<String, String> {
 /// Removes the installation. The history and settings stay unless `remove_data`.
 pub fn uninstall(remove_data: bool, data_dir: Option<&Path>) -> Result<String, String> {
     require_nonportable()?;
-    for p in [autostart_path()?, desktop_path()?, icon_path()?, bin_path()?] {
+    for p in [
+        autostart_path()?,
+        desktop_path()?,
+        icon_path()?,
+        bin_path()?,
+    ] {
         match std::fs::remove_file(&p) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -180,7 +293,10 @@ pub fn first_run_pending(db: &Path) -> bool {
 pub fn mark_first_run_done(db: &Path) {
     if let Some(dir) = db.parent() {
         let _ = std::fs::create_dir_all(dir);
-        let _ = std::fs::write(dir.join("first-run.txt"), format!("shown by version {}\n", env!("CARGO_PKG_VERSION")));
+        let _ = std::fs::write(
+            dir.join("first-run.txt"),
+            format!("shown by version {}\n", env!("CARGO_PKG_VERSION")),
+        );
     }
 }
 
@@ -200,13 +316,31 @@ mod tests {
     }
 
     #[test]
+    fn a_wayland_entry_keeps_the_explicit_backend_and_keyboard_choice() {
+        let e = wayland_desktop_entry(Path::new("/tmp/pasteroll"), true);
+        assert!(e.contains("Exec=/tmp/pasteroll run --backend gnome --wayland-keyboard\n"));
+        assert!(e.contains(WAYLAND_BACKEND_MARKER));
+        assert!(e.contains("X-Pasteroll-KeyboardOptIn=true"));
+        assert!(wayland_entry_is_ours(&e, Path::new("/tmp/pasteroll")));
+        assert!(!wayland_entry_is_ours(&e, Path::new("/tmp/other")));
+        assert!(!wayland_entry_is_ours(
+            &desktop_entry(Path::new("/tmp/pasteroll"), true),
+            Path::new("/tmp/pasteroll")
+        ));
+    }
+
+    #[test]
     fn install_autostart_and_uninstall_round_trip_in_a_scratch_home() {
         let home = std::env::temp_dir().join(format!("pasteroll-home-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(&home).unwrap();
         // these tests run single-threaded for the environment change
         let _g = ENV.lock().unwrap();
-        let (h, x, c) = (std::env::var_os("HOME"), std::env::var_os("XDG_DATA_HOME"), std::env::var_os("XDG_CONFIG_HOME"));
+        let (h, x, c) = (
+            std::env::var_os("HOME"),
+            std::env::var_os("XDG_DATA_HOME"),
+            std::env::var_os("XDG_CONFIG_HOME"),
+        );
         std::env::set_var("HOME", &home);
         std::env::remove_var("XDG_DATA_HOME");
         std::env::remove_var("XDG_CONFIG_HOME");
@@ -236,7 +370,10 @@ mod tests {
         install().unwrap();
         uninstall(true, Some(&data)).unwrap();
         assert!(!data.join("history.db").exists());
-        assert!(data.join("other-file.txt").exists(), "files that are not ours stay");
+        assert!(
+            data.join("other-file.txt").exists(),
+            "files that are not ours stay"
+        );
 
         for (k, v) in [("HOME", h), ("XDG_DATA_HOME", x), ("XDG_CONFIG_HOME", c)] {
             match v {
@@ -262,7 +399,12 @@ mod tests {
 
     #[test]
     fn the_notice_says_what_matters() {
-        for needle in ["only on this computer", "encrypted", "Nothing is sent", "does not start when you sign in"] {
+        for needle in [
+            "only on this computer",
+            "encrypted",
+            "Nothing is sent",
+            "does not start when you sign in",
+        ] {
             assert!(NOTICE.contains(needle), "{needle}");
         }
     }

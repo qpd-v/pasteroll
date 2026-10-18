@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+[ -z "${DPKG_ROOT:-}" ] || exit 0
+if [ -d /run/systemd/system ]; then systemctl daemon-reload; fi
+# Never remove clipboard history, keys, settings or per-account extension copies.
+exit 0

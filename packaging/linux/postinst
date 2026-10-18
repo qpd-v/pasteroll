@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+[ -z "${DPKG_ROOT:-}" ] || exit 0
+if [ "${1:-}" = configure ]; then
+    if command -v modprobe >/dev/null 2>&1; then modprobe uinput 2>/dev/null || :; fi
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload
+        # Preserve an already active service on upgrade. New installs stay disabled.
+        systemctl try-restart pasteroll-input.service
+    fi
+fi
+exit 0

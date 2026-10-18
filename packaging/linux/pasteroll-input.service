@@ -1,0 +1,46 @@
+[Unit]
+Description=Pasteroll optional mouse activation helper
+Documentation=https://github.com/qpd-v/pasteroll
+After=dbus.service systemd-logind.service
+Requires=dbus.service
+
+[Service]
+Type=dbus
+BusName=com.pasteroll.Input
+ExecStart=@LIBEXECDIR@/pasteroll-input
+Restart=on-failure
+RestartSec=2
+WatchdogSec=3
+NotifyAccess=main
+TimeoutStopSec=10
+User=root
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SYS_PTRACE
+DevicePolicy=closed
+DeviceAllow=char-input r
+DeviceAllow=/dev/uinput rw
+LimitCORE=0
+MemoryMax=128M
+TasksMax=32
+
+[Install]
+WantedBy=multi-user.target

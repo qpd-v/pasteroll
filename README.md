@@ -4,18 +4,34 @@ A clipboard history you can scroll with the mouse wheel. Copy as usual; when you
 clip, press **Ctrl+Shift+middle-click**, scroll through your history right where you are working,
 and paste the whole clip, or select just a part of it and paste only that.
 
-**Status: public beta (`0.1.0-beta.2`).** It works and is tested, but it is young. Expect rough
+**Status: public beta (`0.1.0-beta.3`).** It works and is tested, but it is young. Expect rough
 edges and please [report them](https://github.com/qpd-v/pasteroll/issues).
 
 | | Windows 10 / 11 | Linux (X11) |
 |---|---|---|
-| Download | [Setup EXE](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.2/pasteroll-0.1.0-beta.2-windows-x64-setup.exe) · [Portable ZIP](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.2/pasteroll-0.1.0-beta.2-windows-x64-portable.zip) | [Static archive](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.2/pasteroll-0.1.0-beta.2-linux-x86_64.tar.gz) · [Debian/Ubuntu .deb](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.2/pasteroll_0.1.0-beta.2_amd64.deb) |
+| Download | [Setup EXE](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.3/pasteroll-0.1.0-beta.3-windows-x64-setup.exe) · [Portable ZIP](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.3/pasteroll-0.1.0-beta.3-windows-x64-portable.zip) | [Static archive](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.3/pasteroll-0.1.0-beta.3-linux-x86_64.tar.gz) · [Debian/Ubuntu .deb](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.3/pasteroll_0.1.0-beta.3_amd64.deb) |
 | Tray icon | yes | StatusNotifier (KDE, GNOME with AppIndicator, Ubuntu) or XEmbed |
-| Wayland | n/a | not supported; use an X11 session (see below) |
+| Wayland | n/a | experimental GNOME 46; separate packages and setup below |
 | macOS | not available | |
 
-[Release notes and testing status](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.2) ·
-[SHA256SUMS](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.2/SHA256SUMS)
+[Release notes and testing status](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.3) ·
+[SHA256SUMS](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.3/SHA256SUMS)
+
+## Experimental GNOME 46 Wayland support
+
+Beta.3 adds native GNOME 46 Wayland support through a Shell companion.
+Ctrl+Shift+middle-click requires the optional administrator-enabled host input helper;
+explicit keyboard mode uses Ctrl+Shift+Space. See [GNOME setup](extensions/INPUT_HELPER.md).
+**Physical desktop, login/lock and suspend testing has not been performed.** Automated
+headless sessions and synthetic kernel input passed; treat this backend as experimental.
+Other GNOME versions and other Wayland compositors are not supported.
+
+- [GNOME 46 experimental archive](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.3/pasteroll-0.1.0-beta.3-linux-x86_64-gnome-development.tar.gz)
+- [GNOME 46 experimental Debian/Ubuntu package](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.3/pasteroll_0.1.0-beta.3_amd64-gnome-development.deb)
+
+The X11 and GNOME Debian packages are alternatives, not coinstallable. The GNOME
+helper stays disabled after a fresh package install. The development suffix identifies
+the experimental packages; it does not indicate broader Wayland compatibility.
 
 ## Features
 
@@ -47,13 +63,13 @@ edges and please [report them](https://github.com/qpd-v/pasteroll/issues).
 
 ### Windows
 
-1. Download `pasteroll-0.1.0-beta.2-windows-x64-setup.exe` and `SHA256SUMS` from the
-   [beta.2 release](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.2) and
+1. Download `pasteroll-0.1.0-beta.3-windows-x64-setup.exe` and `SHA256SUMS` from the
+   [beta.3 release](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.3) and
    [verify the checksum](#verify-your-download).
 2. Run the setup wizard. **Only for me** is the default and needs no administrator rights;
    **For all users** needs UAC. Start menu is on by default; desktop shortcut and autostart are off.
 
-For portable use, extract `pasteroll-0.1.0-beta.2-windows-x64-portable.zip` and run `pasteroll.exe`.
+For portable use, extract `pasteroll-0.1.0-beta.3-windows-x64-portable.zip` and run `pasteroll.exe`.
 Its included `portable.txt` keeps application data in the adjacent `data` folder.
 
 > **"Windows protected your PC"**: the beta is **not code-signed yet**, so SmartScreen shows
@@ -64,14 +80,14 @@ Its included `portable.txt` keeps application data in the adjacent `data` folder
 ### Linux
 
 ```sh
-tar xzf pasteroll-0.1.0-beta.2-linux-x86_64.tar.gz
-cd pasteroll-0.1.0-beta.2-linux-x86_64
+tar xzf pasteroll-0.1.0-beta.3-linux-x86_64.tar.gz
+cd pasteroll-0.1.0-beta.3-linux-x86_64
 ./install.sh              # per-user: ~/.local/bin, menu entry and icon
 pasteroll run
 ```
 
 For all users, use `sudo ./install.sh --system`. On Debian/Ubuntu, an alternative is
-`sudo dpkg -i pasteroll_0.1.0-beta.2_amd64.deb`. Neither installer enables autostart.
+`sudo dpkg -i pasteroll_0.1.0-beta.3_amd64.deb`. Neither installer enables autostart.
 Remove an archive install with `./install.sh --uninstall` (add `--system` and sudo for a system
 install), or a Debian package with `sudo dpkg -r pasteroll`. These operations keep history/settings.
 The app's own `install` and `uninstall` commands manage per-user installs only.
@@ -79,9 +95,9 @@ The app's own `install` and `uninstall` commands manage per-user installs only.
 Optional: Extract text needs `tesseract-ocr`, and Save as uses `zenity` or `kdialog` (without one,
 clips are saved to the Desktop).
 
-Pasteroll needs an **X11 session**. Ubuntu and Fedora log in to Wayland by default: choose
-"Ubuntu on Xorg" (or "GNOME on Xorg") from the gear icon on the login screen. Under Wayland,
-programs running through XWayland are covered but native Wayland windows are not.
+The standard Linux packages above need an **X11 session**. Ubuntu and Fedora log in to Wayland by default: choose
+"Ubuntu on Xorg" (or "GNOME on Xorg") from the gear icon on the login screen. For native GNOME 46 Wayland windows, use the experimental packages and companion setup above.
+The X11 backend does not provide full native Wayland support.
 
 ## Use
 
@@ -188,7 +204,7 @@ Each release has a `SHA256SUMS` file.
 
 ```powershell
 # Windows
-Get-FileHash .\pasteroll-0.1.0-beta.2-windows-x64-setup.exe -Algorithm SHA256
+Get-FileHash .\pasteroll-0.1.0-beta.3-windows-x64-setup.exe -Algorithm SHA256
 ```
 ```sh
 # Linux

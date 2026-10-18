@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+[ -z "${DPKG_ROOT:-}" ] || exit 0
+if [ "${1:-}" = remove ] && [ -d /run/systemd/system ]; then
+    systemctl stop pasteroll-input.service
+    systemctl disable pasteroll-input.service 2>/dev/null || :
+fi
+exit 0

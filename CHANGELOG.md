@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 0.1.0-beta.3
+
+- Add a native GNOME 46 Wayland backend with a Pasteroll Shell companion: clipboard
+  capture, carousel, search, partial paste, expanded viewer, image editor and settings.
+- Add an optional administrator-enabled input helper for Ctrl+Shift+middle-click on
+  stock GNOME. Keyboard activation is available explicitly without the helper.
+- Authenticate the Shell/session, use short renewable input leases, and recover from
+  helper/device loss without leaving input grabbed.
+- Add separate GNOME development archive and Debian packages. The helper is disabled
+  after a fresh package install; enabling it requires an administrator.
+- Windows and X11 retain their existing backends.
+
+GNOME validation so far uses isolated automated sessions and synthetic kernel input.
+Physical desktop, login/lock/suspend and real compositor input testing has not been performed.
+This release exposes GNOME 46 support as experimental with that limitation.
+GNOME versions other than 46, other Wayland desktops, Flatpak and Snap are not supported.
+
 ## 0.1.0-beta.2
 
 - Portable mode: place `portable.txt` beside the program to keep history, keys, configuration,

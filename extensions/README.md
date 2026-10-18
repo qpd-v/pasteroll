@@ -1,84 +1,157 @@
-# GNOME bridge development foundations
+# Pasteroll GNOME companion
 
-The companion in `pasteroll@pasteroll.com/` is a development component for GNOME
-46 Wayland. It is not installed by the current packages. The normal `run` command
-still uses the existing X11 backend; full controller integration is a later phase.
+The companion in `pasteroll@pasteroll.com/` is the native GNOME Shell side of
+the GNOME Wayland backend. It targets GNOME 46 and uses the local D-Bus interface
+`com.pasteroll.Gnome.Bridge2` at `/com/pasteroll/Gnome`.
 
-## What exists
+## What it provides
 
-- Session detection distinguishes a Wayland desktop from its optional XWayland DISPLAY.
-- Versioned local D-Bus protocol, with the Rust client pinned to the current
-  GNOME Shell bus owner and verified to run as the same UID.
-- The companion accepts only the owning connection of an explicitly installed
-  Pasteroll executable: `/usr/bin/pasteroll`, `/usr/local/bin/pasteroll`, or
-  `~/.local/bin/pasteroll`. Symlinks are resolved. Unapproved programs cannot
-  attach just by knowing the bus name. This does not protect against a same-user
-  attacker replacing the installed executable; the existing threat model still applies.
-- UTF-8 text, local file references and PNG clipboard transfers, with explicit
-  size bounds, stale-selection checks, sensitive-marker filtering and own-write exclusion.
-- Real renderer BGRA frames can be presented on a native Shell surface; input
-  is routed as generation-tagged controller events.
-- Owner loss, extension disable, stale generations, queue overflow and a stalled
-  client release the overlay. The application is never allowed to leave a modal
-  grab indefinitely merely by ceasing to poll.
+- Clipboard snapshots, bounded text/file/PNG reads and writes, stale-selection
+  checks, sensitive-marker filtering and own-write exclusion.
+- A native Shell carousel with renderer BGRA frames and generation-tagged input
+  events for search, selection, wheel navigation, dragging and keyboard use.
+- The expanded viewer, animation frames, wheel/find/drag input and image-editor
+  modal outside-click handling.
+- Foreground target context, stable PID/window checks, privilege checks, and a
+  bounded left-click replay for paste-at-click. Only the real captured left
+  click is replayed, once, after releasing the modal grab.
+- Native paste delivery for exactly three chords: Ctrl+V, Shift+Insert and
+  Ctrl+Shift+V. No arbitrary key or command method is exported.
+- A native panel menu with activate, pause, settings, data-folder and quit
+  actions. The settings dialog edits structured options and returns proposals
+  through `SettingsResult`; destructive reductions require a real confirmation
+  before Rust applies them.
+- A first-run notice with a real acknowledgement control. Acknowledgement emits
+  Poll kind 25; the notice is never marked acknowledged by state publication
+  alone.
 
-No arbitrary keystroke injection, shell command execution, network endpoint,
-remote input interface or clipboard history persistence is exported by the
-companion. The separate isolated spike contains a test injector; it is not part
-of this companion and must never be installed into a real desktop.
+The companion owner-pins the D-Bus peer, verifies the peer's UID and executable,
+rejects stale generations, releases grabs on owner loss, lock, timeout, disable
+and overflow, and keeps event queues bounded. It does not expose shell command
+execution, an HTTP endpoint, a general input injector, or clipboard history
+persistence; history remains owned by the encrypted Rust store.
 
-## Mouse integration finding
+## Activation and coordinates
 
-The original mouse chord works on the Shell desktop in the spike, but GNOME 46
-routes native-window clicks before normal extension handlers can consume them.
-An appended Clutter filter also runs too late. Upstream branches 48–50 and main
-were checked for a supported earlier-priority mouse shortcut API; none was found.
-Those newer branches were inspected, not runtime-tested.
+Ctrl+Shift+middle-click activation on stock GNOME uses the optional Pasteroll host
+input helper. See [INPUT_HELPER.md](INPUT_HELPER.md) for its permissions,
+installation, tests and device limits. With that service installed and enabled:
 
-The bridge reports **mouse activation unavailable**. It does not implement a
-polling substitute or require a privileged global-input reader. Keyboard input
-can be armed only by an authenticated client making an explicit opt-in request.
-The normal app has not adopted a different default gesture.
+```sh
+pasteroll run --backend gnome
+```
+
+Keyboard activation remains an explicit alternative:
+
+```sh
+pasteroll run --backend gnome --wayland-keyboard
+```
+
+Frame dimensions and BGRA bytes are device pixels. Global bridge coordinates,
+including Context pointer and monitor/work rectangles, are GNOME logical
+coordinates. `Show` returns a logical origin and scale; the Rust adapter scales
+exactly once at its boundary. Viewer positions are logical and viewer frame
+dimensions are device pixels.
+
+The tested target is GNOME 46 with a single scale-1 virtual monitor. Mixed-DPI,
+physical GPU, newer GNOME releases and non-GNOME Wayland desktops are not
+advertised as tested. Mouse activation capability is advertised only after the
+authenticated host helper has acquired supported devices.
+
+### Executable identity and data protection
+
+The companion verifies the peer's UID and executable through D-Bus credentials
+and `/proc/<pid>/exe`. The app authenticates before opening keys or history, then
+immediately disables process dumps before accessing those data. It never
+temporarily restores dumpability. Subsequent requests are pinned to that unique
+D-Bus peer; companion loss closes the app rather than trusting a replacement.
+
+Accepted executable locations are `/usr/bin/pasteroll`,
+`/usr/local/bin/pasteroll` and `~/.local/bin/pasteroll`, including their resolved
+symlink targets. This GNOME backend requires an installed executable and the
+companion; starting an arbitrary portable copy is not supported by its peer check.
+
+Copies are excluded when sensitive MIME markers are present. App identification
+uses the foreground process and, if it is hardened, Shell's desktop-app mapping.
+When exclusions are configured and the source still cannot be identified, that
+copy is skipped. Own clipboard writes are excluded from history.
+
+## Development installation on GNOME 46
+
+This implementation is for the development branch; it is not included in the
+published beta.2 downloads. From a Linux source checkout, build the app and copy
+the companion into the current account:
+
+```sh
+cargo build --release -p pasteroll-linux
+install -Dm755 target/release/pasteroll "$HOME/.local/bin/pasteroll"
+companion_dir="$HOME/.local/share/gnome-shell/extensions/pasteroll@pasteroll.com"
+install -d "$companion_dir"
+cp extensions/pasteroll@pasteroll.com/*.js \
+   extensions/pasteroll@pasteroll.com/metadata.json \
+   extensions/pasteroll@pasteroll.com/stylesheet.css "$companion_dir/"
+```
+
+Log out and back in so GNOME discovers the companion, then run:
+
+```sh
+gnome-extensions enable pasteroll@pasteroll.com
+"$HOME/.local/bin/pasteroll" wayland-check
+"$HOME/.local/bin/pasteroll" run --backend gnome --wayland-keyboard
+```
+
+Use **Ctrl+Shift+Space** to open the carousel. Mouse-wheel selection,
+click-to-paste and Ctrl+desktop-click image editing then work within that explicit
+keyboard session. Autostart is off until enabled in Settings and retains the
+chosen activation mode. Without keyboard opt-in, GNOME mouse mode requires the
+optional host helper; it does not silently switch to XWayland.
+
+To stop and remove only the companion:
+
+```sh
+"$HOME/.local/bin/pasteroll" stop
+gnome-extensions disable pasteroll@pasteroll.com
+gnome-extensions uninstall pasteroll@pasteroll.com
+```
+
+History and settings remain in the normal app data folder. The app's uninstall
+workflow is separate. Disable sign-in startup in Settings before removing the
+app if you previously enabled it.
+
+## Bridge lifecycle
+
+Input generations tag events and frames. Paste authorization survives visible
+session teardown for at most three seconds and is consumed once, with final
+focus, PID, privilege, held-modifier and clipboard-owner checks. Unknown Shell
+surfaces are rejected rather than guessed to be desktop save targets.
+
+Poll actions 20–24 carry panel intent; 25 acknowledges the actual welcome button;
+26 coalesces clipboard-change notifications to wake the Rust capture worker.
+File dialogs suspend the grab and surfaces; their intentional suspension can
+outlast the normal watchdog. Owner loss and extension disable still tear down UI.
 
 ## Diagnostics and tests
 
-`pasteroll wayland-check` checks session type and companion protocol availability
-without opening the history or reading clipboard content. It explains that the
-full controller integration is not enabled yet.
+`pasteroll wayland-check` performs the owner-pinned Bridge2 handshake without
+opening history or reading clipboard contents. Native integration runs use the
+existing isolated launcher and disposable private profile; results and sanitized
+logs are written under the ignored `target-dev/` directories.
 
-From the repository root, with the existing WSL test prerequisites:
-
-```sh
-python scripts/wayland-spike/check.py --wsl cargo build --offline -q -p pasteroll-linux --example wayland-probe
-wsl -d Ubuntu -- bash scripts/wayland-spike/run.sh --phase2
-```
-
-The launcher copies the compiled synthetic probe to its disposable private
-`~/.local/bin/pasteroll`, enables the companion and separate test injector only
-inside that profile, and uses a native GTK4 MIME provider/consumer. It uses no
-live display, clipboard, history or user D-Bus service. Results and sanitized
-logs are under the ignored `target-dev/wayland-phase2/`.
-
-Protocol/session tests also compile on Windows:
+From the repository root, the existing native suite entry point is:
 
 ```sh
-python scripts/wayland-spike/check.py cargo test --offline -q --workspace
-python scripts/wayland-spike/check.py --wsl cargo test --offline -q --workspace --exclude pasteroll-win
+wsl -d Ubuntu -- bash scripts/wayland-spike/run.sh --phase3
 ```
 
-The integration probe is an example binary, not included in release packages.
-Its fixed synthetic fixtures and namespace marker prevent accidental live use.
+JavaScript syntax checks can be run without a desktop session:
 
-## Current limits
+```sh
+for file in extensions/pasteroll@pasteroll.com/*.js; do
+  node --input-type=module --check < "$file"
+done
+```
 
-GNOME 46 is the only declared Shell version. The clipboard protocol caps a clip
-at 64 MiB, and this initial frame transport caps a BGRA frame at 16 MiB. Frame
-presentation currently uses D-Bus byte arrays; high-resolution/fullscreen
-throughput requires measurement and likely shared-memory transport before it
-can be advertised. Image dimensions are independently checked by the core decoder.
-
-MIME transfer and source-app reporting do not establish compatibility with every
-application. Source-app identity is best effort. Full carousel behavior, the
-expanded viewer/editor, paste targeting, terminal warnings, per-app policies,
-tray/settings/autostart, fractional scaling, installation and store packaging
-remain separate integration and validation work.
+The production extension does not require X11 or XWayland. Keyboard mode needs
+no privileged helper; native mouse mode requires the optional host service.
+The test injector in `scripts/wayland-spike` is
+separate from this companion and must only be used inside its isolated launcher.

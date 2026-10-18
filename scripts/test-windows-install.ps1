@@ -105,7 +105,7 @@ try {
     $data = Join-Path $root 'synthetic-data'
     $db = Join-Path $data 'history.db'
     $release = Join-Path $repoRoot 'target\release\pasteroll.exe'
-    $setup = Join-Path $repoRoot 'dist\pasteroll-0.1.0-beta.2-windows-x64-setup.exe'
+    $setup = Join-Path $repoRoot 'dist\pasteroll-0.1.0-beta.3-windows-x64-setup.exe'
     Assert-Test ([Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($release)).Contains('--if-exe requires an executable path.')) 'Rebuild first: the release executable lacks scoped-stop support.'
     Assert-Test ((Get-Item -LiteralPath $setup).LastWriteTimeUtc -ge (Get-Item -LiteralPath $release).LastWriteTimeUtc) 'Rebuild Setup after rebuilding the app.'
 
@@ -153,6 +153,10 @@ public static class StopProbe {
     $probeSource = Join-Path $root 'stop-probe.cs'
     [IO.File]::WriteAllText($probeSource, $source)
     $csc = Join-Path ([Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory()) 'csc.exe'
+    if (-not (Test-Path -LiteralPath $csc)) {
+        $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+    }
+    Assert-Test (Test-Path -LiteralPath $csc) 'The native test requires the installed .NET Framework C# compiler.'
     Invoke-Native $csc @('/nologo', '/target:winexe', '/optimize+', '/debug-', ('/out:' + $probeA), $probeSource) | Out-Null
     Copy-Item -LiteralPath $probeA -Destination $probeB
     foreach ($probe in @($probeA, $probeB)) {

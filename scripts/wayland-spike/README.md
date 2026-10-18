@@ -1,7 +1,64 @@
-# GNOME Wayland phase-one experiment
+# Isolated GNOME Wayland validation
 
-This is research tooling, not a backend enabled in Pasteroll. The app, its five
-crates, packages and version remain unchanged. Only synthetic text is used.
+## Native mouse helper suite
+
+`run.sh --mouse` tests the real Pasteroll host input service with disposable
+kernel evdev/uinput devices, a private logind fixture, stock headless GNOME and
+the real app. Build both Linux binaries first. See
+[INPUT_HELPER.md](../../extensions/INPUT_HELPER.md) for permissions, packaging
+and validation limits. Test results are under `target-dev/wayland-mouse/`.
+The driver reflects normal input into Clutter because this is not a physical
+libinput seat; kernel button suppression and helper activation are exercised
+without replacing the production service.
+
+## Phase three native suite
+
+`phase3.py` drives the real `pasteroll` binary with the GNOME Wayland backend
+and native GTK4 clipboard clients. `run.sh --phase3` copies the freshly built
+binary to the launcher's private `~/.local/bin/pasteroll`, installs the two
+extensions only in the disposable profile, and runs in the existing private
+mount, network and PID namespaces. It never attaches to WSLg or the host
+display, session bus, clipboard or history.
+
+Build and check with the sanitized Cargo wrapper, then run the native suite:
+
+```sh
+python scripts/wayland-spike/check.py --wsl cargo build --offline -p pasteroll-linux --bin pasteroll --example wayland-probe
+bash scripts/wayland-spike/run.sh --phase3   # in WSL, from this checkout
+```
+
+On a Linux checkout, run `bash scripts/wayland-spike/run.sh --phase3` from the
+repository root. Outputs are under the ignored `target-dev/wayland-phase3/`.
+Sanitized process logs, `results.json` and `screenshots.json` are at that output
+root; PNG evidence is retained in timestamped take directories. A failed required
+check returns a nonzero process status. A partial run is never a full-app pass.
+
+The suite covers Bridge2 handshake/capabilities, capture order, exclusions and
+pause, explicit `--wayland-keyboard` activation, carousel/search/drag-selected
+partial paste, fixed paste chords and terminal warning, wrong-target and held
+modifier rejection, expanded viewer scroll/find, image editor save with the
+original history entry preserved, capture policies, settings confirmation and
+first-run acknowledgement, then graceful stop, extension disable, owner loss
+and watchdog release. Settings changes and notice acknowledgement are asserted
+through their native controls; `first-run.txt` must remain absent until the
+companion reports shell-action kind 25 from the real acknowledgement control.
+
+The test driver is a private injector under `scripts/wayland-spike/extension/`,
+never part of the production companion. The fixture has two GTK4 targets so a
+foreground change can be tested. The suite uses one software-rendered 1280x800
+monitor at scale 1.0 and GNOME Shell 46. Mixed DPI, physical devices, GDM/lock
+screen, newer GNOME, KDE and multi-monitor behavior remain untested.
+
+Phase two remains available with `run.sh --phase2`; its probe now exercises the
+Bridge2 wire version, generation-preserving `InputActive`/`Show`, viewer
+transfer, suspend, and the existing clipboard regression checks.
+
+The production backend now uses the actual app controller, encrypted store and
+renderer through the companion. These research scripts stay separate from the
+production extension. Tests use only synthetic text, file lists and PNGs; the
+published packages and version are unchanged in this phase.
+
+## Historical phase-one experiment
 
 ## Result (GNOME Shell 46.0, Ubuntu 24.04)
 
@@ -88,11 +145,10 @@ was found. This is source evidence, not a runtime test of those versions.
 GNOME's maintainer explains the same native-window routing restriction here:
 https://discourse.gnome.org/t/how-to-bind-modifier-mousebutton-in-gjs/3743
 
-A compositor change or a separately configured device remapper could change
-that result. Neither is installed or required by this work. Pointer polling
-would allow an unwanted click to reach the target, so it is not used.
-Phase two can still implement and test backend foundations while declaring
-mouse activation unavailable and keeping keyboard experiments explicitly opt-in.
+These were the original phase-one/two findings. Those probes did not install a
+compositor change or device remapper. The later Pasteroll-owned host helper is
+now tested separately by `--mouse`. Pointer polling remains unsuitable because
+it lets the original click reach the target.
 
 - GNOME extension anatomy and lifecycle: https://gjs.guide/extensions/overview/anatomy.html
 - GNOME isolated/nested development guidance: https://gjs.guide/extensions/development/debugging.html

@@ -1,9 +1,11 @@
-"""Launch and measure the GNOME experiment in the namespace created by run.sh.
+"""Launch isolated GNOME Wayland suites inside the namespaces created by run.sh.
 
-No production Pasteroll binary is run. A real GNOME Wayland compositor, native
-GTK client and research-only extension prove the required desktop capabilities.
+Phase one/two use research probes. Phase three runs the real Pasteroll binary
+from a private install path against native GTK4 clipboard fixtures. Nothing in
+this launcher attaches to the live desktop.
 """
 import getpass
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -19,7 +21,12 @@ sys.dont_write_bytecode = True
 SOURCE = Path(__file__).resolve().parent
 ROOT = SOURCE.parents[1]
 PHASE2 = '--phase2' in sys.argv or os.environ.get('PASTEROLL_PHASE2') == '1'
-OUT = ROOT / 'target-dev' / ('wayland-phase2' if PHASE2 else 'wayland-phase1')
+MOUSE = '--mouse' in sys.argv or os.environ.get('PASTEROLL_MOUSE_TEST') == '1'
+RELEASE = '--release' in sys.argv or os.environ.get('PASTEROLL_RELEASE_TEST') == '1'
+PHASE3 = MOUSE or '--phase3' in sys.argv or os.environ.get('PASTEROLL_PHASE3') == '1'
+OUT = ROOT / 'target-dev' / ('wayland-mouse-release' if MOUSE and RELEASE else ('wayland-mouse' if MOUSE else ('wayland-phase3' if PHASE3 else ('wayland-phase2' if PHASE2 else 'wayland-phase1'))))
+APP_BINARY=ROOT/('target-dev/wayland-mouse/release-inputs/pasteroll' if RELEASE else 'target-dev/linux/debug/pasteroll')
+HELPER_BINARY=ROOT/('target-dev/wayland-mouse/release-inputs/pasteroll-input' if RELEASE else 'target-dev/linux/debug/pasteroll-input')
 UUID = 'wayland-spike@pasteroll.com'
 
 def sanitize(value):
@@ -43,11 +50,19 @@ def launch(command, env, name):
 
 def stop(proc):
     if proc.poll() is None:
-        os.killpg(proc.pid, signal.SIGTERM)
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except PermissionError:
+            if not MOUSE:
+                raise
+            subprocess.run(['sudo','-n','kill','-TERM','--',f'-{proc.pid}'],check=False,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            os.killpg(proc.pid, signal.SIGKILL)
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except PermissionError:
+                subprocess.run(['sudo','-n','kill','-KILL','--',f'-{proc.pid}'],check=False,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
             proc.wait()
 
 def session():
@@ -227,12 +242,19 @@ def session():
 
 def main():
     assert os.environ.get('PASTEROLL_WAYLAND_SPIKE') == '1', 'use run.sh'
+    assert not RELEASE or MOUSE, '--release currently applies to the mouse suite only'
     marker = Path('/run/pasteroll-wayland-spike')
     assert marker.is_file() and marker.stat().st_uid == 0, 'private namespace marker is missing; use run.sh'
     OUT.mkdir(parents=True, exist_ok=True)
     if '--session' in sys.argv:
         assert os.environ.get('HOME', '').startswith('/tmp/pasteroll-wayland-'), 'private home required'
-        if PHASE2:
+        if MOUSE:
+            from mouse import session as mouse_session
+            mouse_session()
+        elif PHASE3:
+            from phase3 import session as phase3_session
+            phase3_session()
+        elif PHASE2:
             from phase2 import session as phase2_session
             phase2_session()
         else:
@@ -248,6 +270,12 @@ def main():
         env['PASTEROLL_SPIKE_TAKE'] = take_name
         if PHASE2:
             env['PASTEROLL_PHASE2'] = '1'
+        if PHASE3:
+            env['PASTEROLL_PHASE3'] = '1'
+        if MOUSE:
+            env['PASTEROLL_MOUSE_TEST'] = '1'
+        if RELEASE:
+            env['PASTEROLL_RELEASE_TEST'] = '1'
         env.update(HOME=str(private / 'home'), XDG_DATA_HOME=str(private / 'data'),
                    XDG_CONFIG_HOME=str(private / 'config'), XDG_CACHE_HOME=str(private / 'cache'),
                    XDG_RUNTIME_DIR=str(private / 'runtime'), XDG_SESSION_TYPE='wayland',
@@ -260,22 +288,48 @@ def main():
             Path(env[key]).mkdir(mode=0o700, parents=True, exist_ok=True)
         extension = Path(env['XDG_DATA_HOME']) / 'gnome-shell/extensions' / UUID
         shutil.copytree(SOURCE / 'extension', extension)
-        if PHASE2:
+        if PHASE2 or PHASE3:
             production = Path(env['XDG_DATA_HOME']) / 'gnome-shell/extensions/pasteroll@pasteroll.com'
             shutil.copytree(ROOT / 'extensions/pasteroll@pasteroll.com', production)
-            probe = Path(env['HOME']) / '.local/bin/pasteroll'
-            probe.parent.mkdir(parents=True)
-            shutil.copy2(ROOT / 'target-dev/linux/debug/examples/wayland-probe', probe)
-            probe.chmod(0o700)
+            installed = Path(env['HOME']) / '.local/bin/pasteroll'
+            installed.parent.mkdir(parents=True)
+            source = APP_BINARY if PHASE3 else ROOT/'target-dev/linux/debug/examples/wayland-probe'
+            if not source.is_file():
+                raise SystemExit('the requested build is missing; build it with check.py first')
+            shutil.copy2(source, installed)
+            installed.chmod(0o700)
+            inputs = {'binary_sha256': hashlib.sha256(installed.read_bytes()).hexdigest(),
+                      'companion': {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                                    for p in sorted(production.iterdir()) if p.is_file()},
+                      'driver_sha256': hashlib.sha256((SOURCE / ('mouse.py' if MOUSE else ('phase3.py' if PHASE3 else 'phase2.py'))).read_bytes()).hexdigest()}
+            if MOUSE:
+                inputs['helper_sha256']=hashlib.sha256(HELPER_BINARY.read_bytes()).hexdigest()
+                inputs['kernel_fixture_sha256']=hashlib.sha256((SOURCE/'input-fixture.py').read_bytes()).hexdigest()
+                inputs['release_payloads']=RELEASE
+            (OUT / 'inputs.json').write_text(json.dumps(inputs, indent=2) + '\n')
+            Path(env['HOME'], 'Desktop').mkdir(mode=0o700)
         # A separate empty bus satisfies Shell's system-bus connection without
         # exposing the host's accounts, login manager, power or clipboard services.
         env['DBUS_SYSTEM_BUS_ADDRESS'] = 'unix:path=' + str(private / 'system-bus')
-        private_system = launch(['dbus-daemon', '--session', '--nofork',
-                                 '--address=' + env['DBUS_SYSTEM_BUS_ADDRESS']], env, 'private-system-bus')
+        if MOUSE:
+            config=private/'system.conf'
+            config.write_text('<busconfig><type>system</type><listen>'+env['DBUS_SYSTEM_BUS_ADDRESS']+
+                '</listen><auth>EXTERNAL</auth><policy context="default"><allow user="*"/>'
+                '<allow own="*"/><allow send_destination="*"/><allow receive_sender="*"/></policy></busconfig>')
+            system_command=['dbus-daemon','--nofork','--config-file='+str(config)]
+        else:
+            system_command=['dbus-daemon', '--session', '--nofork','--address=' + env['DBUS_SYSTEM_BUS_ADDRESS']]
+        private_system = launch(system_command, env, 'private-system-bus')
         try:
             time.sleep(.3)
+            if MOUSE:
+                rootenv=['sudo','-n','env','-i','PATH=/usr/bin:/bin','LANG=C.UTF-8',
+                         'DBUS_SYSTEM_BUS_ADDRESS='+env['DBUS_SYSTEM_BUS_ADDRESS']]
+                input_fixture=launch([*rootenv,'/usr/bin/python3',str(SOURCE/'input-fixture.py'),str(os.getuid())],env,'input-fixture')
+                input_service=launch([*rootenv,str(HELPER_BINARY)],env,'input-service')
+                time.sleep(.5)
             proc = launch(['dbus-run-session', '--', '/usr/bin/python3', str(Path(__file__)), '--session'], env, 'session')
-            result = proc.wait(timeout=120)
+            result = proc.wait(timeout=600 if PHASE3 else 120)
             for line in (OUT / 'session.log').read_text().splitlines():
                 if line.startswith(('PASS ', 'FAIL ')):
                     print(line)
@@ -285,6 +339,10 @@ def main():
         finally:
             if 'proc' in locals():
                 stop(proc)
+            if 'input_service' in locals():
+                stop(input_service)
+            if 'input_fixture' in locals():
+                stop(input_fixture)
             stop(private_system)
 
 if __name__ == '__main__':

@@ -1,9 +1,10 @@
-//! Pasteroll for Linux (X11).
+//! Pasteroll for Linux (X11 and GNOME Wayland).
 //!
-//! `pasteroll run` starts the app: Ctrl+Shift+middle-click opens the clipboard carousel at the
-//! pointer; the wheel, the arrow keys and typing move through and search the history; Enter or a
-//! click on the target pastes. Wayland is not supported (it has no global input grabs for normal
-//! programs); under XWayland only X11 programs are covered.
+//! On X11, `pasteroll run` opens the carousel with Ctrl+Shift+middle-click. Native GNOME Wayland
+//! uses `pasteroll run --backend gnome` with the host mouse helper, or the explicit
+//! `--wayland-keyboard` alternative that arms the companion's keyboard shortcut.
+//! Explicit X11 mode remains
+//! available for X11 and XWayland applications.
 
 #[cfg(not(unix))]
 fn main() {
@@ -50,7 +51,10 @@ mod cli {
     }
 
     fn value(args: &[String], name: &str) -> Option<String> {
-        args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
     }
 
     fn fail(msg: impl AsRef<str>) -> i32 {
@@ -76,10 +80,24 @@ mod cli {
             && matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
     }
 
-    fn open(db: &Path) -> Result<(Store, config::Config, <LinuxOs as pasteroll_core::keystore::Os>::Lock), String> {
+    fn open(
+        db: &Path,
+    ) -> Result<
+        (
+            Store,
+            config::Config,
+            <LinuxOs as pasteroll_core::keystore::Os>::Lock,
+        ),
+        String,
+    > {
         let lock = ks::lock_history::<LinuxOs>(db, false)?;
-        let cfg = ks::load_config(db)
-            .map_err(|p| format!("{} is not valid:\n  - {}", ks::config_path(db).display(), p.join("\n  - ")))?;
+        let cfg = ks::load_config(db).map_err(|p| {
+            format!(
+                "{} is not valid:\n  - {}",
+                ks::config_path(db).display(),
+                p.join("\n  - ")
+            )
+        })?;
         let mut store = ks::open_store::<LinuxOs>(db)?;
         store.set_limits(cfg.limits).map_err(|e| e.to_string())?;
         Ok((store, cfg, lock))
@@ -107,18 +125,27 @@ mod cli {
                 return fail(format!("seed failed: {e}"));
             }
         }
-        s.add_files(&["/demo/Documents/invoice-2026-10.pdf".into()], now).ok();
+        s.add_files(&["/demo/Documents/invoice-2026-10.pdf".into()], now)
+            .ok();
         let mut px = Vec::new();
         for y in 0..120u32 {
             for x in 0..200u32 {
                 px.extend_from_slice(&[(x * 255 / 200) as u8, (y * 255 / 120) as u8, 160, 255]);
             }
         }
-        let img = pasteroll_core::image::Rgba { width: 200, height: 120, pixels: px };
+        let img = pasteroll_core::image::Rgba {
+            width: 200,
+            height: 120,
+            pixels: px,
+        };
         if let Some(png) = pasteroll_core::image::encode_png(&img) {
             let _ = s.add_image_png(&png, now);
         }
-        println!("seeded {} clips, 1 file list and 1 image into {}", clips.len(), db.display());
+        println!(
+            "seeded {} clips, 1 file list and 1 image into {}",
+            clips.len(),
+            db.display()
+        );
         0
     }
 
@@ -138,14 +165,21 @@ mod cli {
         );
         match s.count_unreadable() {
             Ok(0) => {}
-            Ok(n) => println!("DAMAGED:        {n} clip(s) cannot be opened. Run `repair --yes` to delete them."),
+            Ok(n) => println!(
+                "DAMAGED:        {n} clip(s) cannot be opened. Run `repair --yes` to delete them."
+            ),
             Err(e) => println!("damaged clips:  could not check ({e})"),
         }
         match ks::rotation_summary::<LinuxOs>(db, now_secs()) {
             Ok(pasteroll_core::RotationState::NotDue) => {
-                println!("key rotation:   not due (every {} days)", ks::ROTATE_EVERY_DAYS)
+                println!(
+                    "key rotation:   not due (every {} days)",
+                    ks::ROTATE_EVERY_DAYS
+                )
             }
-            Ok(pasteroll_core::RotationState::DueByAge) => println!("key rotation:   due (will run at the next start)"),
+            Ok(pasteroll_core::RotationState::DueByAge) => {
+                println!("key rotation:   due (will run at the next start)")
+            }
             Ok(pasteroll_core::RotationState::Requested) => {
                 println!("key rotation:   requested (will run at the next start)")
             }
@@ -164,7 +198,11 @@ mod cli {
     }
 
     fn config_cmd(db: &Path, args: &[String]) -> i32 {
-        let positional: Vec<&String> = args.iter().skip(1).filter(|a| !a.starts_with("--")).collect();
+        let positional: Vec<&String> = args
+            .iter()
+            .skip(1)
+            .filter(|a| !a.starts_with("--"))
+            .collect();
         match positional.first().map(|s| s.as_str()) {
             None | Some("show") => status(db),
             Some("path") => {
@@ -248,7 +286,10 @@ mod cli {
             .and_then(|t| ks::write_config_text::<LinuxOs>(db, &t).map_err(|e| vec![e]))
         {
             Ok(()) => {
-                println!("Copies made in {} will no longer be recorded. Restart Pasteroll to apply.", exe.to_ascii_lowercase());
+                println!(
+                    "Copies made in {} will no longer be recorded. Restart Pasteroll to apply.",
+                    exe.to_ascii_lowercase()
+                );
                 0
             }
             Err(p) => fail(p.join("\n")),
@@ -286,7 +327,9 @@ mod cli {
             return 0;
         }
         if !flag(args, "--yes") {
-            return fail(format!("{n} clip(s) cannot be opened and would be deleted. Run again with --yes."));
+            return fail(format!(
+                "{n} clip(s) cannot be opened and would be deleted. Run again with --yes."
+            ));
         }
         match s.repair_unreadable() {
             Ok(n) => {
@@ -306,7 +349,11 @@ mod cli {
                 println!(
                     "master key replaced; {} clip(s) re-sealed{}",
                     r.rows,
-                    if r.durable { "" } else { " (finishing at the next start)" }
+                    if r.durable {
+                        ""
+                    } else {
+                        " (finishing at the next start)"
+                    }
                 );
                 0
             }
@@ -319,13 +366,16 @@ mod cli {
     fn read_passphrase(args: &[String], confirm_twice: bool) -> Result<String, String> {
         use zeroize::Zeroize;
         if let Some(path) = value(args, "--passphrase-file") {
-            let mut text = std::fs::read_to_string(&path).map_err(|e| format!("cannot read {path}: {e}"))?;
+            let mut text =
+                std::fs::read_to_string(&path).map_err(|e| format!("cannot read {path}: {e}"))?;
             let out = text.trim_end_matches(['\r', '\n']).to_owned();
             text.zeroize();
             return Ok(out);
         }
         if !std::io::stdin().is_terminal() {
-            return Err("a passphrase is needed: run this in a terminal, or pass --passphrase-file".into());
+            return Err(
+                "a passphrase is needed: run this in a terminal, or pass --passphrase-file".into(),
+            );
         }
         let mut first = rpassword::prompt_password("Passphrase: ").map_err(|e| e.to_string())?;
         if confirm_twice {
@@ -347,7 +397,10 @@ mod cli {
         };
         let out = PathBuf::from(out);
         if out.exists() {
-            return fail(format!("{} already exists; it will not be overwritten", out.display()));
+            return fail(format!(
+                "{} already exists; it will not be overwritten",
+                out.display()
+            ));
         }
         let mut pass = match read_passphrase(args, true) {
             Ok(p) => p,
@@ -362,7 +415,11 @@ mod cli {
         };
         let mut plain = contents.encode();
         drop(contents);
-        let blob = pasteroll_core::export::wrap(&plain, &pass, pasteroll_core::export::KdfParams::default());
+        let blob = pasteroll_core::export::wrap(
+            &plain,
+            &pass,
+            pasteroll_core::export::KdfParams::default(),
+        );
         plain.zeroize();
         pass.zeroize();
         let blob = match blob {
@@ -431,36 +488,77 @@ mod cli {
              clear --yes [--keep-pinned] | repair --yes | rotate-key | key-export --out FILE | \
              key-import --in FILE [--force] | reset-history --yes | seed | \
              stop | wayland-check | install | uninstall [--remove-data --yes] | autostart [on|off]\n\
-             options: --db FILE   --no-capture   --max-seconds N   --yes"
+             options: --db FILE   --no-capture   --max-seconds N   --yes\n\
+             run options: --backend x11|gnome   --wayland-keyboard"
         );
         2
     }
 
+    fn run_cmd(args: &[String], db: PathBuf) -> i32 {
+        use crate::wayland::session::{self, Launch};
+        if flag(args, "--backend") && value(args, "--backend").is_none() {
+            return fail("--backend needs a value: x11 or gnome");
+        }
+        let requested = value(args, "--backend");
+        let keyboard = flag(args, "--wayland-keyboard");
+        match session::choose(requested.as_deref(), keyboard, session::current()) {
+            Ok(Launch::X11) => crate::run::run(
+                db,
+                !flag(args, "--no-capture"),
+                value(args, "--max-seconds").and_then(|v| v.parse().ok()),
+            ),
+            Ok(mode @ (Launch::GnomeKeyboard | Launch::GnomeMouse)) => crate::wayland::run::run(
+                db,
+                !flag(args, "--no-capture"),
+                value(args, "--max-seconds").and_then(|v| v.parse().ok()),
+                mode == Launch::GnomeKeyboard,
+            ),
+            Err(e) => fail(e),
+        }
+    }
+
     pub fn main() -> i32 {
-        sys::harden_process();
         let args: Vec<String> = std::env::args().skip(1).collect();
         let cmd = args.first().map(String::as_str).unwrap_or("");
-        let db = match std::env::current_exe().map_err(|e| e.to_string()).and_then(|exe| {
-            pasteroll_core::paths::database(&exe, value(&args, "--db").map(PathBuf::from), sys::default_db)
-        }) {
+        // GNOME verifies /proc/PID/exe during its handshake. These two paths
+        // authenticate before hardening, while no history or keys are open.
+        // Both run backends harden before accessing private application data.
+        if !matches!(cmd, "run" | "wayland-check") {
+            sys::harden_process();
+        }
+        let db = match std::env::current_exe()
+            .map_err(|e| e.to_string())
+            .and_then(|exe| {
+                pasteroll_core::paths::database(
+                    &exe,
+                    value(&args, "--db").map(PathBuf::from),
+                    sys::default_db,
+                )
+            }) {
             Ok(p) => p,
             Err(e) => return fail(e),
         };
         match cmd {
             "wayland-check" => {
                 use crate::wayland::session::{self, Backend};
-                match session::current() {
-                    Backend::Gnome => match crate::wayland::bridge::check() { Ok(()) => 0, Err(e) => fail(e.to_string()) },
-                    Backend::UnsupportedWayland => fail("This Wayland desktop has no Pasteroll backend yet"),
+                let result = match session::current() {
+                    Backend::Gnome => match crate::wayland::bridge::check() {
+                        Ok(()) => 0,
+                        Err(e) => fail(e.to_string()),
+                    },
+                    Backend::UnsupportedWayland => {
+                        fail("This Wayland desktop has no Pasteroll backend yet")
+                    }
                     _ => fail("wayland-check requires a GNOME Wayland session"),
-                }
+                };
+                sys::harden_process();
+                result
+            }
+            "stop" => match sys::stop_running(&db) {
+                Ok(()) => 0,
+                Err(e) => fail(e),
             },
-            "stop" => match sys::stop_running(&db) { Ok(()) => 0, Err(e) => fail(e) },
-            "run" => crate::run::run(
-                db,
-                !flag(&args, "--no-capture"),
-                value(&args, "--max-seconds").and_then(|v| v.parse().ok()),
-            ),
+            "run" => run_cmd(&args, db),
             "--version" | "-V" | "version" => {
                 println!("pasteroll {}", env!("CARGO_PKG_VERSION"));
                 0
@@ -484,7 +582,9 @@ mod cli {
             "uninstall" => {
                 let remove = flag(&args, "--remove-data");
                 if remove && !flag(&args, "--yes") {
-                    eprintln!("--remove-data deletes your history and settings. Add --yes to confirm.");
+                    eprintln!(
+                        "--remove-data deletes your history and settings. Add --yes to confirm."
+                    );
                     2
                 } else {
                     match crate::install::uninstall(remove, db.parent()) {
@@ -497,6 +597,36 @@ mod cli {
                 }
             }
             "autostart" => match args.get(1).map(String::as_str) {
+                Some("on" | "off")
+                    if flag(&args, "--backend") && value(&args, "--backend").is_none() =>
+                {
+                    fail("--backend needs a value: x11 or gnome")
+                }
+                Some("on" | "off")
+                    if value(&args, "--backend")
+                        .as_deref()
+                        .is_some_and(|b| b != "x11" && b != "gnome") =>
+                {
+                    fail("unknown backend; use x11 or gnome")
+                }
+                Some("on" | "off")
+                    if value(&args, "--backend").as_deref() == Some("x11")
+                        && flag(&args, "--wayland-keyboard") =>
+                {
+                    fail("--wayland-keyboard can only be used with --backend gnome")
+                }
+                Some("on") if value(&args, "--backend").as_deref() == Some("gnome") => {
+                    match crate::install::set_wayland_autostart_mode(
+                        true,
+                        flag(&args, "--wayland-keyboard"),
+                    ) {
+                        Ok(()) => {
+                            println!("Pasteroll will start with the GNOME Wayland backend when you sign in.");
+                            0
+                        }
+                        Err(e) => fail(e),
+                    }
+                }
                 Some("on") => match crate::install::set_autostart(true) {
                     Ok(()) => {
                         println!("Pasteroll will start when you sign in.");
@@ -504,6 +634,15 @@ mod cli {
                     }
                     Err(e) => fail(e),
                 },
+                Some("off") if value(&args, "--backend").as_deref() == Some("gnome") => {
+                    match crate::install::set_wayland_autostart(false) {
+                        Ok(()) => {
+                            println!("Pasteroll will no longer start with the GNOME Wayland backend when you sign in.");
+                            0
+                        }
+                        Err(e) => fail(e),
+                    }
+                }
                 Some("off") => match crate::install::set_autostart(false) {
                     Ok(()) => {
                         println!("Pasteroll will no longer start when you sign in.");
@@ -512,13 +651,23 @@ mod cli {
                     Err(e) => fail(e),
                 },
                 _ => {
-                    println!("start at sign-in: {}", if crate::install::autostart_enabled() { "on" } else { "off" });
+                    println!(
+                        "start at sign-in: {}",
+                        if crate::install::autostart_enabled() {
+                            "on"
+                        } else {
+                            "off"
+                        }
+                    );
                     0
                 }
             },
             "reset-history" => {
                 if !flag(&args, "--yes") {
-                    eprintln!("This deletes {} and its key. Run again with --yes to confirm.", db.display());
+                    eprintln!(
+                        "This deletes {} and its key. Run again with --yes to confirm.",
+                        db.display()
+                    );
                     2
                 } else if app_is_running(&db) {
                     fail("Pasteroll is running. Quit it first.")
