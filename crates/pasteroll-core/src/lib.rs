@@ -22,6 +22,7 @@ pub mod keyring;
 pub mod keystore;
 pub mod limits;
 pub mod logo;
+pub mod ocr_regions;
 pub mod padding;
 pub mod paths;
 pub mod preview;

@@ -105,7 +105,9 @@ try {
     $data = Join-Path $root 'synthetic-data'
     $db = Join-Path $data 'history.db'
     $release = Join-Path $repoRoot 'target\release\pasteroll.exe'
-    $setup = Join-Path $repoRoot 'dist\pasteroll-0.1.0-beta.3-windows-x64-setup.exe'
+    $releaseVersion = ((& $release --version) -join '').Trim() -replace '^pasteroll\s+', ''
+    Assert-Test ($releaseVersion -match '^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$') 'Cannot read the release version.'
+    $setup = Join-Path $repoRoot "dist\pasteroll-$releaseVersion-windows-x64-setup.exe"
     Assert-Test ([Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($release)).Contains('--if-exe requires an executable path.')) 'Rebuild first: the release executable lacks scoped-stop support.'
     Assert-Test ((Get-Item -LiteralPath $setup).LastWriteTimeUtc -ge (Get-Item -LiteralPath $release).LastWriteTimeUtc) 'Rebuild Setup after rebuilding the app.'
 

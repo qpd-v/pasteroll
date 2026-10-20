@@ -30,7 +30,7 @@ pub use editor::{
 };
 pub use icons::Icon;
 pub use viewer::{
-    fit_zoom, viewer_geometry, ConfirmView, FindView, Morph, MenuItemView, Tool, ToolView, VGeom, VHit, ViewerBody, ViewerView,
+    fit_zoom, viewer_geometry, ConfirmView, FindView, Morph, MenuItemView, Tool, ToolView, VGeom, VHit, ViewerBody, ViewerView, OcrSelectionView,
 };
 
 use cosmic_text::{Attrs, Buffer, FeatureTag, Family, FontFeatures, FontSystem, Metrics, Shaping, SwashCache, Wrap};

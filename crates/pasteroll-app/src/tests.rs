@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 mod editor;
+mod ocr_regions;
 
 // ---------------------------------------------------------------- fake platform
 
@@ -22,6 +23,8 @@ struct Fake {
     privileged: bool,
     cursor: (i32, i32),
     shown: u32,
+    shown_at: Option<(i32, i32)>,
+    browse_focus_current: bool,
     hidden: u32,
     frames: u32,
     input_active: bool,
@@ -75,6 +78,8 @@ impl Fake {
             privileged: false,
             cursor: (300, 300),
             shown: 0,
+            shown_at: None,
+            browse_focus_current: true,
             hidden: 0,
             frames: 0,
             input_active: false,
@@ -122,8 +127,10 @@ impl Platform for Fake {
     fn cursor(&self) -> (i32, i32) {
         self.cursor
     }
-    fn overlay_show(&mut self, _at: (i32, i32)) -> OverlayInfo {
+    fn browse_focus_current(&self) -> bool { self.browse_focus_current }
+    fn overlay_show(&mut self, at: (i32, i32)) -> OverlayInfo {
         self.shown += 1;
+        self.shown_at = Some(at);
         let mut info = OverlayInfo::new(1.0, (520, 440));
         info.origin_px = (316, 320);
         info
@@ -2361,4 +2368,55 @@ fn hovering_a_toolbar_button_explains_it() {
     let view = h.c.viewer_view().unwrap();
     assert!(view.tools.iter().any(|t| t.tool == Tool::Pin && t.on));
     assert!(view.subtitle.contains("Pinned"));
+}
+
+#[test]
+fn tray_browsing_opens_at_anchor_without_a_foreground_destination() {
+    let mut h = H::new(&[Clip::Text("tray history")]);
+    h.p.foreground = None;
+    h.send(Event::BrowseAt(1800, 1040));
+    let generation = h.p.input_generation();
+    assert!(h.c.is_open());
+    assert_eq!(h.p.shown_at, Some((1800, 1040)));
+    assert_eq!(h.p.cursor, (300, 300), "opening near tray must not move the pointer");
+    h.send(Event::Tick);
+    assert!(h.c.is_open(), "browse-only session must not close for lack of a target");
+    h.send(Event::Key(Key::Enter, generation));
+    assert!(h.c.is_open());
+    assert!(h.p.clipboard.is_empty() && h.p.pastes.is_empty(), "Enter must not paste into the shell");
+    let destination = target(2, "notepad.exe");
+    h.p.current = destination.id;
+    h.p.click_polls.push_back(ClickPoll::Target(destination));
+    h.send(Event::ClickPaste(generation));
+    h.send(Event::Tick);
+    assert_eq!(h.pasted_texts(), vec!["tray history"]);
+    assert_eq!(h.p.pastes.len(), 1);
+}
+
+#[test]
+fn tray_browsing_does_not_bypass_elevated_destination_checks() {
+    let mut h = H::new(&[Clip::Text("private clip")]);
+    h.p.foreground = None;
+    h.p.privileged = true;
+    h.send(Event::BrowseAt(1800, 1040));
+    assert!(h.c.is_open(), "browsing alone does not require destination privileges");
+    let generation = h.p.input_generation();
+    let destination = target(2, "admin.exe");
+    h.p.current = destination.id;
+    h.p.click_polls.push_back(ClickPoll::Target(destination));
+    h.send(Event::ClickPaste(generation));
+    h.send(Event::Tick);
+    assert!(h.p.clipboard.is_empty() && h.p.pastes.is_empty());
+}
+
+#[test]
+fn tray_browsing_releases_input_when_the_foreground_changes() {
+    let mut h = H::new(&[Clip::Text("history")]);
+    h.p.foreground = None;
+    h.send(Event::BrowseAt(1800, 1040));
+    assert!(h.p.input_active);
+    h.p.browse_focus_current = false;
+    h.send(Event::Tick);
+    assert!(!h.c.is_open() && !h.p.input_active);
+    assert!(h.p.clipboard.is_empty() && h.p.pastes.is_empty());
 }

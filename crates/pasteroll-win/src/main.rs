@@ -24,6 +24,7 @@
 //! Pasteroll history is refused, so `--db` cannot be pointed at another app's database by accident.
 
 
+mod about;
 mod app;
 mod clipboard;
 mod dialogs;
@@ -95,7 +96,7 @@ fn usage() -> ! {
         "usage: pasteroll     run | status | config [show|path|init|set KEY VALUE] | exclude EXE | \
          clear --yes [--keep-pinned] | repair --yes | key-export --out FILE | key-import --in FILE | \
          rotate-key | reset-history --yes | seed | probe | clipboard-selftest | stop | install | \
-         uninstall [--remove-data --yes] | autostart [on|off]\n\
+         uninstall [--remove-data --yes] | autostart [on|off] | about [--text]\n\
          options: --db FILE   --no-capture   --max-seconds N   --yes   --no-notice"
     );
     std::process::exit(2);
@@ -537,7 +538,10 @@ fn run_app(db: PathBuf, args: &[String]) -> i32 {
 fn main() {
     // started from the Start menu or Explorer, the app would sit behind an empty console window:
     // let go of a console that is ours alone (a terminal's console is shared, so it stays)
-    if matches!(std::env::args().nth(1).as_deref(), None | Some("run")) {
+    if matches!(std::env::args().nth(1).as_deref(), None | Some("run"))
+        || (std::env::args().nth(1).as_deref() == Some("about")
+            && !std::env::args().any(|a| a == "--text"))
+    {
         setup::detach_console_if_owned();
     }
     winsys::harden_process();
@@ -552,6 +556,14 @@ fn main() {
     let code = match cmd {
         "--version" | "-V" | "version" => {
             println!("pasteroll {}", env!("CARGO_PKG_VERSION"));
+            0
+        }
+        "about" => {
+            if flag(&args, "--text") {
+                println!("{}", about::text());
+            } else {
+                about::show(None);
+            }
             0
         }
         "probe" => probe::run(),

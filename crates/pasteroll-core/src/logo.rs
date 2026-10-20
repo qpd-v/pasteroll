@@ -92,6 +92,16 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_roll_has_transparent_corners_instead_of_a_square_background() {
+        for n in [16u32, 24, 32, 48, 64, 128, 256] {
+            let px = rgba(n, false);
+            for (x, y) in [(0, 0), (n - 1, 0), (0, n - 1), (n - 1, n - 1)] {
+                assert_eq!(px[((y * n + x) * 4 + 3) as usize], 0);
+            }
+        }
+    }
+
     /// `PASTEROLL_ICON_DUMP=<dir> cargo test -p pasteroll-core --lib dump_small_icons -- --ignored`
     #[test]
     #[ignore]

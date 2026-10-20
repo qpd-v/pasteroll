@@ -77,6 +77,8 @@ pub struct MouseEvent {
 pub enum Event {
     /// The activation gesture was made.
     Activate,
+    /// Open history at a UI anchor without assuming the shell is a paste target.
+    BrowseAt(i32, i32),
     Step(Step, u64),
     Key(Key, u64),
     /// A left click completed outside the overlay: paste there.

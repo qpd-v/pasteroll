@@ -30,6 +30,7 @@ pub struct WinPlatform {
     /// Self-tests only: let a window of this process be a paste target.
     pub allow_own_process: bool,
     last_focus: Option<HWND>,
+    browse_focus: Option<(HWND, u32)>,
     local_generation: u64,
     start: Instant,
     /// History file whose folder holds `config.toml` (custom filters are saved there).
@@ -91,6 +92,7 @@ impl WinPlatform {
             own_pid: std::process::id(),
             allow_own_process: false,
             last_focus: None,
+            browse_focus: None,
             local_generation: 0,
             start: Instant::now(),
             db: None,
@@ -128,6 +130,20 @@ impl Platform for WinPlatform {
 
     fn target_privileged(&mut self, t: &Target) -> bool {
         winsys::outranks_us(t.pid)
+    }
+
+    fn begin_browse(&mut self) {
+        let window = root_of(unsafe { GetForegroundWindow() });
+        self.browse_focus = Some((window, pid_of(window)));
+    }
+
+    fn browse_focus_current(&self) -> bool {
+        let window = root_of(unsafe { GetForegroundWindow() });
+        if window.0.is_null() { return false; }
+        window == self.overlay.hwnd() || window == self.viewer.hwnd()
+            || is_taskbar(window)
+            || matches!(class_of(window).as_str(), "NotifyIconOverflowWindow" | "TopLevelWindowForOverflowXamlIsland")
+            || self.browse_focus.is_some_and(|(initial, pid)| initial == window && pid_of(window) == pid)
     }
 
     fn cursor(&self) -> (i32, i32) {

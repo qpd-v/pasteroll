@@ -184,6 +184,10 @@ pub trait Platform {
     fn target_is_current(&mut self, target: &Target) -> bool;
     /// Does the target run at a higher privilege than we do, so our keystrokes would be blocked?
     fn target_privileged(&mut self, target: &Target) -> bool;
+    /// Shell/tray browsing has no paste destination, but must release keyboard
+    /// capture if focus moves to another application (or the desktop locks).
+    fn begin_browse(&mut self) {}
+    fn browse_focus_current(&self) -> bool { true }
 
     // ---------------------------------------------------------------- overlay
     fn cursor(&self) -> (i32, i32);

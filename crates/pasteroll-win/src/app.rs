@@ -305,6 +305,10 @@ pub fn destroy() {
 
 // ------------------------------------------------------------------ tray and settings actions
 
+pub fn browse_from_tray(at: (i32, i32)) {
+    dispatch(Event::BrowseAt(at.0, at.1));
+}
+
 pub fn is_paused() -> bool {
     with_runtime(|rt| rt.controller.is_paused()).unwrap_or(false)
 }

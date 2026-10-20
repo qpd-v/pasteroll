@@ -23,11 +23,15 @@ def release_version():
     return versions[0]
 
 
-def artifact_names(version, *, with_gnome=False):
+def artifact_names(version, *, with_gnome=False, windows_only=False):
+    if windows_only and with_gnome:
+        raise ValueError("Windows-only releases cannot include GNOME packages.")
     names = (f"pasteroll-{version}-windows-x64-setup.exe",
             f"pasteroll-{version}-windows-x64-portable.zip",
             f"pasteroll-{version}-linux-x86_64.tar.gz",
             f"pasteroll_{version}_amd64.deb")
+    if windows_only:
+        return names[:2]
     if with_gnome:
         names += (f"pasteroll-{version}-linux-x86_64-gnome-development.tar.gz",
                   f"pasteroll_{version}_amd64-gnome-development.deb")

@@ -51,10 +51,28 @@ struct PreviewJob {
     full: bool,
 }
 
+const COPY_SOURCE: &str = if cfg!(target_os = "windows") { "pasteroll.exe" } else { "pasteroll" };
+
+enum IngestJob {
+    ClipboardChanged,
+    CopiedText { text: String, at: i64 },
+}
+
+impl Drop for IngestJob {
+    fn drop(&mut self) {
+        if let Self::CopiedText { text, .. } = self {
+            use zeroize::Zeroize;
+            text.zeroize();
+        }
+    }
+}
+
 pub struct Workers {
-    ingest_tx: Option<Sender<()>>,
+    ingest_tx: Option<Sender<IngestJob>>,
+    copy_policy: IngestPolicy,
     /// Counts clips the ingest worker has stored (the controller notices changes on a wake).
     pub ingested: Arc<std::sync::atomic::AtomicU64>,
+    pub copied: Arc<std::sync::atomic::AtomicU64>,
     preview_tx: Option<Sender<PreviewJob>>,
     threads: Vec<JoinHandle<()>>,
     pub preview_rx: Receiver<PreviewResult>,
@@ -112,15 +130,19 @@ impl Workers {
     ) -> Workers {
         let mut threads = Vec::new();
         let ingested = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let copied = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
-        let ingest_tx = source.map(|mut source| {
+        let copy_policy = policy.clone();
+        let ingest_tx = {
+            let mut source = source;
             // The baseline is read here, before the thread exists: a copy made before the worker
             // gets scheduled must count as a change, not as the starting point.
-            let mut last_seq = source.sequence();
-            let (tx, rx) = channel::<()>();
+            let mut last_seq = source.as_mut().map_or(0, |s| s.sequence());
+            let (tx, rx) = channel::<IngestJob>();
             let factory = factory.clone();
             let log = log.clone();
             let (ingested, waker) = (ingested.clone(), waker.clone());
+            let copied = copied.clone();
             threads.push(std::thread::spawn(move || {
                 let mut store = match factory() {
                     Ok(s) => s,
@@ -129,10 +151,34 @@ impl Workers {
                         return;
                     }
                 };
-                while rx.recv().is_ok() {
-                    // Apps often set the clipboard several times in a burst: take the last.
+                let mut pending = std::collections::VecDeque::new();
+                while let Some(mut job) = pending.pop_front().or_else(|| rx.recv().ok()) {
+                    if let IngestJob::CopiedText { text, at } = &mut job {
+                        if policy.paused.load(Ordering::Relaxed) || policy.exclude_apps.contains(COPY_SOURCE) {
+                            continue;
+                        }
+                        match store.add_text_from(text, *at, Some(COPY_SOURCE)) {
+                            Ok(_) => {
+                                copied.fetch_add(1, Ordering::SeqCst);
+                                ingested.fetch_add(1, Ordering::SeqCst);
+                                waker.wake();
+                            }
+                            Err(e) => log(&format!("could not store copied text: {e}")),
+                        }
+                        continue;
+                    }
+                    let Some(source) = source.as_mut() else { continue };
+                    // Coalesce clipboard notifications, but never discard explicit Copy jobs.
                     std::thread::sleep(Duration::from_millis(30));
-                    while rx.try_recv().is_ok() {}
+                    while let Ok(next) = rx.try_recv() {
+                        if !matches!(&next, IngestJob::ClipboardChanged) { pending.push_back(next); }
+                    }
+                    if !pending.is_empty() {
+                        // Store explicit copies before capturing the latest external
+                        // clipboard state, so a later copy remains the newest clip.
+                        pending.push_back(IngestJob::ClipboardChanged);
+                        continue;
+                    }
                     let seq = source.sequence();
                     if seq == last_seq {
                         continue;
@@ -176,8 +222,8 @@ impl Workers {
                     }
                 }
             }));
-            tx
-        });
+            Some(tx)
+        };
 
         let (ptx, prx) = channel::<PreviewJob>();
         let (rtx, rrx) = channel::<PreviewResult>();
@@ -237,12 +283,23 @@ impl Workers {
             }));
         }
 
-        Workers { ingest_tx, ingested, preview_tx: Some(ptx), threads, preview_rx: rrx }
+        Workers { ingest_tx, copy_policy, ingested, copied, preview_tx: Some(ptx), threads, preview_rx: rrx }
     }
 
     pub fn clipboard_changed(&self) {
         if let Some(tx) = &self.ingest_tx {
-            let _ = tx.send(());
+            let _ = tx.send(IngestJob::ClipboardChanged);
+        }
+    }
+
+    /// Explicitly copied derived text is new history, even though the OS clipboard
+    /// write retains privacy/own-write markers. Automatic pastes never use this path.
+    pub fn record_copied_text(&self, text: &str, at: i64) {
+        if self.copy_policy.paused.load(Ordering::Relaxed) || self.copy_policy.exclude_apps.contains(COPY_SOURCE) {
+            return;
+        }
+        if let Some(tx) = &self.ingest_tx {
+            let _ = tx.send(IngestJob::CopiedText { text: text.to_owned(), at });
         }
     }
 

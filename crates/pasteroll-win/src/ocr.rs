@@ -53,7 +53,11 @@ impl TextRecognizer for WinOcr {
             BitmapAlphaMode::Premultiplied,
         )
         .map_err(fail)?;
-        let result = engine.RecognizeAsync(&bitmap).map_err(fail)?.join().map_err(fail)?;
+        let result = engine
+            .RecognizeAsync(&bitmap)
+            .map_err(fail)?
+            .join()
+            .map_err(fail)?;
         let lines = result.Lines().map_err(fail)?;
         let mut text = String::new();
         for i in 0..lines.Size().map_err(fail)? {
@@ -71,8 +75,11 @@ mod tests {
 
     #[test]
     fn transparency_is_laid_on_white() {
-        let img = Rgba { width: 2, height: 1, pixels: vec![10, 20, 30, 255, 0, 0, 0, 0] };
+        let img = Rgba {
+            width: 2,
+            height: 1,
+            pixels: vec![10, 20, 30, 255, 0, 0, 0, 0],
+        };
         assert_eq!(on_white(&img), vec![30, 20, 10, 255, 255, 255, 255, 255]);
     }
 }
-

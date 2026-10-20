@@ -39,7 +39,37 @@ type RectPx = (i32, i32, u32, u32);
 
 pub(crate) struct OcrDone {
     pub id: i64,
+    pub request: u64,
     pub result: Result<String, String>,
+}
+
+impl Drop for OcrDone {
+    fn drop(&mut self) {
+        if let Ok(text) = &mut self.result {
+            use zeroize::Zeroize;
+            text.zeroize();
+        }
+    }
+}
+
+struct OcrJob(Arc<std::sync::atomic::AtomicUsize>);
+impl OcrJob {
+    fn acquire(jobs: &Arc<std::sync::atomic::AtomicUsize>) -> Option<Self> {
+        use std::sync::atomic::Ordering;
+        let mut count = jobs.load(Ordering::Acquire);
+        loop {
+            if count >= 2 { return None; }
+            match jobs.compare_exchange_weak(count, count + 1, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return Some(Self(jobs.clone())),
+                Err(current) => count = current,
+            }
+        }
+    }
+}
+impl Drop for OcrJob {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::Release);
+    }
 }
 
 enum Content {
@@ -101,6 +131,7 @@ enum Action {
     Info,
     ResetZoom,
     ExtractText,
+    ClearOcrRegions,
     ShowPicture,
     Restore,
     DeleteForever,
@@ -133,7 +164,11 @@ pub(crate) struct Viewer {
     info_lines: Vec<(String, String)>,
     content: Content,
     ocr_text: Option<OcrText>,
-    ocr_running: Option<i64>,
+    ocr_running: Option<u64>,
+    can_ocr: bool,
+    ocr_selecting: bool,
+    ocr_regions: Vec<Vec<(f32, f32)>>,
+    ocr_stroke: Vec<(f32, f32)>,
     /// Changes with the text shown (the renderer caches the shaped text by it).
     gen: u64,
     full_gen: u64,
@@ -282,6 +317,9 @@ impl Viewer {
                 v.push(Action::ResetZoom);
                 if has_ocr {
                     v.push(Action::ExtractText);
+                    if self.ocr_selecting {
+                        v.push(Action::ClearOcrRegions);
+                    }
                 }
             }
         }
@@ -298,15 +336,22 @@ impl Viewer {
             Action::Info => ((if self.info_open { "Hide info" } else { "Info" }).to_owned(), "Ctrl+I", false),
             Action::ResetZoom => ("Reset zoom".to_owned(), "0", false),
             Action::ExtractText => (
-                (if self.ocr_running.is_some() { "Reading text..." } else { "Extract text (OCR)" }).to_owned(),
+                (if self.ocr_running.is_some() { "Reading text..." }
+                 else if self.ocr_selecting { "Extract selected text" }
+                 else { "Extract text (OCR)" }).to_owned(),
                 "",
                 false,
             ),
             Action::ShowPicture => ("Show the picture".to_owned(), "Esc", false),
+            Action::ClearOcrRegions => ("Clear OCR areas".to_owned(), "Del", false),
             Action::Restore => ("Restore to history".to_owned(), "Ctrl+Z", false),
             Action::DeleteForever => ("Delete permanently".to_owned(), "Shift+Del", true),
         };
-        let enabled = !(a == Action::ExtractText && self.ocr_running.is_some());
+        let enabled = match a {
+            Action::ExtractText => self.ocr_running.is_none() && (!self.ocr_selecting || !self.ocr_regions.is_empty()),
+            Action::ClearOcrRegions => self.ocr_running.is_none() && !self.ocr_regions.is_empty(),
+            _ => true,
+        };
         MenuItemView { label, shortcut: shortcut.to_owned(), enabled, danger }
     }
 
@@ -360,6 +405,10 @@ impl Viewer {
                 Content::Text { .. } => ViewerBody::Message(String::new()),
             }
         };
+        if self.ocr_selecting && self.is_picture() {
+            sub.clear();
+            sub.push(format!("Draw around text; Enter extracts; Ctrl+Z undoes; Esc cancels. {} area(s)", self.ocr_regions.len()));
+        }
         let picture = self.is_picture();
         let paste_tip = if target_exe.is_empty() { "Paste (Enter)".to_owned() } else { format!("Paste into {target_exe} (Enter)") };
         let t = |tool: Tool, on: bool, enabled: bool, tip: &str| ToolView { tool, on, enabled, tip: tip.to_owned() };
@@ -371,6 +420,19 @@ impl Viewer {
             tools.push(t(Tool::ZoomIn, false, true, "Zoom in (+)"));
         }
         let has_clip = !matches!(self.content, Content::Message(_));
+        if picture && self.can_ocr {
+            if self.ocr_selecting {
+                tools.retain(|t| matches!(t.tool, Tool::ZoomIn | Tool::ZoomOut | Tool::FitActual));
+            }
+            tools.push(t(Tool::OcrSelect, self.ocr_selecting, self.ocr_running.is_none(),
+                "Circle text for OCR (Esc cancels)"));
+            if self.ocr_selecting {
+                tools.push(t(Tool::OcrRead, false, !self.ocr_regions.is_empty() && self.ocr_running.is_none(),
+                    "Extract selected text (Enter)"));
+                tools.push(t(Tool::OcrUndo, false, !self.ocr_regions.is_empty() && self.ocr_running.is_none(),
+                    "Undo last OCR area (Ctrl+Z)"));
+            }
+        }
         tools.push(t(Tool::Copy, false, has_clip, "Copy (Ctrl+C)"));
         tools.push(ToolView { tool: Tool::Paste, on: false, enabled: has_clip, tip: paste_tip });
         if self.trash {
@@ -387,6 +449,9 @@ impl Viewer {
         }
         tools.push(t(Tool::More, false, true, "More"));
         tools.push(t(Tool::Close, false, true, "Close (Esc)"));
+        if self.ocr_selecting {
+            tools.retain(|t| !matches!(t.tool, Tool::Copy | Tool::Paste | Tool::Pin | Tool::Delete | Tool::Restore));
+        }
         let zoom_label = match (picture, self.picture()) {
             (true, Some((_, w, h))) if w > 0 && h > 0 => {
                 // percent of real pixels: DIP per image pixel times device pixels per DIP
@@ -436,6 +501,9 @@ impl Viewer {
             }),
             toast: self.toast.as_ref().map(|t| t.0.clone()).unwrap_or_default(),
             zoom_label,
+            ocr_selection: (picture && self.ocr_selecting).then(|| pasteroll_render::OcrSelectionView {
+                regions: self.ocr_regions.clone(), drawing: self.ocr_stroke.clone(),
+            }),
         }
     }
 }
@@ -518,6 +586,10 @@ impl Controller {
             content: Content::Message(String::new()),
             ocr_text: None,
             ocr_running: None,
+            can_ocr: self.ocr.is_some(),
+            ocr_selecting: false,
+            ocr_regions: Vec::new(),
+            ocr_stroke: Vec::new(),
             gen: 0,
             full_gen: 0,
             rect: card_rect,
@@ -736,6 +808,7 @@ impl Controller {
                 self.last_activity_ms = now;
                 p.input_keepalive();
             }
+            self.on_new_clips(p);
         }
     }
 
@@ -813,6 +886,10 @@ impl Controller {
         v.info_lines = lines;
         v.content = content;
         v.ocr_text = None;
+        v.ocr_running = None;
+        v.ocr_selecting = false;
+        v.ocr_regions.clear();
+        v.ocr_stroke.clear();
         v.gen += 1;
         v.selection = None;
         v.anchor = None;
@@ -886,16 +963,20 @@ impl Controller {
     }
 
     pub(super) fn drain_ocr(&mut self, now: u64) {
-        while let Ok(done) = self.ocr_rx.try_recv() {
+        while let Ok(mut done) = self.ocr_rx.try_recv() {
             let Some(v) = self.viewer.as_mut() else { continue };
-            if v.ocr_running != Some(done.id) {
+            if v.ocr_running != Some(done.request) || v.id != done.id {
+                if let Ok(text) = &mut done.result {
+                    use zeroize::Zeroize;
+                    text.zeroize();
+                }
                 continue;
             }
             v.ocr_running = None;
             if v.id != done.id {
                 continue;
             }
-            match done.result {
+            match std::mem::replace(&mut done.result, Err(String::new())) {
                 Ok(mut text) if !text.trim().is_empty() => {
                     let san = sanitize(&text);
                     let orig = text.encode_utf16().collect();
@@ -904,6 +985,8 @@ impl Controller {
                         text.zeroize();
                     }
                     v.ocr_text = Some(OcrText { san, orig });
+                    v.ocr_selecting = false;
+                    v.ocr_stroke.clear();
                     v.gen += 1;
                     v.selection = None;
                     v.scroll = (0.0, 0.0);
@@ -956,13 +1039,20 @@ impl Controller {
 
     fn viewer_copy(&mut self, p: &mut dyn Platform, now: u64) {
         let partial = self.viewer.as_ref().is_some_and(|v| v.selection.is_some_and(|(a, b)| a != b));
-        let Some((payload, _)) = self.viewer_payload() else {
+        let Some((payload, whole)) = self.viewer_payload() else {
             self.viewer_toast("Nothing to copy.", now);
             return;
         };
         let payload = WipeOnDrop(payload);
         match p.write_clipboard(&payload.0) {
-            Ok(()) => self.viewer_toast(if partial { "Copied the selection" } else { "Copied" }, now),
+            Ok(()) => {
+                if !whole {
+                    if let Payload::Text(text) = &payload.0 {
+                        self.workers.record_copied_text(text, p.now_secs());
+                    }
+                }
+                self.viewer_toast(if partial { "Copied the selection" } else { "Copied" }, now);
+            }
             Err(e) => {
                 p.log(&format!("could not write clipboard: {e}"));
                 self.viewer_toast("Could not copy: the clipboard is busy.", now);
@@ -1164,6 +1254,11 @@ impl Controller {
             return;
         };
         let id = v.id;
+        if v.ocr_selecting && (v.ocr_regions.is_empty() || !v.ocr_stroke.is_empty()) {
+            self.viewer_toast("Finish drawing an area around the text first.", now);
+            return;
+        }
+        let regions = v.ocr_selecting.then(|| v.ocr_regions.clone());
         let img = match &v.content {
             Content::Image { full: Some(f), .. } => Some(f.clone()),
             _ => None,
@@ -1181,8 +1276,16 @@ impl Controller {
                 }
             }
         };
+        // A cancelled OS OCR call may still be finishing. Bound outstanding jobs
+        // so repeated cancel/retry cannot accumulate full-size masked images.
+        let Some(job) = OcrJob::acquire(&self.ocr_jobs) else {
+            self.viewer_toast("Previous text recognition is still finishing. Please try again shortly.", now);
+            return;
+        };
+        self.ocr_request = self.ocr_request.wrapping_add(1);
+        let request = self.ocr_request;
         if let Some(v) = self.viewer.as_mut() {
-            v.ocr_running = Some(id);
+            v.ocr_running = Some(request);
             v.toast = Some(("Reading text...".into(), now + 30_000));
         }
         self.dirty = true;
@@ -1190,8 +1293,18 @@ impl Controller {
         let waker = self.waker.clone();
         p.log("text recognition started");
         std::thread::spawn(move || {
-            let result = engine.recognize(&img);
-            let _ = tx.send(OcrDone { id, result });
+            let _job = job;
+            let result = if let Some(regions) = regions {
+                pasteroll_core::ocr_regions::masked(&img, &regions).and_then(|mut selected| {
+                    let result = engine.recognize(&selected);
+                    use zeroize::Zeroize;
+                    selected.pixels.zeroize();
+                    result
+                })
+            } else {
+                engine.recognize(&img)
+            };
+            let _ = tx.send(OcrDone { id, request, result });
             waker.wake();
         });
     }
@@ -1222,6 +1335,12 @@ impl Controller {
             }
             Action::ResetZoom => self.set_zoom(None, None),
             Action::ExtractText => self.viewer_extract_text(p, now),
+            Action::ClearOcrRegions => {
+                if let Some(v) = self.viewer.as_mut() {
+                    v.ocr_regions.clear();
+                    v.ocr_stroke.clear();
+                }
+            }
             Action::ShowPicture => self.show_picture(),
             Action::Restore => self.viewer_restore_or_undo(p, now),
             Action::DeleteForever => {
@@ -1234,6 +1353,20 @@ impl Controller {
 
     fn run_tool(&mut self, p: &mut dyn Platform, t: Tool, now: u64) {
         match t {
+            Tool::OcrSelect => {
+                if let Some(v) = self.viewer.as_mut() {
+                    v.ocr_selecting = !v.ocr_selecting;
+                    v.ocr_regions.clear();
+                    v.ocr_stroke.clear();
+                    v.pan = None;
+                }
+                self.dirty = true;
+            }
+            Tool::OcrRead => self.viewer_extract_text(p, now),
+            Tool::OcrUndo => {
+                if let Some(v) = self.viewer.as_mut() { v.ocr_regions.pop(); }
+                self.dirty = true;
+            }
             Tool::Prev => self.viewer_step_clip(p, false, now),
             Tool::Next => self.viewer_step_clip(p, true, now),
             Tool::ZoomIn => self.zoom_by(ZOOM_STEP, None),
@@ -1473,6 +1606,40 @@ impl Controller {
             }
         }
         let Some(v) = self.viewer.as_mut() else { return };
+        if v.ocr_selecting {
+            match key {
+                Key::Escape => {
+                    v.ocr_selecting = false;
+                    v.ocr_regions.clear();
+                    v.ocr_stroke.clear();
+                    v.ocr_running = None;
+                    v.toast = None;
+                    self.dirty = true;
+                    return;
+                }
+                Key::Enter => {
+                    self.viewer_extract_text(p, now);
+                    return;
+                }
+                Key::CtrlZ => {
+                    if v.ocr_running.is_none() {
+                        if !v.ocr_stroke.is_empty() { v.ocr_stroke.clear(); }
+                        else { v.ocr_regions.pop(); }
+                    }
+                    self.dirty = true;
+                    return;
+                }
+                Key::Delete => {
+                    if v.ocr_running.is_none() {
+                        v.ocr_regions.clear();
+                        v.ocr_stroke.clear();
+                    }
+                    self.dirty = true;
+                    return;
+                }
+                _ => {}
+            }
+        }
         let finding = v.find.is_some();
         let picture = v.is_picture();
         let page = v.extent.map_or(300.0, |(_, (_, vh))| vh * 0.9);
@@ -1622,7 +1789,7 @@ impl Controller {
 
     pub(super) fn viewer_wheel(&mut self, w: Wheel) {
         let Some(v) = self.viewer.as_ref() else { return };
-        if v.animating() || v.confirm.is_some() || v.menu.is_some() {
+        if v.animating() || v.confirm.is_some() || v.menu.is_some() || !v.ocr_stroke.is_empty() {
             return;
         }
         let notches = w.delta as f32 / 120.0;
@@ -1672,12 +1839,17 @@ impl Controller {
                 }
             }
             MouseKind::Up => {
+                self.finish_ocr_stroke(m.x, m.y, now);
                 if let Some(v) = self.viewer.as_mut() {
                     v.selecting = false;
                     v.pan = None;
                 }
             }
             MouseKind::Move => {
+                if !v.ocr_stroke.is_empty() {
+                    self.append_ocr_point(m.x, m.y);
+                    return;
+                }
                 let (selecting, pan) = (v.selecting, v.pan);
                 if selecting {
                     self.viewer_drag_select(m.x, m.y);
@@ -1769,6 +1941,19 @@ impl Controller {
             }
             VHit::Text { pos } => self.viewer_text_press(m.kind, pos, now),
             VHit::Image => {
+                if v.ocr_selecting {
+                    if v.ocr_running.is_some() { return; }
+                    if v.ocr_regions.len() >= pasteroll_core::ocr_regions::MAX_REGIONS {
+                        v.toast("Up to 16 areas; undo or clear an area to draw another.", now);
+                        self.dirty = true;
+                        return;
+                    }
+                    if let Some(point) = self.ocr_image_point(m.x, m.y, false) {
+                        if let Some(v) = self.viewer.as_mut() { v.ocr_stroke = vec![point]; }
+                        self.dirty = true;
+                    }
+                    return;
+                }
                 if m.kind == MouseKind::DoubleClick {
                     // double-click: real size at that point, or back to fit
                     if v.zoom.is_none() {
@@ -1782,6 +1967,48 @@ impl Controller {
             }
             _ => {}
         }
+    }
+
+    fn ocr_image_point(&self, x: f32, y: f32, clamp: bool) -> Option<(f32, f32)> {
+        if !x.is_finite() || !y.is_finite() { return None; }
+        let (g, w, h, fit) = self.picture_geometry()?;
+        let v = self.viewer.as_ref()?;
+        let s = self.overlay.scale.max(0.1);
+        let (mut x, mut y) = (x / s, y / s);
+        if !clamp && !g.content.contains(x, y) { return None; }
+        x = x.clamp(g.content.x, g.content.x + g.content.w);
+        y = y.clamp(g.content.y, g.content.y + g.content.h);
+        let zoom = v.zoom.unwrap_or(fit);
+        let point = (v.center.0 + (x - g.content.x - g.content.w / 2.0) / zoom,
+            v.center.1 + (y - g.content.y - g.content.h / 2.0) / zoom);
+        if !clamp && (point.0 < 0.0 || point.1 < 0.0 || point.0 > w as f32 || point.1 > h as f32) {
+            return None;
+        }
+        Some((point.0.clamp(0.0, w as f32), point.1.clamp(0.0, h as f32)))
+    }
+
+    fn append_ocr_point(&mut self, x: f32, y: f32) {
+        let Some(point) = self.ocr_image_point(x, y, true) else { return };
+        let Some(v) = self.viewer.as_mut() else { return };
+        if v.ocr_stroke.last() == Some(&point) { return; }
+        if v.ocr_stroke.len() >= pasteroll_core::ocr_regions::MAX_POINTS {
+            v.ocr_stroke = v.ocr_stroke.iter().step_by(2).copied().collect();
+        }
+        v.ocr_stroke.push(point);
+        self.dirty = true;
+    }
+
+    fn finish_ocr_stroke(&mut self, x: f32, y: f32, now: u64) {
+        if !self.viewer.as_ref().is_some_and(|v| !v.ocr_stroke.is_empty()) { return; }
+        self.append_ocr_point(x, y);
+        let Some(v) = self.viewer.as_mut() else { return };
+        let region = std::mem::take(&mut v.ocr_stroke);
+        if pasteroll_core::ocr_regions::valid(&region) {
+            v.ocr_regions.push(region);
+        } else {
+            v.toast("Draw a loop around the text; a click or line is not an area.", now);
+        }
+        self.dirty = true;
     }
 
     fn viewer_text_press(&mut self, kind: MouseKind, pos: usize, now: u64) {
@@ -1854,6 +2081,18 @@ impl Controller {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancelled_ocr_jobs_remain_bounded_until_the_worker_finishes() {
+        let jobs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let first = OcrJob::acquire(&jobs).unwrap();
+        let second = OcrJob::acquire(&jobs).unwrap();
+        assert!(OcrJob::acquire(&jobs).is_none());
+        drop(first);
+        assert!(OcrJob::acquire(&jobs).is_some());
+        drop(second);
+        assert_eq!(jobs.load(std::sync::atomic::Ordering::Acquire), 0);
+    }
 
     #[test]
     fn finding_ignores_case_and_reports_utf16_ranges() {

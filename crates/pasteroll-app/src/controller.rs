@@ -212,6 +212,8 @@ struct Open {
     /// `None` when nothing matches the search.
     session: Option<Session<Src>>,
     target: Target,
+    /// Tray browsing has no destination until an application is explicitly clicked.
+    browse_only: bool,
     ui: Ui,
     query: String,
     filter: Filter,
@@ -281,6 +283,8 @@ pub struct Controller {
     paste_policy: PastePolicy,
     custom_filters: Vec<CustomFilter>,
     seen_ingested: u64,
+    seen_copied: u64,
+    pending_copy_refresh: bool,
     /// Decoded preview pictures of image clips, newest use last (cleared when the overlay closes).
     thumbs: Vec<(i64, Arc<core_image::Rgba>)>,
     paused: Arc<std::sync::atomic::AtomicBool>,
@@ -295,6 +299,8 @@ pub struct Controller {
     /// Where the pointer last was over the viewer (screen px): wheel zoom centres on it.
     last_pointer: (i32, i32),
     ocr: Option<Arc<dyn TextRecognizer>>,
+    ocr_request: u64,
+    ocr_jobs: Arc<std::sync::atomic::AtomicUsize>,
     waker: Arc<dyn Waker>,
     ocr_tx: std::sync::mpsc::Sender<viewer::OcrDone>,
     ocr_rx: std::sync::mpsc::Receiver<viewer::OcrDone>,
@@ -397,6 +403,8 @@ impl Controller {
             paste_policy: PastePolicy::default(),
             custom_filters: Vec::new(),
             seen_ingested: 0,
+            seen_copied: 0,
+            pending_copy_refresh: false,
             thumbs: Vec::new(),
             paused,
             last_activity_ms: 0,
@@ -408,6 +416,8 @@ impl Controller {
             viewer: None,
             last_pointer: (0, 0),
             ocr: None,
+            ocr_request: 0,
+            ocr_jobs: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             waker,
             ocr_tx,
             ocr_rx,
@@ -538,6 +548,13 @@ impl Controller {
                 self.last_activity_ms = now;
                 self.activate(p, now);
             }
+            Event::BrowseAt(x, y) => {
+                p.begin_browse();
+                self.end_session(p);
+                self.last_activity_ms = now;
+                self.open_at(p, now, Target { id: 0, pid: 0, exe: String::new(),
+                    class: String::new(), desktop: false }, (x, y), true);
+            }
             Event::Step(step, gen) => {
                 if self.live(p, gen) {
                     self.touch(p, now);
@@ -645,6 +662,11 @@ impl Controller {
             p.log("target runs at a higher privilege level: refused");
             return;
         }
+        let at = p.cursor();
+        self.open_at(p, now, target, at, false);
+    }
+
+    fn open_at(&mut self, p: &mut dyn Platform, now: u64, target: Target, at: (i32, i32), browse_only: bool) {
         let session = match Session::open(Src::All(SharedStore(self.store.clone()))) {
             Ok(Some(s)) => s,
             Ok(None) => {
@@ -669,6 +691,7 @@ impl Controller {
             adding_filter: false,
             last_trashed: None,
             target,
+            browse_only,
             ui: Ui {
                 body: BodyState::Message(String::new()),
                 selection: None,
@@ -685,13 +708,17 @@ impl Controller {
         });
         p.input_active(true);
         self.load_body();
-        let at = p.cursor();
         self.overlay = p.overlay_show(at);
+        if browse_only {
+            self.status = Some(Status { text: "Click a destination window to paste; Esc closes.".into(),
+                until_ms: now + NOTICE_MS });
+        }
         self.dirty = true;
         p.log("session opened");
     }
 
     fn end_session(&mut self, p: &mut dyn Platform) {
+        self.pending_copy_refresh = false;
         self.drop_editor(p);
         self.drop_viewer(p);
         if self.open.take().is_some() {
@@ -1188,11 +1215,25 @@ impl Controller {
     /// A clip was stored while the overlay may be open: the search index no longer covers
     /// everything, so rebuild it (and re-run the search that is showing).
     fn on_new_clips(&mut self, p: &mut dyn Platform) {
+        let copied = self.workers.copied.load(Ordering::SeqCst);
+        if copied != self.seen_copied {
+            self.seen_copied = copied;
+            self.pending_copy_refresh = self.open.is_some();
+        }
         let n = self.workers.ingested.load(Ordering::SeqCst);
-        if n == self.seen_ingested {
+        let changed = n != self.seen_ingested;
+        self.seen_ingested = n;
+        if self.pending_copy_refresh {
+            if let Some(o) = self.open.as_mut() { o.index = None; }
+            if self.viewer.is_none() && self.editor.is_none() {
+                self.pending_copy_refresh = false;
+                self.refresh(p);
+            }
             return;
         }
-        self.seen_ingested = n;
+        if !changed {
+            return;
+        }
         let Some(o) = self.open.as_mut() else { return };
         if o.index.is_some() {
             o.index = None;
@@ -1622,6 +1663,12 @@ impl Controller {
     /// into a terminal is not pasted until `warned` says the user has been told.
     fn paste_item(&mut self, p: &mut dyn Platform, id: i64, selection: Option<String>, warned: bool) -> PasteCheck {
         let Some(open) = self.open.as_ref() else { return PasteCheck::Done };
+        if open.browse_only {
+            self.status = Some(Status { text: "Click a destination window to paste.".into(),
+                until_ms: p.now_ms() + NOTICE_MS });
+            self.dirty = true;
+            return PasteCheck::Done;
+        }
         let target = open.target.clone();
         if target.desktop {
             self.cancel(p, "Enter does not paste onto the desktop (click it to save an image)");
@@ -1741,6 +1788,7 @@ impl Controller {
 
     fn tick(&mut self, p: &mut dyn Platform, now: u64) {
         p.heartbeat();
+        self.on_new_clips(p);
         if self.viewer.is_some() {
             self.viewer_tick(p, now);
         }
@@ -1791,8 +1839,10 @@ impl Controller {
                 // The foreground is not swallowed: if the user leaves the target, stop swallowing.
                 let target = open.target.clone();
                 // (the image editor stands on the desktop, whatever program the session began in)
-                if self.editor.is_none() && !p.target_is_current(&target) {
-                    self.cancel(p, "foreground changed");
+                if self.editor.is_none() {
+                    let current = if open.browse_only { p.browse_focus_current() }
+                        else { p.target_is_current(&target) };
+                    if !current { self.cancel(p, "foreground changed"); }
                 }
             }
             Some(_) => self.poll_click(p, now),
@@ -1839,6 +1889,7 @@ impl Controller {
                         o.ui.warned = false;
                     }
                     o.target = t;
+                    o.browse_only = false;
                     o.ui.click = None;
                 }
                 self.status = None;

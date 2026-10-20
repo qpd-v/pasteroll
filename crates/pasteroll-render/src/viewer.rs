@@ -63,6 +63,9 @@ pub enum Tool {
     Restore,
     Search,
     Wrap,
+    OcrSelect,
+    OcrRead,
+    OcrUndo,
     More,
     Close,
 }
@@ -74,7 +77,7 @@ impl Tool {
             Tool::Prev | Tool::Next => 0,
             Tool::ZoomOut | Tool::FitActual | Tool::ZoomIn => 1,
             Tool::Copy | Tool::Paste | Tool::Pin | Tool::Delete | Tool::Restore => 2,
-            Tool::Search | Tool::Wrap => 3,
+            Tool::Search | Tool::Wrap | Tool::OcrSelect | Tool::OcrRead | Tool::OcrUndo => 3,
             Tool::More | Tool::Close => 4,
         }
     }
@@ -106,6 +109,9 @@ impl Tool {
             Tool::Restore => Icon::Restore,
             Tool::Search => Icon::Search,
             Tool::Wrap => Icon::Wrap,
+            Tool::OcrSelect => Icon::Lasso,
+            Tool::OcrRead => Icon::ExtractText,
+            Tool::OcrUndo => Icon::Undo,
             Tool::More => Icon::More,
             Tool::Close => Icon::Close,
         }
@@ -196,6 +202,14 @@ pub struct ViewerView {
     pub toast: String,
     /// "Fit" or "250%" for pictures.
     pub zoom_label: String,
+    /// Original image pixel coordinates, transformed exactly like the image.
+    pub ocr_selection: Option<OcrSelectionView>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct OcrSelectionView {
+    pub regions: Vec<Vec<(f32, f32)>>,
+    pub drawing: Vec<(f32, f32)>,
 }
 
 impl Default for ViewerView {
@@ -215,6 +229,7 @@ impl Default for ViewerView {
             confirm: None,
             toast: String::new(),
             zoom_label: String::new(),
+            ocr_selection: None,
         }
     }
 }
@@ -636,6 +651,7 @@ impl Renderer {
                 );
             }
         }
+        self.draw_ocr_regions(&mut cv, v, &g);
         if let (Some(r), Some(lines)) = (g.info, &v.info) {
             self.draw_info(&mut cv, v, r, g.info_close, lines);
         }
@@ -968,6 +984,40 @@ impl Renderer {
         }
     }
 
+    fn draw_ocr_regions(&mut self, cv: &mut Canvas, v: &ViewerView, g: &VGeom) {
+        let Some(selection) = &v.ocr_selection else { return };
+        let ViewerBody::Image { size, zoom, center, .. } = &v.body else { return };
+        let s = cv.s;
+        let z = zoom.unwrap_or_else(|| fit_zoom(g, size.0, size.1)) * s;
+        let transform = Transform::from_row(z, 0.0, 0.0, z,
+            (g.content.x + g.content.w / 2.0) * s - center.0 * z,
+            (g.content.y + g.content.h / 2.0) * s - center.1 * z);
+        let mut mask = Mask::new(cv.pm.width(), cv.pm.height());
+        if let (Some(mask), Some(path)) = (mask.as_mut(), rounded(scaled(g.content, s), 6.0 * s)) {
+            mask.fill_path(&path, FillRule::Winding, true, Transform::identity());
+        }
+        for (region, closed) in selection.regions.iter().map(|r| (r, true))
+            .chain(std::iter::once((&selection.drawing, false))) {
+            if region.len() < 2 { continue; }
+            let mut path = tiny_skia::PathBuilder::new();
+            for (i, &(x, y)) in region.iter().enumerate() {
+                if i == 0 { path.move_to(x, y); } else { path.line_to(x, y); }
+            }
+            if closed { path.close(); }
+            if let Some(path) = path.finish().and_then(|p| p.transform(transform)) {
+                if closed {
+                    cv.pm.fill_path(&path, &paint(ACCENT, 0.12), FillRule::EvenOdd,
+                        Transform::identity(), mask.as_ref());
+                }
+                let stroke = tiny_skia::Stroke { width: 2.0 * s,
+                    line_cap: tiny_skia::LineCap::Round, line_join: tiny_skia::LineJoin::Round,
+                    ..Default::default() };
+                cv.pm.stroke_path(&path, &paint(ACCENT, 1.0), &stroke,
+                    Transform::identity(), mask.as_ref());
+            }
+        }
+    }
+
     fn draw_info(&mut self, cv: &mut Canvas, v: &ViewerView, r: Rect, close: Option<Rect>, lines: &[(String, String)]) {
         let s = cv.s;
         cv.fill(r, 8.0, SURFACE, 1.0);
@@ -1003,7 +1053,7 @@ impl Renderer {
             let hot = v.hover == Some(VHit::Tool(t.tool)) && v.confirm.is_none();
             let open = t.tool == Tool::More && v.menu.is_some();
             let on = match t.tool {
-                Tool::Pin | Tool::Wrap | Tool::Search => t.on,
+                Tool::Pin | Tool::Wrap | Tool::Search | Tool::OcrSelect => t.on,
                 _ => open,
             };
             let r = g.tools[i];
@@ -1132,6 +1182,36 @@ fn centred_tip(r: &mut Renderer, cv: &mut Canvas, text: &str, button: Rect, size
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ocr_outline_and_fill_follow_image_zoom_pan_and_dpi() {
+        let mut renderer = Renderer::new();
+        for scale in [1.0, 1.5, 2.0] {
+            for zoom in [None, Some(2.0)] {
+                let mut view = ViewerView {
+                    body: ViewerBody::Image { img: Some(Arc::new(Rgba { width: 100, height: 100,
+                        pixels: vec![255; 100 * 100 * 4] })), size: (100, 100), zoom, center: (40.0, 40.0) },
+                    ..Default::default()
+                };
+                let size = (600.0, 480.0);
+                let geometry = viewer_geometry(&view, size);
+                let z = zoom.unwrap_or_else(|| fit_zoom(&geometry, 100, 100));
+                let base = renderer.render_viewer(&view, size, scale);
+                view.ocr_selection = Some(OcrSelectionView {
+                    regions: vec![vec![(10.0, 10.0), (40.0, 10.0), (10.0, 40.0)]], drawing: vec![],
+                });
+                let selected = renderer.render_viewer(&view, size, scale);
+                let pixel = |point: (f32, f32), frame: &Frame| {
+                    let x = ((geometry.content.x + geometry.content.w / 2.0 + (point.0 - 40.0) * z) * scale) as u32;
+                    let y = ((geometry.content.y + geometry.content.h / 2.0 + (point.1 - 40.0) * z) * scale) as u32;
+                    let i = ((y * frame.width + x) * 4) as usize;
+                    frame.bgra[i..i + 4].to_vec()
+                };
+                assert_ne!(pixel((15.0, 15.0), &base), pixel((15.0, 15.0), &selected));
+                assert_eq!(pixel((35.0, 35.0), &base), pixel((35.0, 35.0), &selected));
+            }
+        }
+    }
 
     fn tools(list: &[Tool]) -> Vec<ToolView> {
         list.iter().map(|t| ToolView { tool: *t, on: false, enabled: true, tip: format!("{t:?}") }).collect()

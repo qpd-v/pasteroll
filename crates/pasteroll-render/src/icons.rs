@@ -27,6 +27,7 @@ pub enum Icon {
     Wrap,
     Info,
     ExtractText,
+    Lasso,
     Close,
     More,
     ChevronUp,
@@ -252,6 +253,10 @@ pub(crate) fn draw(cv: &mut Canvas, icon: Icon, r: Rect, size: f32, rgb: Rgb) {
             corners(cv, &g, rgb, false);
             poly(cv, &g, &[(5.0, 5.5), (11.0, 5.5)], rgb, 1.5);
             poly(cv, &g, &[(8.0, 5.5), (8.0, 11.5)], rgb, 1.5);
+        }
+        Icon::Lasso => {
+            circle(cv, &g, 8.0, 7.0, 5.0, rgb, Some(1.5));
+            poly(cv, &g, &[(5.0, 11.0), (4.0, 13.0), (6.0, 14.0), (8.0, 13.0)], rgb, 1.5);
         }
         Icon::Close => {
             poly(cv, &g, &[(3.5, 3.5), (12.5, 12.5)], rgb, 1.7);

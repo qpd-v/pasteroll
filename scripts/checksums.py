@@ -11,10 +11,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--verify", action="store_true")
     parser.add_argument("--with-gnome", action="store_true", help="include both GNOME development packages")
+    parser.add_argument("--windows-only", action="store_true", help="require only Windows Setup and portable ZIP")
     parser.add_argument("--dist", type=Path, default=ROOT / "dist")
     args = parser.parse_args()
     try:
-        names = artifact_names(release_version(), with_gnome=args.with_gnome)
+        names = artifact_names(release_version(), with_gnome=args.with_gnome, windows_only=args.windows_only)
         if args.verify:
             verify_checksums(args.dist, names)
             print(f"PASS: all {len(names)} release checksums match.")

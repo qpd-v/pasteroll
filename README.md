@@ -17,6 +17,15 @@ edges and please [report them](https://github.com/qpd-v/pasteroll/issues).
 [Release notes and testing status](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.3) ·
 [SHA256SUMS](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.3/SHA256SUMS)
 
+## Next Windows update: 0.1.0-beta.4
+
+The Windows candidate adds the transparent roll icon, About/version information,
+and freehand image OCR areas. In the expanded viewer, select the lasso, circle one
+or more text areas, and press Enter or Extract selected text. Ctrl+Z undoes an area,
+Delete clears areas, and Escape cancels. OCR stays local and leaves the original
+image unchanged. Windows candidate builds are local until release approval;
+the public downloads above and Linux packages remain beta.3.
+
 ## Experimental GNOME 46 Wayland support
 
 Beta.3 adds native GNOME 46 Wayland support through a Shell companion.

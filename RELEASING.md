@@ -1,3 +1,25 @@
+# Beta.4 Windows update
+
+Current candidate: **0.1.0-beta.4**, Windows only. Linux packages remain beta.3.
+The beta.3 process below is retained as the previous cross-platform release reference.
+
+1. Run Windows workspace tests with `cargo test --workspace --exclude pasteroll-linux --locked --offline`
+   using the sanitized local runner and existing test target directory.
+2. Build with `scripts/package-windows-installer.ps1`; inspect packages with
+   `scripts/test-windows-packaging.ps1` and run the About/upgrade checks documented
+   in packaging/windows/README.md. Run the native Windows OCR synthetic example.
+3. Generate/verify `SHA256SUMS` with `python scripts/checksums.py --windows-only`
+   and `python scripts/checksums.py --windows-only --verify`. Scan via
+   `scripts/verify-release-local.ps1 -WindowsOnly -CheckSource`.
+4. Record clean-machine/all-users/UAC and interactive deletion checks as NOT TESTED
+   until actually performed. Keep the installed beta.3 copy/data intact during tests.
+5. After review and explicit commit/push/tag/publication approval, use the beta.4
+   release notes and upload only the two Windows packages and their checksum file.
+   Website changes require separate care: update Windows links/version text and
+   leave the Linux links and labels on beta.3. Preserve the approved feature videos.
+
+## Previous beta.3 process
+
 # Local release process
 
 Current version: **0.1.0-beta.3** (experimental prerelease).

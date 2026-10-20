@@ -1,4 +1,4 @@
-Pasteroll for Windows - 0.1.0-beta.3
+Pasteroll for Windows - 0.1.0-beta.4
 ====================================
 
 Pasteroll keeps a history of what you copy and lets you paste it again: scroll through
@@ -6,7 +6,7 @@ your clips with the mouse wheel and paste the whole clip, or select part of it a
 just that part.
 
 Install
-  Run pasteroll-0.1.0-beta.3-windows-x64-setup.exe.
+  Run pasteroll-0.1.0-beta.4-windows-x64-setup.exe.
   Choose Only for me (default, no administrator rights), or For all users (UAC).
   The Start menu shortcut is on by default; desktop shortcut and start at sign-in are off.
   Each account always has its own history and settings, even with an all-users install.
@@ -27,7 +27,7 @@ Your data
   Nothing is sent anywhere.
 
 Portable mode
-  Extract pasteroll-0.1.0-beta.3-windows-x64-portable.zip and run pasteroll.exe.
+  Extract pasteroll-0.1.0-beta.4-windows-x64-portable.zip and run pasteroll.exe.
   The included portable.txt keeps all app data in the adjacent data folder.
   Installation, autostart changes and --db are disabled. Quit, then delete the folder to remove it.
   DPAPI still binds the key to your Windows account: copying the folder to another PC/account
@@ -52,3 +52,19 @@ Command line
 License
   MIT or Apache-2.0, at your option (LICENSE-MIT, LICENSE-APACHE).
   Source and issues: https://github.com/qpd-v/pasteroll
+
+Beta.4 additions
+  The app, tray, shortcuts and installer use the transparent roll icon.
+  Right-click the tray > About Pasteroll shows version and installation type.
+  The tray tooltip shows the version and whether recording is paused.
+  On an image in the expanded viewer, choose the lasso and draw closed outlines
+  around one or more text areas. Enter / Extract selected text runs local OCR.
+  Ctrl+Z undoes an area; Delete clears areas; Escape cancels selection.
+  Wheel/zoom keep areas attached to the image. No original pixels are modified.
+  Copying OCR text or a selected part of viewer text also adds it to history while
+  recording is enabled. Repeated copies deduplicate. Automatic pastes are skipped.
+  Tray: click once to browse history near the icon; double-click for Settings;
+  right-click for the existing menu. Single click waits for Windows' double-click
+  interval. From tray browsing, click the destination window to paste.
+  Copied OCR text refreshes the carousel when the expanded viewer closes; no need
+  to close and reopen the carousel. Your active filter is retained.

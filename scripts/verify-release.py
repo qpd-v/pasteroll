@@ -12,9 +12,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--generic-only", action="store_true", help="preliminary check; never a full personal-string gate")
     parser.add_argument("--with-gnome", action="store_true", help="also require and scan both GNOME development packages")
+    parser.add_argument("--windows-only", action="store_true", help="verify only Windows Setup and portable ZIP")
     args = parser.parse_args()
     try:
-        names = artifact_names(release_version(), with_gnome=args.with_gnome)
+        names = artifact_names(release_version(), with_gnome=args.with_gnome, windows_only=args.windows_only)
         verify_checksums(ROOT / "dist", names)
         staged = ROOT / "target/windows-packaging/setup"
         if digest(staged / "pasteroll.exe") != digest(ROOT / "target/release/pasteroll.exe"):

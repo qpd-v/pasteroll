@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+## 0.1.0-beta.4 (Windows candidate)
+
+- Replace the boxed application icon with the approved transparent roll. Generate
+  the tray, window, shortcut and installer sizes with preserved proportions.
+- Single tray click opens history near the icon; double-click opens Settings.
+  Right-click keeps the existing menu. Single clicks use the Windows double-click
+  interval to distinguish them from double-clicks.
+- Add About Pasteroll to the Windows tray menu, showing version, installation type
+  and the activation gesture. Tray tooltips show the version and recording state.
+- Add image OCR areas: in the expanded viewer, choose the lasso, draw one or more
+  freehand outlines, and extract only the selected text. Enter extracts; Ctrl+Z
+  undoes an area; Delete clears areas; Escape cancels selection. Zoom and scroll
+  preserve image coordinates. The original image is never changed.
+- Mask unselected pixels before local OCR and ignore cancelled/stale OCR results.
+- Copied OCR text appears in the existing carousel when the viewer closes, including
+  saves that finish afterwards; active filters are preserved.
+- Copying extracted OCR text or a viewer text selection now records it as a new
+  history clip. Repeated copies deduplicate; paused/excluded recording is respected.
+  Automatic paste writes remain excluded from clipboard capture.
+- Verify Windows upgrades with disposable data and separate installer test identity.
+- Release tooling supports a Windows-only package/checksum set. Linux downloads
+  remain beta.3; Linux runtime work and testing are deferred.
+
 ## 0.1.0-beta.3
 
 - Add a native GNOME 46 Wayland backend with a Pasteroll Shell companion: clipboard
