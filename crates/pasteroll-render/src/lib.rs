@@ -47,6 +47,17 @@ pub use ui::{hit, list_row_at, list_visible_rows, slider_index_at, slider_track,
 
 pub const WIDTH: f32 = 520.0;
 pub const HEIGHT: f32 = 440.0;
+/// The No Bloat window: one clip and nothing else, so it needs far less room.
+pub const SLIM_WIDTH: f32 = 480.0;
+pub const SLIM_HEIGHT: f32 = 300.0;
+
+/// The carousel window's normal size in DIP for a mode (before the Size setting is applied).
+pub fn window_dip(mode: pasteroll_core::config::UiMode) -> (f32, f32) {
+    match mode {
+        pasteroll_core::config::UiMode::Complete => (WIDTH, HEIGHT),
+        pasteroll_core::config::UiMode::NoBloat => (SLIM_WIDTH, SLIM_HEIGHT),
+    }
+}
 
 const OUTER: f32 = 8.0;
 const INNER: f32 = 10.0;
@@ -57,6 +68,8 @@ const ROW_H: f32 = 28.0;
 const FOOTER_H: f32 = 20.0;
 const DROPDOWN_ITEM_H: f32 = 28.0;
 const DROPDOWN_W: f32 = 170.0;
+/// One column of the filter menu when No Bloat's small window makes it wrap into several.
+const SLIM_DROPDOWN_COL_W: f32 = 124.0;
 const FONT_PX: f32 = 14.0;
 const SMALL_PX: f32 = 12.0;
 const BODY_LINE: f32 = 19.0;
@@ -134,6 +147,12 @@ pub struct ViewModel {
     pub lifted: bool,
     /// What the pointer is over (buttons light up and explain themselves).
     pub hover: Option<Hit>,
+    /// No Bloat: only the clip itself is drawn. `rows` then holds just the active clip, and the
+    /// list and card buttons do not exist (no geometry, no hits).
+    pub slim: bool,
+    /// No Bloat: the search bar and filter button are shown too (while a search or filter is in
+    /// use). Ignored when `slim` is off, where they are always there.
+    pub slim_bar: bool,
 }
 
 impl ViewModel {
@@ -171,6 +190,8 @@ impl Default for ViewModel {
             in_trash: false,
             lifted: false,
             hover: None,
+            slim: false,
+            slim_bar: false,
         }
     }
 }
@@ -233,7 +254,83 @@ pub struct Geometry {
     pub scale: f32,
 }
 
+/// The filter menu under the filter button. In the full window it is one column. In No Bloat's
+/// small window it wraps into as many columns as the height needs (filling each column top to
+/// bottom, so Up and Down walk the items in order).
+fn dropdown_geometry(vm: &ViewModel, filter_button: Rect, size_dip: (f32, f32)) -> (Option<Rect>, Vec<Rect>) {
+    let Some(d) = &vm.dropdown else { return (None, Vec::new()) };
+    let n = d.items.len().max(1);
+    let top = filter_button.y + filter_button.h + 4.0;
+    let rows = if vm.slim {
+        let room = (size_dip.1 - OUTER - top - 8.0).max(DROPDOWN_ITEM_H);
+        ((room / DROPDOWN_ITEM_H).floor() as usize).clamp(1, n)
+    } else {
+        n
+    };
+    let cols = n.div_ceil(rows);
+    let col_w = if cols == 1 { DROPDOWN_W - 8.0 } else { SLIM_DROPDOWN_COL_W };
+    let w = cols as f32 * col_w + 8.0;
+    let right = filter_button.x + filter_button.w;
+    let rect = Rect { x: (right - w).max(OUTER), y: top, w, h: rows.min(n) as f32 * DROPDOWN_ITEM_H + 8.0 };
+    let items = (0..d.items.len())
+        .map(|i| Rect {
+            x: rect.x + 4.0 + (i / rows) as f32 * col_w,
+            y: rect.y + 4.0 + (i % rows) as f32 * DROPDOWN_ITEM_H,
+            w: col_w,
+            h: DROPDOWN_ITEM_H,
+        })
+        .collect();
+    (Some(rect), items)
+}
+
+/// The No Bloat layout: the clip fills the window, with the search bar above it only while a
+/// search or filter is in use. Whatever is not shown is an empty rectangle, which contains no
+/// point, so nothing that is not drawn can be hit.
+fn slim_geometry(vm: &ViewModel, size_dip: (f32, f32), scale: f32) -> Geometry {
+    let (w, h) = size_dip;
+    let surface = Rect { x: OUTER, y: OUTER, w: w - 2.0 * OUTER, h: h - 2.0 * OUTER };
+    let inner = surface.inset(INNER);
+    let footer = Rect { x: inner.x, y: inner.y + inner.h - FOOTER_H, w: inner.w, h: FOOTER_H };
+    // the message line takes room only while there is a message
+    let strip = if vm.footer.is_empty() { 0.0 } else { FOOTER_H + 4.0 };
+    let nothing = Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 };
+    let (query_box, filter_button, top) = if vm.slim_bar {
+        let bar = Rect { x: inner.x, y: inner.y, w: inner.w, h: BAR_H };
+        let filter_button = Rect { x: bar.x + bar.w - FILTER_W, y: bar.y, w: FILTER_W, h: BAR_H };
+        let query_box = Rect { x: bar.x, y: bar.y, w: bar.w - FILTER_W - 6.0, h: BAR_H };
+        (query_box, filter_button, bar.y + BAR_H + 8.0)
+    } else {
+        (nothing, nothing, inner.y)
+    };
+    let card = Rect { x: inner.x, y: top, w: inner.w, h: (inner.y + inner.h - strip - top).max(0.0) };
+    let mut rows: Vec<Option<Rect>> = vec![None; vm.rows.len()];
+    let mut body = None;
+    if !vm.rows.is_empty() {
+        rows[vm.active.min(vm.rows.len() - 1)] = Some(card);
+        body = Some(card);
+    }
+    let (dropdown, dropdown_items) = dropdown_geometry(vm, filter_button, size_dip);
+    Geometry {
+        surface,
+        query_box,
+        filter_button,
+        list: card,
+        rows,
+        body,
+        expand: None,
+        delete: None,
+        restore: None,
+        footer,
+        dropdown,
+        dropdown_items,
+        scale,
+    }
+}
+
 pub fn geometry(vm: &ViewModel, size_dip: (f32, f32), scale: f32) -> Geometry {
+    if vm.slim {
+        return slim_geometry(vm, size_dip, scale);
+    }
     let (w, h) = size_dip;
     let surface = Rect { x: OUTER, y: OUTER, w: w - 2.0 * OUTER, h: h - 2.0 * OUTER };
     let inner = surface.inset(INNER);
@@ -293,26 +390,7 @@ pub fn geometry(vm: &ViewModel, size_dip: (f32, f32), scale: f32) -> Geometry {
         let _ = below;
     }
 
-    let (dropdown, dropdown_items) = match &vm.dropdown {
-        Some(d) => {
-            let rect = Rect {
-                x: filter_button.x + filter_button.w - DROPDOWN_W,
-                y: filter_button.y + filter_button.h + 4.0,
-                w: DROPDOWN_W,
-                h: d.items.len() as f32 * DROPDOWN_ITEM_H + 8.0,
-            };
-            let items = (0..d.items.len())
-                .map(|i| Rect {
-                    x: rect.x + 4.0,
-                    y: rect.y + 4.0 + i as f32 * DROPDOWN_ITEM_H,
-                    w: rect.w - 8.0,
-                    h: DROPDOWN_ITEM_H,
-                })
-                .collect();
-            (Some(rect), items)
-        }
-        None => (None, Vec::new()),
-    };
+    let (dropdown, dropdown_items) = dropdown_geometry(vm, filter_button, size_dip);
 
     Geometry {
         surface,
@@ -562,9 +640,13 @@ impl Renderer {
         cv.fill(g.surface, RADIUS, SURFACE, 1.0);
         cv.stroke(g.surface, RADIUS, SURFACE_BORDER, 1.0, 1.0);
 
-        self.draw_search_bar(&mut cv, vm, &g);
-        self.draw_rows(&mut cv, vm, &g);
-        self.draw_card_buttons(&mut cv, vm, &g);
+        if vm.slim {
+            self.draw_slim(&mut cv, vm, &g);
+        } else {
+            self.draw_search_bar(&mut cv, vm, &g);
+            self.draw_rows(&mut cv, vm, &g);
+            self.draw_card_buttons(&mut cv, vm, &g);
+        }
 
         if !vm.footer.is_empty() {
             let f = g.footer;
@@ -613,6 +695,45 @@ impl Renderer {
             px.swap(0, 2);
         }
         Frame { width: wpx, height: hpx, bgra }
+    }
+
+    /// No Bloat: the clip straight on the surface (with the search bar above it while one is in
+    /// use), or the message that stands in for it.
+    fn draw_slim(&mut self, cv: &mut Canvas, vm: &ViewModel, g: &Geometry) {
+        let s = g.scale;
+        if vm.slim_bar {
+            self.draw_search_bar(cv, vm, g);
+        }
+        match (g.body, &vm.body) {
+            (Some(b), _) if vm.lifted => {
+                // the card is out in the viewer or editor: leave its place empty
+                cv.fill(b, 8.0, (22, 22, 26), 1.0);
+                cv.stroke(b, 8.0, SURFACE_BORDER, 1.0, 1.0);
+            }
+            (Some(b), _) => {
+                self.draw_body(cv, vm, b, s);
+                // the only mark on the card: a pinned clip's star
+                if vm.rows.get(vm.active).is_some_and(|r| r.pinned) {
+                    draw_star(cv, b.x + b.w - 8.0, b.y + 8.0, 6.0, ACCENT);
+                }
+            }
+            (None, Body::Message(m)) => {
+                let l = g.list;
+                let tw = self.measure(m, FONT_PX * s, 18.0 * s);
+                self.draw_text(
+                    cv,
+                    m,
+                    ((l.x + l.w / 2.0) * s - tw / 2.0, (l.y + l.h / 2.0 - 9.0) * s),
+                    FONT_PX * s,
+                    18.0 * s,
+                    None,
+                    Wrap::None,
+                    MUTED,
+                    scaled(l, s),
+                );
+            }
+            _ => {}
+        }
     }
 
     fn draw_search_bar(&mut self, cv: &mut Canvas, vm: &ViewModel, g: &Geometry) {

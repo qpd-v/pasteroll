@@ -5,7 +5,8 @@ use pasteroll_render::*;
 use std::sync::Arc;
 
 fn save(r: &mut Renderer, vm: &ViewModel, scale: f32, path: &std::path::Path) {
-    let f = r.render(vm, (WIDTH, HEIGHT), scale);
+    let size = if vm.slim { (SLIM_WIDTH, SLIM_HEIGHT) } else { (WIDTH, HEIGHT) };
+    let f = r.render(vm, size, scale);
     let mut rgba = Vec::with_capacity(f.bgra.len());
     for p in f.bgra.chunks_exact(4) {
         rgba.extend_from_slice(&[p[2], p[1], p[0], 255]);
@@ -68,5 +69,22 @@ fn main() {
     let empty = ViewModel { query: "zzzz".into(), body: Body::Message("No clips match \"zzzz\"".into()), ..ViewModel::default() };
     save(&mut r, &empty, 1.0, &dir.join("4-empty.png"));
     save(&mut r, &vm, 2.0, &dir.join("5-image-2x.png"));
-    println!("wrote 5 frames to {}", dir.display());
+    // No Bloat: the clip alone, in its smaller window
+    let slim = |body: Body, footer: &str| ViewModel {
+        rows: vec![row(RowKind::Text, "", false, vec![])],
+        active: 0,
+        body,
+        footer: footer.into(),
+        slim: true,
+        ..ViewModel::default()
+    };
+    save(&mut r, &slim(Body::Text { display: long.into(), selection: Some((16, 25)), scroll: 0.0 }, ""), 1.0, &dir.join("6-no-bloat-text.png"));
+    save(&mut r, &slim(vm.body.clone(), ""), 1.0, &dir.join("7-no-bloat-image.png"));
+    save(
+        &mut r,
+        &slim(Body::Text { display: "echo one\r\necho two".into(), selection: None, scroll: 0.0 }, "2 line(s) into a terminal may run commands. Enter pastes, Esc cancels."),
+        2.0,
+        &dir.join("8-no-bloat-warning-2x.png"),
+    );
+    println!("wrote 8 frames to {}", dir.display());
 }

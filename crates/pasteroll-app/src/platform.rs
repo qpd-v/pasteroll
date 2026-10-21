@@ -184,6 +184,9 @@ pub trait Platform {
     fn target_is_current(&mut self, target: &Target) -> bool;
     /// Does the target run at a higher privilege than we do, so our keystrokes would be blocked?
     fn target_privileged(&mut self, target: &Target) -> bool;
+    /// The carousel switched between Complete and No Bloat (its window has a different size in
+    /// each). Called with no carousel open.
+    fn ui_mode_changed(&mut self, _mode: pasteroll_core::config::UiMode) {}
     /// Shell/tray browsing has no paste destination, but must release keyboard
     /// capture if focus moves to another application (or the desktop locks).
     fn begin_browse(&mut self) {}

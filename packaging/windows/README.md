@@ -7,8 +7,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-windows-inst
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-windows-packaging.ps1
 ```
 
-The first command builds both `dist/pasteroll-0.1.0-beta.4-windows-x64-setup.exe` and
-`dist/pasteroll-0.1.0-beta.4-windows-x64-portable.zip`. It reads version, publisher, website and
+The first command builds both `dist/pasteroll-0.1.0-beta.5-windows-x64-setup.exe` and
+`dist/pasteroll-0.1.0-beta.5-windows-x64-portable.zip`. It reads version, publisher, website and
 license from Cargo metadata, remaps build paths, and builds offline with the lockfile. Rust's
 dependencies must already be available locally. The script checks for ISCC and does not install it.
 Use `-Iscc PATH` for a nonstandard Inno Setup 6 location.
@@ -38,8 +38,8 @@ wizard mode is omitted: the ZIP provides extraction without installation or elev
 - Both license texts appear in the license page and are installed as separate files.
 
 ```powershell
-.\pasteroll-0.1.0-beta.4-windows-x64-setup.exe /VERYSILENT /CURRENTUSER /NORESTART
-.\pasteroll-0.1.0-beta.4-windows-x64-setup.exe /VERYSILENT /ALLUSERS /NORESTART
+.\pasteroll-0.1.0-beta.5-windows-x64-setup.exe /VERYSILENT /CURRENTUSER /NORESTART
+.\pasteroll-0.1.0-beta.5-windows-x64-setup.exe /VERYSILENT /ALLUSERS /NORESTART
 ```
 
 `/CURRENTUSER` needs no administrator rights. `/ALLUSERS` requires UAC approval, or an already
@@ -93,17 +93,18 @@ removed afterwards; only a result report under `target-dev/` remains.
 This is a native Windows current-host test, not a clean machine, older-binary upgrade, UAC/all-users,
 shortcut/autostart creation, or interactive data-deletion-dialog test. Those remain separate checks.
 
-## Beta.4 Windows candidate checks
+## Windows package checks
 
 `python scripts/test-windows-about.py` checks portable/standalone/Setup About text
 and opens/closes its own native dialog without clipboard capture or history access.
-`python scripts/test-windows-update.py` uses the exact beta.3/beta.4 executable
-payloads and production Inno recipe with a disposable AppId and shortcut names.
+`python scripts/test-windows-update.py` uses the exact previous-release (beta.4) and current
+executable payloads and production Inno recipe with a disposable AppId and shortcut names.
 It checks retained synthetic history/key/config/presets, upgrades, reinstall,
 shortcuts and uninstall while preserving the live installation and autostart.
-The verified beta.3 portable ZIP must exist in the documented local release cache.
+The verified beta.4 portable ZIP must exist in the documented local release cache
+(`target-dev/beta4-release/github-download/`; check its hash against the published SHA256SUMS).
 It does not verify all-users/UAC, enabling autostart or the interactive data-deletion
 prompt; those still need a disposable Windows account/VM and user acceptance.
 Use `python scripts/checksums.py --windows-only` and
 `powershell -NoProfile -File scripts/verify-release-local.ps1 -WindowsOnly -CheckSource`.
-The standard Linux package downloads stay on beta.3 for this update.
+Windows-only releases keep the Linux downloads on their last published release (beta.4).

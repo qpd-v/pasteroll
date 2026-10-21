@@ -13,6 +13,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 mod editor;
+mod editor_anywhere;
+mod no_bloat;
 mod ocr_regions;
 
 // ---------------------------------------------------------------- fake platform
@@ -64,6 +66,9 @@ struct Fake {
     /// What the folder chooser answers.
     folder_choice: SaveChoice,
     modal: bool,
+    /// The mode the carousel window is sized for (see `ui_mode_changed`).
+    mode: pasteroll_core::config::UiMode,
+    mode_changes: Vec<pasteroll_core::config::UiMode>,
 }
 
 fn target(id: u64, exe: &str) -> Target {
@@ -110,7 +115,15 @@ impl Fake {
             presets_ok: true,
             folder_choice: SaveChoice::Unavailable,
             modal: false,
+            mode: pasteroll_core::config::UiMode::Complete,
+            mode_changes: Vec::new(),
         }
+    }
+
+    /// The carousel window's size in pixels at scale 1, for the mode it is in.
+    fn window(&self) -> (u32, u32) {
+        let (w, h) = pasteroll_render::window_dip(self.mode);
+        (w as u32, h as u32)
     }
 }
 
@@ -131,12 +144,16 @@ impl Platform for Fake {
     fn overlay_show(&mut self, at: (i32, i32)) -> OverlayInfo {
         self.shown += 1;
         self.shown_at = Some(at);
-        let mut info = OverlayInfo::new(1.0, (520, 440));
+        let mut info = OverlayInfo::new(1.0, self.window());
         info.origin_px = (316, 320);
         info
     }
+    fn ui_mode_changed(&mut self, mode: pasteroll_core::config::UiMode) {
+        self.mode = mode;
+        self.mode_changes.push(mode);
+    }
     fn overlay_present(&mut self, frame: &pasteroll_render::Frame) {
-        assert_eq!((frame.width, frame.height), (520, 440));
+        assert_eq!((frame.width, frame.height), self.window(), "the frame fits the window of this mode");
         self.frames += 1;
         self.last_overlay = Some(frame.clone());
     }

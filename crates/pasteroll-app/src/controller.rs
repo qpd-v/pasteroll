@@ -6,7 +6,8 @@
 //! Safety properties, all deliberate:
 //! - paste goes only to the window that was foreground when the carousel opened (or the window the
 //!   user clicked), in the same process; the destination is re-checked immediately before the
-//!   keystroke, and the session is cancelled if the foreground changes;
+//!   keystroke, and the session is cancelled if the foreground changes (while the image editor is
+//!   open it is re-checked when Paste is pressed and again before the result is delivered);
 //! - a more-privileged window is refused up front rather than silently losing the paste;
 //! - capture and image decoding run on worker threads, never here;
 //! - what is pasted is the real text, even where the preview shows hidden characters as tokens.
@@ -17,16 +18,16 @@ mod viewer;
 use crate::event::{Event, Key, MouseEvent, MouseKind};
 use crate::filters::{self, Filter};
 use crate::search::{self, MatchSource, SearchIndex};
-use crate::pastekeys::PasteKeys;
+use crate::pastekeys::{PasteKey, PasteKeys};
 use crate::platform::{ClickPoll, ClipboardSource, OverlayInfo, Payload, Platform, Target, TextRecognizer, Waker};
 use crate::terminals::PastePolicy;
 use crate::workers::{IngestPolicy, Logger, PreviewResult, StoreFactory, Workers};
-use pasteroll_core::config::CustomFilter;
+use pasteroll_core::config::{CustomFilter, UiMode};
 use pasteroll_core::image as core_image;
 use pasteroll_core::preview::{sanitize, Sanitized};
 use pasteroll_core::store::{Kind, PinResult};
 use pasteroll_core::{session::Moved, Dir, HistorySource, Item, Selection, Session, Snapshot, Step, Store};
-use pasteroll_render::{geometry, Body, Dropdown, Hit, Renderer, RowKind, RowView, ViewModel, HEIGHT, WIDTH};
+use pasteroll_render::{geometry, window_dip, Body, Dropdown, Hit, Renderer, RowKind, RowView, ViewModel, HEIGHT, WIDTH};
 use editor::{EditMsg, Editor};
 use viewer::Viewer;
 use std::cell::RefCell;
@@ -308,8 +309,10 @@ pub struct Controller {
     editor: Option<Editor>,
     edit_tx: std::sync::mpsc::Sender<EditMsg>,
     edit_rx: std::sync::mpsc::Receiver<EditMsg>,
-    /// The key that, held while clicking the desktop, opens the image editor.
+    /// The key that, held while clicking the desktop or a window, opens the image editor.
     advanced_modifier: pasteroll_core::config::ClickModifier,
+    /// How the carousel looks: everything on show, or only the clip (every feature works in both).
+    ui_mode: UiMode,
 }
 
 fn thousands(n: usize) -> String {
@@ -425,7 +428,34 @@ impl Controller {
             edit_tx,
             edit_rx,
             advanced_modifier: pasteroll_core::config::ClickModifier::Ctrl,
+            ui_mode: UiMode::Complete,
         }
+    }
+
+    /// The mode the program starts in (the platform sizes its window the same way itself). Use
+    /// [`Controller::set_ui_mode`] to change it while running.
+    pub fn init_ui_mode(&mut self, mode: UiMode) {
+        self.ui_mode = mode;
+        self.overlay = OverlayInfo::new(1.0, {
+            let (w, h) = window_dip(mode);
+            (w as u32, h as u32)
+        });
+    }
+
+    pub fn ui_mode(&self) -> UiMode {
+        self.ui_mode
+    }
+
+    /// Switches between Complete and No Bloat (a different look, the same features). A carousel
+    /// that is open is closed first, so the window never changes shape under the pointer; the next
+    /// one opens in the new mode.
+    pub fn set_ui_mode(&mut self, p: &mut dyn Platform, mode: UiMode) {
+        if mode == self.ui_mode {
+            return;
+        }
+        self.cancel(p, "mode changed");
+        self.init_ui_mode(mode);
+        p.ui_mode_changed(mode);
     }
 
     /// Text recognition for the viewer's Extract text (none: the action says it is unavailable).
@@ -1659,6 +1689,33 @@ impl Controller {
         }
     }
 
+    /// Writes `payload` to the clipboard and sends `target` its paste keystroke, with the last
+    /// checks every paste gets. The key that was sent, or `None` when nothing was pasted.
+    fn deliver(&mut self, p: &mut dyn Platform, target: &Target, payload: &Payload) -> Option<PasteKey> {
+        // Alt/Win held at this moment would turn the paste chord into something else: wait
+        // briefly, then give up rather than send a wrong chord.
+        if !p.modifiers_released(Duration::from_millis(300)) {
+            p.log("Alt/Win still held; not pasting");
+            return None;
+        }
+        // Write the clipboard first (it can take a moment if another process holds it), then
+        // re-check the destination as late as possible before the keystroke.
+        if let Err(e) = p.write_clipboard(payload) {
+            p.log(&format!("could not write clipboard: {e}"));
+            return None;
+        }
+        if !p.target_is_current(target) {
+            p.log("foreground changed while preparing the paste; not pasting");
+            return None;
+        }
+        let key = self.paste_keys.for_exe(&target.exe);
+        if !p.send_paste(key) {
+            p.log("paste keystroke was blocked by the system; is the target elevated?");
+            return None;
+        }
+        Some(key)
+    }
+
     /// Pastes clip `id` (or `selection`, part of it) into the session's target. A multi-line text
     /// into a terminal is not pasted until `warned` says the user has been told.
     fn paste_item(&mut self, p: &mut dyn Platform, id: i64, selection: Option<String>, warned: bool) -> PasteCheck {
@@ -1710,27 +1767,7 @@ impl Controller {
             }
         }
         self.end_session(p);
-        // Alt/Win held at this moment would turn the paste chord into something else: wait
-        // briefly, then give up rather than send a wrong chord.
-        if !p.modifiers_released(Duration::from_millis(300)) {
-            p.log("Alt/Win still held; not pasting");
-            return PasteCheck::Done;
-        }
-        // Write the clipboard first (it can take a moment if another process holds it), then
-        // re-check the destination as late as possible before the keystroke.
-        if let Err(e) = p.write_clipboard(payload) {
-            p.log(&format!("could not write clipboard: {e}"));
-            return PasteCheck::Done;
-        }
-        if !p.target_is_current(&target) {
-            p.log("foreground changed while preparing the paste; not pasting");
-            return PasteCheck::Done;
-        }
-        let key = self.paste_keys.for_exe(&target.exe);
-        if !p.send_paste(key) {
-            p.log("paste keystroke was blocked by the system; is the target elevated?");
-            return PasteCheck::Done;
-        }
+        let Some(key) = self.deliver(p, &target, payload) else { return PasteCheck::Done };
         if whole {
             let now = p.now_secs();
             let mut st = self.store.borrow_mut();
@@ -1867,14 +1904,10 @@ impl Controller {
             ClickPoll::Pending => {}
             ClickPoll::Rejected(why) => self.cancel(p, why),
             ClickPoll::Desktop => {
-                let is_image = self
-                    .current_id()
-                    .and_then(|id| self.store.borrow().kind(id).ok().flatten())
-                    == Some(Kind::Image);
-                if is_image {
+                if self.current_is_image() {
                     if p.click_modifiers().has(self.advanced_modifier) {
                         // Ctrl+click (by default): the editor, instead of saving at once
-                        self.open_editor(p, now);
+                        self.open_editor(p, now, None);
                     } else {
                         self.save_desktop_image(p);
                     }
@@ -1883,6 +1916,13 @@ impl Controller {
                 }
             }
             ClickPoll::Target(t) => {
+                // Ctrl+click (by default) with a picture: the editor first, then the result is
+                // pasted into the window that was clicked
+                if self.current_is_image() && p.click_modifiers().has(self.advanced_modifier) {
+                    self.status = None;
+                    self.open_editor(p, now, Some(t));
+                    return;
+                }
                 if let Some(o) = self.open.as_mut() {
                     if o.target.id != t.id {
                         // a warning given for another window does not carry over
@@ -1896,6 +1936,11 @@ impl Controller {
                 self.confirm(p);
             }
         }
+    }
+
+    /// The clip the carousel is on is a picture.
+    fn current_is_image(&self) -> bool {
+        self.current_id().and_then(|id| self.store.borrow().kind(id).ok().flatten()) == Some(Kind::Image)
     }
 
     // ------------------------------------------------------------------ rendering
@@ -1951,14 +1996,23 @@ impl Controller {
         let (ids, active): (Vec<i64>, usize) = match open.session.as_ref() {
             Some(s) => {
                 let (items, cur) = s.window_items();
-                let lo = cur.saturating_sub(ROWS_BEFORE);
-                let hi = (cur + 1 + ROWS_AFTER).min(items.len());
+                // No Bloat shows the one clip, not the list around it
+                let (before, after) = if self.ui_mode == UiMode::NoBloat { (0, 0) } else { (ROWS_BEFORE, ROWS_AFTER) };
+                let lo = cur.saturating_sub(before);
+                let hi = (cur + 1 + after).min(items.len());
                 (items[lo..hi].iter().map(|i| i.id).collect(), cur - lo)
             }
             None => (Vec::new(), 0),
         };
         vm.active = active;
-        vm.card_buttons = open.session.is_some();
+        vm.slim = self.ui_mode == UiMode::NoBloat;
+        vm.card_buttons = open.session.is_some() && !vm.slim;
+        // No Bloat shows the search bar and filter only while they are in use
+        vm.slim_bar = vm.slim
+            && (!open.query.is_empty()
+                || open.adding_filter
+                || open.filter != Filter::Everything
+                || open.ui.dropdown_open);
         vm.in_trash = open.in_trash();
         vm.hover = open.ui.hover;
         let (selection, scroll, dropdown_open) =
@@ -2000,6 +2054,11 @@ impl Controller {
         let words = if adding { Vec::new() } else { search::terms(&vm.query) };
         for id in ids {
             let (kind, pinned, title, meta) = self.row_info(id);
+            if vm.slim {
+                // the clip is drawn from `body`: its row keeps only the pin marker
+                vm.rows.push(RowView { kind, pinned, title: String::new(), meta: String::new(), highlights: Vec::new() });
+                continue;
+            }
             let highlights = search::highlight_ranges(&title, &words);
             vm.rows.push(RowView { kind, pinned, title, meta, highlights });
         }

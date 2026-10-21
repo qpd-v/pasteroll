@@ -191,7 +191,7 @@ fn probe() -> Result<Vec<Check>> {
     unsafe {
         let _ = GetCursorPos(&mut cursor);
     }
-    let result = probe_inner(&mut out).and_then(|()| probe_typing(&mut out));
+    let result = probe_inner(&mut out).and_then(|()| probe_typing(&mut out)).and_then(|()| probe_no_bloat(&mut out)).and_then(|()| probe_editor_anywhere(&mut out));
     // restore the user's pointer whatever happened
     input::move_to(cursor);
     result?;
@@ -277,6 +277,15 @@ size = {sz}
         let text = crate::settings::pending_text().unwrap_or_default();
         let ok = moved && pasteroll_core::config::parse(&text).map(|c| c.size_percent == 150).unwrap_or(false);
         check!("settings_slider_writes_size", ok, "moved={moved} text={:?}", text.lines().filter(|l| l.contains("size")).collect::<Vec<_>>());
+        // the Mode choice ends up in the file too
+        let chose = crate::settings::probe_choose_mode(pasteroll_core::config::UiMode::NoBloat);
+        let text = crate::settings::pending_text().unwrap_or_default();
+        let mode = pasteroll_core::config::parse(&text).map(|c| c.mode);
+        check!(
+            "settings_mode_writes_no_bloat",
+            chose && mode == Ok(pasteroll_core::config::UiMode::NoBloat),
+            "chose={chose} mode={mode:?}"
+        );
     }
     let (open, visible, text_ok) = app::with_runtime(|rt| {
         (
@@ -570,6 +579,361 @@ fn probe_typing(out: &mut Vec<Check>) -> Result<()> {
     pump(150);
     let t = edit_text(edit);
     check!("typing_after_close_reaches_target", t.ends_with('x'), "target text {:?}", t);
+
+    unsafe {
+        let _ = DestroyWindow(target);
+    }
+    app::destroy();
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// No Bloat with the real hooks and a real window: it is the small one-clip window, the arrow keys
+/// scroll, and typing and Tab still search and filter (the search bar and menu appear when used).
+/// The keys are swallowed, never sent to the target.
+fn probe_no_bloat(out: &mut Vec<Check>) -> Result<()> {
+    macro_rules! check {
+        ($name:expr, $ok:expr, $($detail:tt)*) => {
+            out.push(Check { name: $name, ok: $ok, detail: format!($($detail)*) })
+        };
+    }
+    let dir = std::env::temp_dir().join(format!("pasteroll-probe-nobloat-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let db = dir.join("history.db");
+    {
+        let mut store = crate::keystore::open_store(&db).map_err(|e| windows::core::Error::new(E_FAIL, e))?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        store.add_text("alpha one", now).ok();
+        store.add_text("beta two", now + 1).ok();
+        store.add_text("alpha three", now + 2).ok();
+    }
+    let _ = std::fs::write(dir.join("config.toml"), "[appearance]
+mode = \"no-bloat\"
+");
+    let opts = app::Options { db: db.clone(), capture: false, accept_injected: true, max_seconds: None, hooks: true, tray: false, notice: false };
+    let _msg_window = app::create(&opts)?;
+    app::with_runtime(|rt| rt.platform.allow_own_process = true);
+    let (target, edit) = make_target()?;
+    let fg_ok = make_foreground(target);
+    check!("no_bloat_target_is_foreground", fg_ok, "precondition");
+    if !fg_ok {
+        unsafe {
+            let _ = DestroyWindow(target);
+        }
+        app::destroy();
+        let _ = std::fs::remove_dir_all(&dir);
+        return Ok(());
+    }
+    unsafe {
+        let _ = SetFocus(Some(edit));
+    }
+    let mode = app::ui_mode();
+    check!("no_bloat_mode_is_read_from_the_config", mode == pasteroll_core::config::UiMode::NoBloat, "mode {mode:?}");
+    app::dispatch(Event::Activate);
+    pump(400);
+    let open = app::with_runtime(|rt| rt.controller.is_open()).unwrap_or(false);
+    check!("no_bloat_session_opens", open, "");
+    let shown = app::with_runtime(|rt| {
+        let o = rt.controller.overlay_info();
+        (o.size_px.0 as f32 / o.scale, o.size_px.1 as f32 / o.scale)
+    });
+    // the window is 480 x 300 DIP unless the work area clips it
+    check!(
+        "no_bloat_window_is_small",
+        shown.is_some_and(|(w, h)| (w - 480.0).abs() < 1.5 && (h - 300.0).abs() < 1.5),
+        "{shown:?} DIP"
+    );
+    let one = app::with_runtime(|rt| rt.controller.view_model().rows.len()).unwrap_or(0);
+    check!("no_bloat_shows_one_clip", one == 1, "{one} rows");
+    let newest = app::with_runtime(|rt| rt.controller.displayed_text()).flatten();
+    check!("no_bloat_opens_on_the_newest", newest.as_deref() == Some("alpha three"), "{newest:?}");
+
+    let bar = || app::with_runtime(|rt| rt.controller.view_model().slim_bar).unwrap_or(false);
+    check!("no_bloat_starts_without_a_search_bar", !bar(), "");
+    for c in ['a', 'l', 'p'] {
+        input::send_char(c);
+        pump(40);
+    }
+    pump(80);
+    let (q, leaked) = (query_now(), edit_text(edit));
+    check!("no_bloat_typing_searches", q.as_deref() == Some("alp") && bar(), "query {q:?}");
+    check!("no_bloat_typing_stays_off_the_target", leaked.is_empty(), "target text {leaked:?}");
+    let counts = app::with_runtime(|rt| rt.controller.match_counts()).flatten();
+    check!("no_bloat_search_narrows_the_list", counts == Some((2, 3)), "matches {counts:?}");
+    // Escape clears the search and the bar goes again
+    input::send_chord(&[], VK_ESCAPE);
+    pump(100);
+    let still_open = app::with_runtime(|rt| rt.controller.is_open()).unwrap_or(false);
+    check!("no_bloat_escape_clears_the_search", still_open && query_now().as_deref() == Some("") && !bar(), "");
+    input::send_chord(&[], VK_TAB);
+    pump(100);
+    check!("no_bloat_tab_shows_the_filter_menu", dropdown_open() && bar(), "");
+    input::send_chord(&[], VK_ESCAPE);
+    pump(100);
+    check!("no_bloat_escape_closes_only_the_menu", !dropdown_open() && !bar(), "");
+
+    input::send_chord(&[], VK_DOWN);
+    pump(100);
+    let older = app::with_runtime(|rt| rt.controller.displayed_text()).flatten();
+    check!("no_bloat_down_arrow_scrolls", older.as_deref() == Some("beta two"), "{older:?}");
+
+    input::send_chord(&[], VK_ESCAPE);
+    pump(150);
+    let closed = app::with_runtime(|rt| !rt.controller.is_open()).unwrap_or(false);
+    check!("no_bloat_escape_closes", closed, "");
+    pump(300);
+    input::send_char('x');
+    pump(150);
+    let t = edit_text(edit);
+    check!("no_bloat_typing_after_close_reaches_target", t.ends_with('x'), "target text {t:?}");
+
+    // what the tray menu does: switch at once (no restart), remember it in config.toml, and the
+    // next carousel is the big one again
+    app::set_ui_mode(pasteroll_core::config::UiMode::Complete);
+    let saved = crate::keystore::read_config_text(&db)
+        .ok()
+        .and_then(|text| pasteroll_core::config::parse(&text).ok())
+        .map(|c| c.mode);
+    check!(
+        "tray_switch_is_live_and_remembered",
+        app::ui_mode() == pasteroll_core::config::UiMode::Complete && saved == Some(pasteroll_core::config::UiMode::Complete),
+        "live {:?}, saved {saved:?}",
+        app::ui_mode()
+    );
+    app::dispatch(Event::Activate);
+    pump(300);
+    let shown = app::with_runtime(|rt| {
+        let o = rt.controller.overlay_info();
+        (o.size_px.0 as f32 / o.scale, o.size_px.1 as f32 / o.scale)
+    });
+    check!("complete_window_is_back", shown.is_some_and(|(w, _)| (w - 520.0).abs() < 1.5), "{shown:?} DIP");
+    let rows = app::with_runtime(|rt| rt.controller.view_model().rows.len()).unwrap_or(0);
+    check!("complete_shows_the_list_again", rows > 1, "{rows} rows");
+    input::send_chord(&[], VK_ESCAPE);
+    pump(200);
+
+    unsafe {
+        let _ = DestroyWindow(target);
+    }
+    app::destroy();
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// Presses (`up` false) or releases the Ctrl key.
+fn ctrl_key(up: bool) {
+    let ev = INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VK_CONTROL,
+                wScan: 0,
+                dwFlags: if up { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) },
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    unsafe {
+        SendInput(&[ev], size_of::<INPUT>() as i32);
+    }
+}
+
+/// The centre, on screen, of the part of the image editor that `pick` finds in its layout.
+fn editor_point(pick: impl Fn(&pasteroll_render::ELayout) -> Option<pasteroll_render::Rect>) -> Option<POINT> {
+    app::with_runtime(|rt| {
+        let view = rt.controller.editor_view()?;
+        let size = rt.controller.editor_size_dip()?;
+        let (x, y, ..) = rt.controller.editor_rect()?;
+        let scale = rt.controller.overlay_info().scale;
+        let r = pick(&pasteroll_render::editor_layout(&view, size))?;
+        Some(POINT {
+            x: x + ((r.x + r.w / 2.0) * scale).round() as i32,
+            y: y + ((r.y + r.h / 2.0) * scale).round() as i32,
+        })
+    })
+    .flatten()
+}
+
+fn editor_open() -> bool {
+    app::with_runtime(|rt| rt.controller.editor_is_open()).unwrap_or(false)
+}
+
+fn editor_ready() -> bool {
+    app::with_runtime(|rt| {
+        !rt.controller.editor_animating()
+            && rt.controller.editor_view().is_some_and(|v| v.paste_enabled && !v.busy)
+    })
+    .unwrap_or(false)
+}
+
+/// Waits (pumping messages) up to `ms` for `done`.
+fn wait_until(ms: u64, done: impl Fn() -> bool) -> bool {
+    let end = Instant::now() + Duration::from_millis(ms);
+    while Instant::now() < end {
+        if done() {
+            return true;
+        }
+        pump(40);
+    }
+    done()
+}
+
+/// Advanced Image Paste into a window, end to end with the real hooks, real clicks and a real
+/// paste: Ctrl+click the target with a picture chosen, switch the editor to "Path", press Paste,
+/// and the saved file's path arrives in the target's text box. The picture is saved in a scratch
+/// folder (the editor's remembered folder), never on the Desktop. The system clipboard IS used, by
+/// the paste itself: it holds the pasted path afterwards.
+fn probe_editor_anywhere(out: &mut Vec<Check>) -> Result<()> {
+    macro_rules! check {
+        ($name:expr, $ok:expr, $($detail:tt)*) => {
+            out.push(Check { name: $name, ok: $ok, detail: format!($($detail)*) })
+        };
+    }
+    let dir = std::env::temp_dir().join(format!("pasteroll-probe-editor-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let pictures = dir.join("Pictures");
+    std::fs::create_dir_all(&pictures).map_err(|e| windows::core::Error::new(E_FAIL, e.to_string()))?;
+    let db = dir.join("history.db");
+    {
+        let mut store = crate::keystore::open_store(&db).map_err(|e| windows::core::Error::new(E_FAIL, e))?;
+        let mut px = Vec::new();
+        for y in 0..60u32 {
+            for x in 0..100u32 {
+                px.extend_from_slice(&[(x * 255 / 100) as u8, (y * 255 / 60) as u8, 160, 255]);
+            }
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        store.add_image_png(&encode_png(&Rgba { width: 100, height: 60, pixels: px }).unwrap(), now).ok();
+    }
+    // the editor saves into this folder (it remembers it between uses)
+    let presets = pasteroll_core::imgedit::Presets { items: vec![], folder: Some(pictures.to_string_lossy().into_owned()) };
+    let _ = std::fs::write(dir.join("image-presets.txt"), presets.to_text());
+    let opts = app::Options { db: db.clone(), capture: false, accept_injected: true, max_seconds: None, hooks: true, tray: false, notice: false };
+    let _msg_window = app::create(&opts)?;
+    app::with_runtime(|rt| rt.platform.allow_own_process = true);
+    let (target, edit) = make_target()?;
+    let fg_ok = make_foreground(target);
+    check!("editor_target_is_foreground", fg_ok, "precondition");
+    if !fg_ok {
+        unsafe {
+            let _ = DestroyWindow(target);
+        }
+        app::destroy();
+        let _ = std::fs::remove_dir_all(&dir);
+        return Ok(());
+    }
+    unsafe {
+        let _ = SetFocus(Some(edit));
+    }
+    // open the carousel with the pointer in the far corner, so it does not cover the target
+    let (sw, sh) = unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
+    input::move_to(POINT { x: sw - 40, y: sh - 80 });
+    pump(60);
+    app::dispatch(Event::Activate);
+    pump(400);
+    let open = app::with_runtime(|rt| rt.controller.is_open()).unwrap_or(false);
+    check!("editor_session_opens", open, "");
+
+    // a spot of the target's text box that the carousel does not cover
+    let mut spot = None;
+    unsafe {
+        let mut er = RECT::default();
+        let _ = GetWindowRect(edit, &mut er);
+        let ov = app::with_runtime(|rt| rt.platform.overlay.screen_rect()).unwrap_or_default();
+        let covered = |p: POINT| p.x >= ov.left && p.x < ov.right && p.y >= ov.top && p.y < ov.bottom;
+        for (fx, fy) in [(0.5, 0.5), (0.2, 0.3), (0.2, 0.7), (0.8, 0.3)] {
+            let pt = POINT {
+                x: er.left + ((er.right - er.left) as f32 * fx) as i32,
+                y: er.top + ((er.bottom - er.top) as f32 * fy) as i32,
+            };
+            if !covered(pt) && root(WindowFromPoint(pt)) == target {
+                spot = Some(pt);
+                break;
+            }
+        }
+    }
+    check!("editor_click_spot_is_clear", spot.is_some(), "");
+    let Some(spot) = spot else {
+        unsafe {
+            let _ = DestroyWindow(target);
+        }
+        app::destroy();
+        let _ = std::fs::remove_dir_all(&dir);
+        return Ok(());
+    };
+
+    // Ctrl+click on the text box: the editor opens instead of the picture being pasted
+    input::move_to(spot);
+    pump(40);
+    ctrl_key(false);
+    pump(40);
+    input::left_down();
+    input::left_up();
+    pump(150);
+    ctrl_key(true);
+    let opened = wait_until(3_000, editor_open);
+    check!("editor_opens_in_a_window", opened, "");
+    check!("editor_pastes_nothing_yet", edit_text(edit).is_empty(), "target text {:?}", edit_text(edit));
+    let ready = wait_until(4_000, editor_ready);
+    check!("editor_is_ready", ready, "");
+    if !(opened && ready) {
+        unsafe {
+            let _ = DestroyWindow(target);
+        }
+        app::destroy();
+        let _ = std::fs::remove_dir_all(&dir);
+        return Ok(());
+    }
+    let label = app::with_runtime(|rt| rt.controller.editor_view().map(|v| v.paste_label)).flatten();
+    check!("editor_defaults_to_the_picture", label.as_deref() == Some("Paste Image"), "{label:?}");
+    let fg = unsafe { GetForegroundWindow() };
+    check!("editor_keeps_the_target_in_front", root(fg) == target, "foreground {fg:?}");
+
+    // "Path" in the Paste as choice (the Output section's item 905), with a real click
+    let viewer = app::with_runtime(|rt| rt.platform.viewer.hwnd()).unwrap_or_default();
+    let chip = editor_point(|l| l.placed.iter().find(|p| p.id == 905).and_then(|p| p.parts.get(1).copied()));
+    let aimed = chip.is_some_and(|pt| unsafe { WindowFromPoint(pt) } == viewer);
+    check!("editor_paste_as_aim", aimed, "{chip:?}");
+    if let (true, Some(pt)) = (aimed, chip) {
+        input::move_to(pt);
+        pump(40);
+        input::left_down();
+        input::left_up();
+        pump(200);
+    }
+    let label = app::with_runtime(|rt| rt.controller.editor_view().map(|v| v.paste_label)).flatten();
+    check!("editor_paste_as_path", label.as_deref() == Some("Paste Path"), "{label:?}");
+
+    // Paste Path: the file is saved and its path arrives in the text box
+    let button = editor_point(|l| Some(l.paste));
+    let aimed = button.is_some_and(|pt| unsafe { WindowFromPoint(pt) } == viewer);
+    check!("editor_paste_button_aim", aimed, "{button:?}");
+    if let (true, Some(pt)) = (aimed, button) {
+        input::move_to(pt);
+        pump(40);
+        input::left_down();
+        input::left_up();
+    }
+    let done = wait_until(6_000, || !editor_open() && !app::with_runtime(|rt| rt.controller.is_open()).unwrap_or(true));
+    check!("editor_session_ends_after_paste", done, "");
+    pump(500);
+    let text = edit_text(edit);
+    let file = text.trim().trim_matches('"').to_owned();
+    check!(
+        "editor_pastes_the_files_path",
+        text.starts_with('"') && text.ends_with(".png\"") && file.starts_with(&*pictures.to_string_lossy()),
+        "target text {text:?}"
+    );
+    check!("editor_saved_the_file", std::path::Path::new(&file).is_file(), "{file:?}");
+    let saved = std::fs::read(&file).ok().and_then(|b| pasteroll_core::image::decode_png(&b));
+    check!("editor_saved_a_real_picture", saved.is_some_and(|i| (i.width, i.height) == (100, 60)), "");
 
     unsafe {
         let _ = DestroyWindow(target);

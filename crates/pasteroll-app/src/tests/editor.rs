@@ -28,7 +28,7 @@ fn desktop_target() -> Target {
 
 impl H {
     /// A session over the clips with the desktop in front, ready for a click on it.
-    fn desktop_session(clips: &[Clip<'_>]) -> (H, PathBuf) {
+    pub(super) fn desktop_session(clips: &[Clip<'_>]) -> (H, PathBuf) {
         let mut h = H::new(clips);
         let folder = h.dir.join("Desktop");
         std::fs::create_dir_all(&folder).unwrap();
@@ -39,7 +39,7 @@ impl H {
     }
 
     /// Clicks the desktop with `mods` held, in a session that is already open.
-    fn click_desktop(&mut self, g: u64, mods: Modifiers) {
+    pub(super) fn click_desktop(&mut self, g: u64, mods: Modifiers) {
         self.p.click_mods = mods;
         self.p.click_polls = VecDeque::from([ClickPoll::Desktop]);
         self.send(Event::ClickPaste(g));
@@ -56,7 +56,7 @@ impl H {
         g
     }
 
-    fn settle_editor(&mut self) {
+    pub(super) fn settle_editor(&mut self) {
         for _ in 0..80 {
             if !self.c.editor_animating() {
                 break;
@@ -68,7 +68,7 @@ impl H {
     }
 
     /// Runs the timer and the workers' wake-ups until `done`.
-    fn wait_for(&mut self, done: impl Fn(&H) -> bool) {
+    pub(super) fn wait_for(&mut self, done: impl Fn(&H) -> bool) {
         for _ in 0..1500 {
             if done(self) {
                 return;
@@ -81,12 +81,12 @@ impl H {
         assert!(done(self), "timed out waiting");
     }
 
-    fn eview(&self) -> pasteroll_render::EditorView {
+    pub(super) fn eview(&self) -> pasteroll_render::EditorView {
         self.c.editor_view().expect("the editor is open")
     }
 
     /// The centre of part `part` of the item `id` (in the panel or the popup).
-    fn epoint(&self, id: u32, part: usize) -> (f32, f32) {
+    pub(super) fn epoint(&self, id: u32, part: usize) -> (f32, f32) {
         let view = self.eview();
         let size = self.c.editor_size_dip().unwrap();
         let l = editor_layout(&view, size);
@@ -100,45 +100,45 @@ impl H {
         (r.x + r.w / 2.0, r.y + r.h / 2.0)
     }
 
-    fn eclick_at(&mut self, at: (f32, f32)) {
+    pub(super) fn eclick_at(&mut self, at: (f32, f32)) {
         self.send(Event::ViewerMouse(MouseEvent { kind: MouseKind::Down, x: at.0, y: at.1 }));
         self.send(Event::ViewerMouse(MouseEvent { kind: MouseKind::Up, x: at.0, y: at.1 }));
     }
 
-    fn eclick(&mut self, id: u32, part: usize) {
+    pub(super) fn eclick(&mut self, id: u32, part: usize) {
         let at = self.epoint(id, part);
         self.eclick_at(at);
     }
 
-    fn eclick_rect(&mut self, pick: impl Fn(&pasteroll_render::ELayout) -> pasteroll_render::Rect) {
+    pub(super) fn eclick_rect(&mut self, pick: impl Fn(&pasteroll_render::ELayout) -> pasteroll_render::Rect) {
         let view = self.eview();
         let l = editor_layout(&view, self.c.editor_size_dip().unwrap());
         let r = pick(&l);
         self.eclick_at((r.x + r.w / 2.0, r.y + r.h / 2.0));
     }
 
-    fn ekey(&mut self, k: Key) {
+    pub(super) fn ekey(&mut self, k: Key) {
         let g = self.p.input_generation();
         self.send(Event::Key(k, g));
     }
 
-    fn etype(&mut self, text: &str) {
+    pub(super) fn etype(&mut self, text: &str) {
         for c in text.chars() {
             self.ekey(Key::Char(c));
         }
     }
 
-    fn params(&self) -> EditParams {
+    pub(super) fn params(&self) -> EditParams {
         self.c.editor_params().expect("the editor is open")
     }
 
     /// Opens a section by clicking its title.
-    fn open_section(&mut self, id: u32) {
+    pub(super) fn open_section(&mut self, id: u32) {
         self.eclick(id, 0);
     }
 
     /// Types `text` into the box of a slider or field.
-    fn set_number(&mut self, id: u32, part: usize, text: &str) {
+    pub(super) fn set_number(&mut self, id: u32, part: usize, text: &str) {
         self.eclick(id, part);
         self.etype(text);
         self.ekey(Key::Enter);

@@ -4,18 +4,28 @@ A clipboard history you can scroll with the mouse wheel. Copy as usual; when you
 clip, press **Ctrl+Shift+middle-click**, scroll through your history right where you are working,
 and paste the whole clip, or select just a part of it and paste only that.
 
-**Status: public beta (`0.1.0-beta.4`).** It works and is tested, but it is young. Expect rough
-edges and please [report them](https://github.com/qpd-v/pasteroll/issues).
+**Status: public beta.** Windows is at `0.1.0-beta.5`; Linux is still at `0.1.0-beta.4` and
+catches up in a later release. It works and is tested, but it is young. Expect rough edges and
+please [report them](https://github.com/qpd-v/pasteroll/issues).
 
 | | Windows 10 / 11 | Linux (X11) |
 |---|---|---|
-| Download | [Setup EXE](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/pasteroll-0.1.0-beta.4-windows-x64-setup.exe) · [Portable ZIP](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/pasteroll-0.1.0-beta.4-windows-x64-portable.zip) | [Static archive](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/pasteroll-0.1.0-beta.4-linux-x86_64.tar.gz) · [Debian/Ubuntu .deb](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/pasteroll_0.1.0-beta.4_amd64.deb) |
+| Download | [Setup EXE](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.5/pasteroll-0.1.0-beta.5-windows-x64-setup.exe) · [Portable ZIP](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.5/pasteroll-0.1.0-beta.5-windows-x64-portable.zip) | [Static archive](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/pasteroll-0.1.0-beta.4-linux-x86_64.tar.gz) · [Debian/Ubuntu .deb](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/pasteroll_0.1.0-beta.4_amd64.deb) |
 | Tray icon | yes | StatusNotifier (KDE, GNOME with AppIndicator, Ubuntu) or XEmbed |
 | Wayland | n/a | experimental GNOME 46; separate packages and setup below |
 | macOS | not available | |
 
-[Release notes and testing status](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.4) ·
+Windows: [release notes and testing status](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.5) ·
+[SHA256SUMS](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.5/SHA256SUMS)
+Linux: [release notes and testing status](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.4) ·
 [SHA256SUMS](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/SHA256SUMS)
+
+## Beta.5 improvements (Windows only)
+
+A *No Bloat* look that shows only the current clip (every feature still works and its controls
+appear when you use them), switched from the tray menu or Settings. Advanced Image Paste now works
+on any window, not only the desktop, and can paste the edited picture, its file's path or its
+file name. Linux keeps beta.4 until its catch-up release.
 
 ## Beta.4 improvements
 
@@ -47,6 +57,9 @@ the experimental packages; it does not indicate broader Wayland compatibility.
 
 ## Features
 
+- **Two looks**: *Complete* (everything on show) or *No Bloat* (just the current clip, in a
+  smaller window; every feature still works from the keyboard and its controls appear when you
+  use them). Switch from the tray menu or Settings. Windows only for now.
 - **Scroll your history** with the mouse wheel or arrow keys; the carousel opens at the pointer.
 - **Search as you type** (file names too) and filter by Text, Document, Image, Video, Audio,
   Compressed, Pinned, or filters you define.
@@ -55,11 +68,13 @@ the experimental packages; it does not indicate broader Wayland compatibility.
 - **Expanded viewer**: the card's Expand button (or Ctrl+E) grows a clip into a large window:
   long text to read and search, pictures to zoom and pan, Save as, Info, and Extract text (OCR, on
   this computer). F11 for fullscreen, Esc to shrink it back.
-- **Advanced Image Paste**: Ctrl+click the desktop (the key is a setting) with an image chosen and
-  the picture grows into an editor instead of being saved at once: outline, resize, crop, rounded
-  corners, drop shadow, background removal or fill, padding, rotate and flip, PNG / JPG / WebP / BMP
-  with quality, a file name and folder of your choice, undo and redo, and presets you can reuse. A
-  plain click on the desktop still saves the picture immediately. The clip itself is never changed.
+- **Advanced Image Paste**: Ctrl+click the desktop or any window (the key is a setting) with an
+  image chosen and the picture grows into an editor instead of being saved or pasted at once:
+  outline, resize, crop, rounded corners, drop shadow, background removal or fill, padding, rotate
+  and flip, PNG / JPG / WebP / BMP with quality, a file name and folder of your choice, undo and
+  redo, and presets you can reuse. In a window you choose what is pasted: the picture, the saved
+  file's path, or its name. A plain click still saves (desktop) or pastes (window) the picture
+  immediately. The clip itself is never changed.
 - **Pin** clips (Ctrl+P) so they are never removed automatically.
 - **Recycle bin**: deleted clips can be brought back (Ctrl+Z, or the Recycle bin filter) for 30
   days; Shift+Delete deletes for good.
@@ -75,13 +90,13 @@ the experimental packages; it does not indicate broader Wayland compatibility.
 
 ### Windows
 
-1. Download `pasteroll-0.1.0-beta.4-windows-x64-setup.exe` and `SHA256SUMS` from the
-   [beta.4 release](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.4) and
+1. Download `pasteroll-0.1.0-beta.5-windows-x64-setup.exe` and `SHA256SUMS` from the
+   [beta.5 release](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.5) and
    [verify the checksum](#verify-your-download).
 2. Run the setup wizard. **Only for me** is the default and needs no administrator rights;
    **For all users** needs UAC. Start menu is on by default; desktop shortcut and autostart are off.
 
-For portable use, extract `pasteroll-0.1.0-beta.4-windows-x64-portable.zip` and run `pasteroll.exe`.
+For portable use, extract `pasteroll-0.1.0-beta.5-windows-x64-portable.zip` and run `pasteroll.exe`.
 Its included `portable.txt` keeps application data in the adjacent `data` folder.
 
 > **"Windows protected your PC"**: the beta is **not code-signed yet**, so SmartScreen shows
@@ -127,6 +142,11 @@ The X11 backend does not provide full native Wayland support.
 | Ctrl+E, or the card's Expand button | open the expanded viewer |
 | Esc | close |
 
+**No Bloat** is a look, not a smaller program. The carousel shows only the clip, with no list and
+no buttons on the card, and every key above still works: typing brings up the search bar, Tab the
+filter menu, Ctrl+P marks the clip with a star, Delete and Ctrl+Z talk in the message line, and
+Ctrl+E opens the expanded viewer. Choose it from the tray menu (right-click) or in Settings.
+
 In the expanded viewer:
 
 | | |
@@ -142,9 +162,11 @@ In the expanded viewer:
 
 ### Advanced Image Paste
 
-With an image chosen in the carousel, a click on the desktop saves it as a PNG right away. Hold
-**Ctrl** while you click (Settings lets you pick Shift or Alt instead) and the picture opens in the
-editor. The settings are grouped in the panel on the right, one section open at a time; the
+With an image chosen in the carousel, a click on the desktop saves it as a PNG right away, and a
+click in a window pastes it. Hold **Ctrl** while you click (Settings lets you pick Shift or Alt
+instead) and the picture opens in the editor, on the desktop or in any window. (The click also
+reaches the window you click, so a Ctrl+click can do what it normally does there, such as follow a
+link; pick another key in Settings if that gets in the way.) The settings are grouped in the panel on the right, one section open at a time; the
 switch on a section's row turns the effect on or off, and the preview on the left follows every
 change.
 
@@ -160,8 +182,14 @@ change.
 | Padding | the same on every side or different on each, with a colour |
 | Format and quality | PNG (compression), JPG (quality), WebP (lossless), BMP |
 
+When the destination is a window, the Format and quality section opens first with **Paste as**:
+**Image** pastes the edited picture itself (as a PNG, nothing is saved), **Path** saves the file and
+pastes its path (in quotes when it has spaces), and **File name** saves it and pastes only the name.
+It starts on Image, or on Path in a terminal, and you can change it for each paste. On the desktop
+the picture is saved as a file.
+
 The bar at the bottom holds the file name, the folder to save into (the Desktop unless you choose
-another; it is remembered) and **Paste Image**. **Cancel**, Esc or the back arrow return to the
+another; it is remembered) and **Paste Image** (or **Paste Path** / **Paste Name**). **Cancel**, Esc or the back arrow return to the
 carousel without saving. Undo and redo (Ctrl+Z, Ctrl+Y) and **Reset all** are at the top, next to
 **Presets**: save the current settings under a name and apply them to any picture later (a
 preset keeps everything except the crop). Enter pastes; while you type in a box Enter finishes the
@@ -216,7 +244,7 @@ Each release has a `SHA256SUMS` file.
 
 ```powershell
 # Windows
-Get-FileHash .\pasteroll-0.1.0-beta.4-windows-x64-setup.exe -Algorithm SHA256
+Get-FileHash .\pasteroll-0.1.0-beta.5-windows-x64-setup.exe -Algorithm SHA256
 ```
 ```sh
 # Linux

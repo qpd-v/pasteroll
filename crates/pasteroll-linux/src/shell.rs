@@ -787,6 +787,8 @@ impl Shell {
             warn_multiline: s.warn,
             size_percent: s.size_choices[s.size_pos.min(s.size_choices.len() - 1)],
             advanced_modifier: s.modifier,
+            // the mode has no control in this window yet: Save keeps whatever the file says
+            mode: s.orig.mode,
             exclude_apps: s.exclude.clone(),
             filter_names: s.filters.clone(),
         })

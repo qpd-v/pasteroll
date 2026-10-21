@@ -7,7 +7,8 @@
 //! away from the application underneath.
 
 use pasteroll_app::{Event, MouseEvent, MouseKind, OverlayInfo};
-use pasteroll_render::{Frame, HEIGHT, WIDTH};
+use pasteroll_core::config::UiMode;
+use pasteroll_render::{window_dip, Frame};
 use std::cell::RefCell;
 use windows::core::{w, Result};
 use windows::Win32::Foundation::*;
@@ -41,6 +42,8 @@ pub struct OverlayWindow {
     state: Box<RefCell<State>>,
     /// The carousel size setting (percent of normal).
     size: std::cell::Cell<u32>,
+    /// Complete or No Bloat: the window is a different size in each.
+    mode: std::cell::Cell<UiMode>,
     /// The corner style last set (the viewer has square corners in fullscreen).
     rounded: std::cell::Cell<bool>,
 }
@@ -139,12 +142,22 @@ impl OverlayWindow {
                 (58u32 << 16) | (50u32 << 8) | 50u32 // COLORREF 0x00BBGGRR
             };
             let _ = DwmSetWindowAttribute(hwnd, DWMWINDOWATTRIBUTE(34), &border as *const _ as *const _, 4);
-            Ok(OverlayWindow { hwnd, state, size: std::cell::Cell::new(100), rounded: std::cell::Cell::new(true) })
+            Ok(OverlayWindow {
+                hwnd,
+                state,
+                size: std::cell::Cell::new(100),
+                mode: std::cell::Cell::new(UiMode::Complete),
+                rounded: std::cell::Cell::new(true),
+            })
         }
     }
 
     pub fn set_size(&self, size: u32) {
         self.size.set(size);
+    }
+
+    pub fn set_mode(&self, mode: UiMode) {
+        self.mode.set(mode);
     }
 
     pub fn hwnd(&self) -> HWND {
@@ -170,7 +183,8 @@ impl OverlayWindow {
             let monitor = MonitorFromPoint(anchor, MONITOR_DEFAULTTONEAREST);
             let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
             let mut scale = 1.0f32;
-            let (mut x, mut y, mut w, mut h) = (anchor.x, anchor.y, WIDTH as i32, HEIGHT as i32);
+            let (width, height) = window_dip(self.mode.get());
+            let (mut x, mut y, mut w, mut h) = (anchor.x, anchor.y, width as i32, height as i32);
             let mut mon = (0, 0, 1920u32, 1080u32);
             let mut work = (0, 0, 1920u32, 1040u32);
             if GetMonitorInfoW(monitor, &mut info).as_bool() {
@@ -182,8 +196,8 @@ impl OverlayWindow {
                 scale = dx as f32 / 96.0;
                 let work = info.rcWork;
                 scale *= pasteroll_core::settings::size_factor(self.size.get());
-                w = ((WIDTH * scale) as i32).min(work.right - work.left);
-                h = ((HEIGHT * scale) as i32).min(work.bottom - work.top);
+                w = ((width * scale) as i32).min(work.right - work.left);
+                h = ((height * scale) as i32).min(work.bottom - work.top);
                 x = (anchor.x + (16.0 * scale) as i32).clamp(work.left, (work.right - w).max(work.left));
                 y = (anchor.y + (20.0 * scale) as i32).clamp(work.top, (work.bottom - h).max(work.top));
             }
@@ -359,5 +373,21 @@ mod tests {
         assert!((big.scale / normal.scale - 1.5).abs() < 0.001, "{} vs {}", big.scale, normal.scale);
         assert!((small.scale / normal.scale - 0.8).abs() < 0.001);
         assert!(big.size_px.0 > normal.size_px.0 && small.size_px.0 < normal.size_px.0);
+    }
+
+    #[test]
+    fn no_bloat_is_a_smaller_window() {
+        let o = OverlayWindow::create().expect("overlay window");
+        let at = POINT { x: 100, y: 100 };
+        o.set_size(100);
+        let complete = o.show(at);
+        o.set_mode(UiMode::NoBloat);
+        let slim = o.show(at);
+        o.hide();
+        assert_eq!(slim.scale, complete.scale);
+        let (cw, ch) = window_dip(UiMode::Complete);
+        let (sw, sh) = window_dip(UiMode::NoBloat);
+        assert!((slim.size_px.0 as f32 / complete.size_px.0 as f32 - sw / cw).abs() < 0.01, "{slim:?} vs {complete:?}");
+        assert!((slim.size_px.1 as f32 / complete.size_px.1 as f32 - sh / ch).abs() < 0.01);
     }
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Test Setup upgrade using synthetic data and a separate fixture AppId/shortcut names.
 
-The actual beta.3/beta.4 app payloads and production installer recipe are used.
+The actual previous-release (beta.4) and current app payloads and production installer recipe are used.
 The fixture identity avoids replacing the user's installed product registration.
 No clipboard capture, autostart changes, elevation or live-data access.
 """
@@ -22,7 +22,8 @@ BASE = ROOT / "target-dev"
 BASE.mkdir(exist_ok=True)
 VERSION = tomllib.loads((ROOT / "crates/pasteroll-win/Cargo.toml").read_text())["package"]["version"]
 CURRENT = ROOT / "target/windows-packaging/setup"
-OLD_ZIP = BASE / "beta3-candidate/github-download/pasteroll-0.1.0-beta.3-windows-x64-portable.zip"
+PREVIOUS = "0.1.0-beta.4"
+OLD_ZIP = BASE / f"beta4-release/github-download/pasteroll-{PREVIOUS}-windows-x64-portable.zip"
 REAL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{E04386D3-6242-420F-864E-35305B8A20FC}_is1"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 checks = []
@@ -72,7 +73,7 @@ def main():
     compiler = next((p for p in candidates if p.is_file()), None)
     if compiler is None:
         raise SystemExit("ISCC is missing; no tools were downloaded or installed.")
-    assert OLD_ZIP.is_file() and (CURRENT / "pasteroll.exe").is_file(), "Build beta.4 and retain the verified beta.3 ZIP first."
+    assert OLD_ZIP.is_file() and (CURRENT / "pasteroll.exe").is_file(), f"Build {VERSION} and retain the verified {PREVIOUS} ZIP first."
     before = live_snapshot()
     fixture_id = str(uuid.uuid4()).upper()
     key = rf"Software\Microsoft\Windows\CurrentVersion\Uninstall\{{{fixture_id}}}_is1"
@@ -98,7 +99,7 @@ def main():
         iss = scratch / "fixture.iss"
         iss.write_text(recipe, encoding="utf-8-sig")
         installers = []
-        for version, stage, output in [("0.1.0-beta.3", old_stage, "old"), (VERSION, CURRENT, "new")]:
+        for version, stage, output in [(PREVIOUS, old_stage, "old"), (VERSION, CURRENT, "new")]:
             run(compiler, "/Qp", "/O" + str(scratch), "/F" + output,
                 "/DAppVersion=" + version, "/DAppFileVersion=0.1.0.0",
                 "/DAppPublisher=" + metadata["authors"][0], "/DAppURL=" + metadata["homepage"],
@@ -116,17 +117,17 @@ def main():
             return str(registered.get("InstallLocation", "")).rstrip("\\") == str(install).rstrip("\\")
         try:
             run(installers[0], *args)
-            check("beta.3 fixture Setup installs the exact previous payload", own_registration()
+            check(f"{PREVIOUS} fixture Setup installs the exact previous payload", own_registration()
                   and (exe.read_bytes() == (old_stage / "pasteroll.exe").read_bytes())
-                  and run(exe, "--version").strip() == "pasteroll 0.1.0-beta.3")
+                  and run(exe, "--version").strip() == f"pasteroll {PREVIOUS}")
             run(exe, "seed", "--db", db)
             run(exe, "config", "init", "--db", db)
             (data / "image-presets.txt").write_text("synthetic presets")
             (data / "unrelated.txt").write_text("keep this unrelated fixture")
             retained = hashes(data)
             run(installers[1], *args)
-            check("beta.3 to beta.4 upgrade retains encrypted history, key, config and presets", hashes(data) == retained)
-            check("upgraded program equals the packaged beta.4 executable", exe.read_bytes() == (CURRENT / "pasteroll.exe").read_bytes()
+            check(f"{PREVIOUS} to {VERSION} upgrade retains encrypted history, key, config and presets", hashes(data) == retained)
+            check("upgraded program equals the packaged current executable", exe.read_bytes() == (CURRENT / "pasteroll.exe").read_bytes()
                   and run(exe, "--version").strip() == "pasteroll " + VERSION)
             check("About reports Setup installation and the current version", "Installation: Installed (Windows Setup)" in run(exe, "about", "--text"))
             shortcuts = [Path(os.environ["APPDATA"]) / "Microsoft/Windows/Start Menu/Programs" / (name + ".lnk"),

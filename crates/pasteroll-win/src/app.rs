@@ -14,6 +14,7 @@ use crate::tray::Tray;
 use pasteroll_app::{
     Controller, Event, IngestPolicy, Key, Logger, PasteKeys, PastePolicy, StoreFactory, Waker, Wheel,
 };
+use pasteroll_core::config::UiMode;
 use pasteroll_core::Step;
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -235,6 +236,7 @@ pub fn create(opts: &Options) -> Result<HWND> {
         )?;
         let overlay = OverlayWindow::create()?;
         overlay.set_size(cfg.size_percent);
+        overlay.set_mode(cfg.mode);
         let viewer = OverlayWindow::create_viewer()?;
         crate::hooks::set_viewer_window(viewer.hwnd());
         let hooks = if opts.hooks { Some(Hooks::start(hwnd, overlay.hwnd(), opts.accept_injected)?) } else { None };
@@ -267,6 +269,7 @@ pub fn create(opts: &Options) -> Result<HWND> {
         controller.set_paste_policy(PastePolicy::new(cfg.warn_multiline_in_terminals, &cfg.terminal_apps));
         controller.set_custom_filters(cfg.custom_filters.clone());
         controller.set_advanced_modifier(cfg.advanced_image_modifier);
+        controller.init_ui_mode(cfg.mode);
         controller.set_ocr(Arc::new(crate::ocr::WinOcr));
         let platform = WinPlatform::new(hwnd, overlay, viewer, hooks).with_db(&opts.db);
         SetTimer(Some(hwnd), TIMER_TICK, 25, None);
@@ -333,6 +336,30 @@ pub fn toggle_pause() {
         .and_then(|text| keystore::write_config_text(&db, &text));
     if let Err(e) = saved {
         eprintln!("[pasteroll] could not remember the pause setting: {e}");
+    }
+}
+
+pub fn ui_mode() -> UiMode {
+    with_runtime(|rt| rt.controller.ui_mode()).unwrap_or_default()
+}
+
+/// Switches between Complete and No Bloat at once (no restart) and remembers the choice in
+/// config.toml. A carousel that is open is closed; the next one opens in the new mode.
+pub fn set_ui_mode(mode: UiMode) {
+    let db = with_runtime(|rt| {
+        if rt.controller.ui_mode() == mode {
+            return None;
+        }
+        rt.controller.set_ui_mode(&mut rt.platform, mode);
+        Some(rt.db.clone())
+    })
+    .flatten();
+    let Some(db) = db else { return };
+    let saved = keystore::read_config_text(&db)
+        .and_then(|text| pasteroll_core::config::set_value(&text, "mode", mode.key()).map_err(|p| p.join("; ")))
+        .and_then(|text| keystore::write_config_text(&db, &text));
+    if let Err(e) = saved {
+        eprintln!("[pasteroll] could not remember the mode: {e}");
     }
 }
 

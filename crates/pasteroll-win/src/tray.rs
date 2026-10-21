@@ -1,7 +1,8 @@
-//! The notification-area icon and its menu: pause or resume recording, settings, the data folder
-//! and quit. The icon is drawn in code, so there is no resource file to ship.
+//! The notification-area icon and its menu: pause or resume recording, the Complete / No Bloat
+//! mode, settings, the data folder and quit. The icon is drawn in code, so there is no resource file to ship.
 
 use crate::{about, app, settings};
+use pasteroll_core::config::UiMode;
 use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicU32, Ordering};
 use windows::core::{w, Result, PCWSTR};
@@ -18,6 +19,8 @@ const ID_SETTINGS: usize = 2;
 const ID_FOLDER: usize = 3;
 const ID_QUIT: usize = 4;
 const ID_ABOUT: usize = 5;
+const ID_COMPLETE: usize = 6;
+const ID_NO_BLOAT: usize = 7;
 const ICON_ID: u32 = 1;
 const CLICK_TIMER: usize = 1;
 
@@ -172,21 +175,36 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-unsafe fn show_menu(hwnd: HWND) {
+/// The right-click menu for the current recording state and mode. The caller destroys it.
+unsafe fn build_menu(paused: bool, mode: UiMode) -> Option<HMENU> {
     unsafe {
-        let Ok(menu) = CreatePopupMenu() else { return };
-        let paused = app::is_paused();
+        let menu = CreatePopupMenu().ok()?;
         let pause = wide(if paused { "Resume recording" } else { "Pause recording" });
+        let complete = wide(UiMode::Complete.label());
+        let no_bloat = wide(UiMode::NoBloat.label());
         let settings_t = wide("Settings...");
         let folder = wide("Open data folder");
         let about_t = wide("About Pasteroll...");
         let quit = wide("Quit Pasteroll");
         let _ = AppendMenuW(menu, MF_STRING, ID_PAUSE, PCWSTR(pause.as_ptr()));
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+        let _ = AppendMenuW(menu, MF_STRING, ID_COMPLETE, PCWSTR(complete.as_ptr()));
+        let _ = AppendMenuW(menu, MF_STRING, ID_NO_BLOAT, PCWSTR(no_bloat.as_ptr()));
+        let current = if mode == UiMode::NoBloat { ID_NO_BLOAT } else { ID_COMPLETE };
+        let _ = CheckMenuRadioItem(menu, ID_COMPLETE as u32, ID_NO_BLOAT as u32, current as u32, MF_BYCOMMAND.0);
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(menu, MF_STRING, ID_SETTINGS, PCWSTR(settings_t.as_ptr()));
         let _ = AppendMenuW(menu, MF_STRING, ID_FOLDER, PCWSTR(folder.as_ptr()));
         let _ = AppendMenuW(menu, MF_STRING, ID_ABOUT, PCWSTR(about_t.as_ptr()));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(menu, MF_STRING, ID_QUIT, PCWSTR(quit.as_ptr()));
+        Some(menu)
+    }
+}
+
+unsafe fn show_menu(hwnd: HWND) {
+    unsafe {
+        let Some(menu) = build_menu(app::is_paused(), app::ui_mode()) else { return };
         let mut at = POINT::default();
         let _ = GetCursorPos(&mut at);
         // the menu only closes when clicking elsewhere if its owner is the foreground window
@@ -196,6 +214,8 @@ unsafe fn show_menu(hwnd: HWND) {
         let _ = DestroyMenu(menu);
         match cmd.0 as usize {
             ID_PAUSE => app::toggle_pause(),
+            ID_COMPLETE => app::set_ui_mode(UiMode::Complete),
+            ID_NO_BLOAT => app::set_ui_mode(UiMode::NoBloat),
             ID_SETTINGS => settings::open(),
             ID_FOLDER => app::open_data_folder(),
             ID_ABOUT => about::show(Some(hwnd)),
@@ -344,6 +364,27 @@ mod tests {
         state.cancel();
         assert_eq!(state.pending.take(), None);
         assert!(state.released((30, 40)));
+    }
+
+    #[test]
+    fn the_menu_offers_both_modes_with_the_current_one_marked() {
+        unsafe {
+            for (mode, on, off) in [(UiMode::Complete, ID_COMPLETE, ID_NO_BLOAT), (UiMode::NoBloat, ID_NO_BLOAT, ID_COMPLETE)] {
+                let menu = build_menu(false, mode).expect("menu");
+                let checked = |id: usize| GetMenuState(menu, id as u32, MF_BYCOMMAND) & MF_CHECKED.0 != 0;
+                assert!(checked(on), "{mode:?} is marked");
+                assert!(!checked(off), "the other mode is not");
+                // the order the person sees: recording, the two modes, the rest, quit last
+                let ids: Vec<u32> = (0..GetMenuItemCount(Some(menu)) as u32).map(|i| GetMenuItemID(menu, i as i32)).collect();
+                const SEPARATOR: u32 = 0; // what GetMenuItemID reports for a separator
+                let item = |id: usize| id as u32;
+                assert_eq!(
+                    ids,
+                    [item(ID_PAUSE), SEPARATOR, item(ID_COMPLETE), item(ID_NO_BLOAT), SEPARATOR, item(ID_SETTINGS), item(ID_FOLDER), item(ID_ABOUT), SEPARATOR, item(ID_QUIT)]
+                );
+                let _ = DestroyMenu(menu);
+            }
+        }
     }
 
     #[test]

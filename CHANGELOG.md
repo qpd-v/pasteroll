@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## 0.1.0-beta.5 (Windows only)
+
+- Add two looks for the carousel, switched from the Windows tray menu (one click, no restart) or
+  Settings. **Complete** shows everything, as before. **No Bloat** shows only the current clip in
+  a smaller window: no clip list and no buttons on the card. Every feature still works from the
+  keyboard (search by typing, Tab for the filters, Ctrl+P, Delete and Ctrl+Z, Ctrl+E for the
+  expanded viewer, the image editor), and the search bar, filter menu and pin star appear only
+  while you use them. Recording, limits and the history are the same in both; Complete is the
+  default.
+- Advanced Image Paste now works on any destination, not only the desktop. Hold the editor key
+  (Ctrl by default) while you click a window with a picture chosen, edit it, and **Paste Image**
+  delivers the result there. A new **Paste as** choice in the editor picks what is pasted: the
+  *picture* itself (the default, nothing is saved), the saved file's *path*, or its *file name*.
+  Terminals default to the path. The desktop still saves a file.
+- `config.toml` gains `[appearance] mode = "complete" | "no-bloat"`. Linux keeps the setting
+  in the file and ignores it for now: the Linux tray, settings and window sizing for No Bloat
+  wait for the Linux catch-up release.
+
 ## 0.1.0-beta.4
 
 - GNOME 46: separate UI density from Shell stage coordinates for mixed-scale monitors.

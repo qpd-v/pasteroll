@@ -1,6 +1,8 @@
 # Releasing Pasteroll
 
-Current version: **0.1.0-beta.4**, experimental prerelease for Windows, X11 and GNOME 46.
+Current version: **0.1.0-beta.5** (Windows only; Linux stays on **0.1.0-beta.4**), experimental
+prerelease. A Windows-only release uses `--windows-only` for checksums and verification, publishes
+just Setup, the portable ZIP and their SHA256SUMS, and leaves the Linux links on beta.4.
 Use a reviewed source commit and build all six packages fresh. Never select assets
 with a dist wildcard. No CI, automatic updater or application networking is added.
 

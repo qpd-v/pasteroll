@@ -8,8 +8,10 @@ import shutil
 import subprocess
 import tempfile
 import time
+import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
+VERSION = tomllib.loads((ROOT / "crates/pasteroll-win/Cargo.toml").read_text())["package"]["version"]
 BASE = ROOT / "target-dev"
 EXE = ROOT / "target/release/pasteroll.exe"
 u = c.WinDLL("user32", use_last_error=True)
@@ -74,7 +76,7 @@ def main():
                 contents.append(text(handle))
                 return True
             u.EnumChildWindows(hwnd, read_child, 0)
-            assert any("Pasteroll 0.1.0-beta.4" in t and "Installed (Windows Setup)" in t for t in contents)
+            assert any(f"Pasteroll {VERSION}" in t and "Installed (Windows Setup)" in t for t in contents)
             checks.append("native About dialog shows version and installation mode")
             u.PostMessageW(hwnd, 0x10, 0, 0)  # Close only this test process's dialog.
             assert process.wait(timeout=5) == 0

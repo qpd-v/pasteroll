@@ -1,14 +1,14 @@
-//! The settings window: how much history to keep, pausing, the terminal warning, programs that are
-//! never recorded, and custom filters.
+//! The settings window: the Complete / No Bloat mode, how much history to keep, pausing, the
+//! terminal warning, programs that are never recorded, and custom filters.
 //!
 //! Changes are written to `config.toml` (the same file `pasteroll config` edits). Lowering a limit
 //! shows how many clips would be deleted and asks first. After saving, the app restarts itself so
 //! every part (capture, limits, exclusions) starts from the same file.
 
 use crate::{app, keystore};
-use pasteroll_core::config::{self, ClickModifier, Config};
+use pasteroll_core::config::{self, ClickModifier, Config, UiMode};
 use pasteroll_core::limits::MB;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::*;
@@ -30,6 +30,7 @@ const ID_PAUSE: i32 = 120;
 const ID_WARN: i32 = 121;
 const ID_AUTOSTART: i32 = 122;
 const ID_MOD: [i32; 3] = [123, 124, 125];
+const ID_MODE: [i32; 2] = [126, 127];
 const ID_EX_LIST: i32 = 130;
 const ID_EX_EDIT: i32 = 131;
 const ID_EX_ADD: i32 = 132;
@@ -59,6 +60,7 @@ struct State {
     autostart: HWND,
     autostart_was: bool,
     modifier: [HWND; 3],
+    mode: [HWND; 2],
     ex_list: HWND,
     ex_edit: HWND,
     fl_list: HWND,
@@ -67,8 +69,13 @@ struct State {
     filters: Vec<String>,
 }
 
+/// Height of the mode choice at the top of the window; everything below it is pushed down.
+const MODE_H: i32 = 56;
+
 thread_local! {
     static ST: RefCell<Option<State>> = const { RefCell::new(None) };
+    /// Added to the y of every control `child` makes, so the sections keep their own layout.
+    static TOP: Cell<i32> = const { Cell::new(0) };
 }
 
 fn wide(s: &str) -> Vec<u16> {
@@ -127,7 +134,7 @@ fn child(
             PCWSTR(t.as_ptr()),
             WS_CHILD | WS_VISIBLE | WINDOW_STYLE(style),
             s(rect.0),
-            s(rect.1),
+            s(rect.1 + TOP.get()),
             s(rect.2),
             s(rect.3),
             Some(parent),
@@ -236,19 +243,40 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
             0,
             w!("Segoe UI"),
         );
-        // client area 520 x 600 at 96 dpi
-        let (cw, ch) = (s(520), s(724));
+        // client area 520 x (724 + the mode choice) at 96 dpi
+        let (cw, ch) = (s(520), s(724 + MODE_H));
         let mut r = RECT { left: 0, top: 0, right: cw, bottom: ch };
         let _ = AdjustWindowRectEx(&mut r, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, false, WINDOW_EX_STYLE(0));
         let (ww, wh) = (r.right - r.left, r.bottom - r.top);
         let sx = GetSystemMetrics(SM_CXSCREEN);
         let sy = GetSystemMetrics(SM_CYSCREEN);
-        let _ = SetWindowPos(hwnd, None, (sx - ww) / 2, (sy - wh) / 2 - s(20), ww, wh, SWP_NOZORDER);
+        let _ = SetWindowPos(hwnd, None, (sx - ww) / 2, ((sy - wh) / 2 - s(20)).max(0), ww, wh, SWP_NOZORDER);
 
         let lim = cfg.limits;
         let steps = settings::Steps::for_limits(&lim);
         let (clips, sizes_mb, ages, clip_mb) =
             (steps.clips.clone(), steps.sizes_mb.clone(), steps.ages.clone(), steps.clip_mb.clone());
+
+        TOP.set(0);
+        child(hwnd, w!("STATIC"), "Interface", 0, 0, (16, 12, 480, 20), 0, dpi, font);
+        let mode_labels = ["Complete: everything on show", "No Bloat: just the clip (tools appear when used)"];
+        let mut mode = [HWND::default(); 2];
+        for (i, m) in UiMode::ALL.iter().enumerate() {
+            let group = if i == 0 { WS_GROUP.0 } else { 0 };
+            mode[i] = child(
+                hwnd,
+                w!("BUTTON"),
+                mode_labels[i],
+                BS_AUTORADIOBUTTON as u32 | WS_TABSTOP.0 | group,
+                0,
+                (16 + 200 * i as i32, 34, 196 + 88 * i as i32, 22),
+                ID_MODE[i],
+                dpi,
+                font,
+            );
+            SendMessageW(mode[i], BM_SETCHECK, Some(WPARAM(usize::from(*m == cfg.mode))), Some(LPARAM(0)));
+        }
+        TOP.set(MODE_H);
 
         child(hwnd, w!("STATIC"), "How much history to keep", 0, 0, (16, 12, 480, 20), 0, dpi, font);
         let rows: [(&str, i32); 4] = [("Clips kept", 40), ("Total size", 76), ("Keep for", 112), ("Largest single clip", 148)];
@@ -345,7 +373,7 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
         child(
             hwnd,
             w!("STATIC"),
-            "To edit an image before it is saved to the desktop, hold this key while you click the desktop:",
+            "To edit an image before it is pasted or saved, hold this key while you click where it should go (a window, or the desktop):",
             0,
             0,
             (16, 358, 490, 36),
@@ -431,6 +459,7 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
             autostart,
             autostart_was: crate::setup::autostart_enabled(),
             modifier,
+            mode,
             ex_list,
             ex_edit,
             fl_list,
@@ -475,6 +504,15 @@ fn update_values() {
     });
 }
 
+fn chosen_mode(s: &State) -> UiMode {
+    let check = |h: HWND| unsafe { SendMessageW(h, BM_GETCHECK, Some(WPARAM(0)), Some(LPARAM(0))).0 == 1 };
+    UiMode::ALL
+        .iter()
+        .zip(s.mode.iter())
+        .find(|(_, h)| check(**h))
+        .map_or(s.orig.mode, |(m, _)| *m)
+}
+
 fn close() {
     let taken = ST.with(|c| c.try_borrow_mut().ok().and_then(|mut g| g.take()));
     if let Some(s) = taken {
@@ -494,6 +532,7 @@ struct Snapshot {
     paused: bool,
     warn: bool,
     modifier: ClickModifier,
+    mode: UiMode,
     exclude: Vec<String>,
     filters: Vec<String>,
 }
@@ -516,6 +555,7 @@ fn current_choices() -> Option<Snapshot> {
                 .zip(s.modifier.iter())
                 .find(|(_, h)| check(**h))
                 .map_or(s.orig.advanced_image_modifier, |(m, _)| *m),
+            mode: chosen_mode(s),
             exclude: s.exclude.clone(),
             filters: s.filters.clone(),
         })
@@ -534,6 +574,7 @@ fn build_text(snap: &Snapshot, text: &str) -> Result<String, Vec<String>> {
         warn_multiline: snap.warn,
         size_percent: snap.size,
         advanced_modifier: snap.modifier,
+        mode: snap.mode,
         exclude_apps: snap.exclude.clone(),
         filter_names: snap.filters.clone(),
     };
@@ -559,6 +600,20 @@ pub fn pending_text() -> Option<String> {
     let snap = current_choices()?;
     let text = keystore::read_config_text(&snap.db).ok()?;
     build_text(&snap, &text).ok()
+}
+
+/// Picks a mode in the window as a click on its radio button would (self-test).
+pub fn probe_choose_mode(mode: UiMode) -> bool {
+    ST.with(|c| {
+        let Ok(g) = c.try_borrow() else { return false };
+        let Some(s) = g.as_ref() else { return false };
+        for (m, h) in UiMode::ALL.iter().zip(s.mode.iter()) {
+            unsafe {
+                SendMessageW(*h, BM_SETCHECK, Some(WPARAM(usize::from(*m == mode))), Some(LPARAM(0)));
+            }
+        }
+        true
+    })
 }
 
 /// Moves the carousel-size slider to a position (self-test).
@@ -781,6 +836,7 @@ mod tests {
             paused: false,
             warn: true,
             modifier: ClickModifier::Ctrl,
+            mode: UiMode::Complete,
             exclude: vec![],
             filters: vec![],
         };
@@ -798,6 +854,29 @@ mod tests {
     }
 
     #[test]
+    fn the_mode_is_written_only_when_it_is_changed() {
+        let orig = config::parse("").unwrap();
+        let lim = orig.limits;
+        let snap = Snapshot {
+            hwnd: HWND::default(),
+            db: PathBuf::new(),
+            orig: orig.clone(),
+            limits: (lim.max_clips, lim.max_bytes / MB, lim.max_age_days, lim.max_clip_bytes / MB),
+            size: 100,
+            paused: false,
+            warn: true,
+            modifier: ClickModifier::Ctrl,
+            mode: UiMode::Complete,
+            exclude: vec![],
+            filters: vec![],
+        };
+        assert_eq!(build_text(&snap, "").unwrap(), "", "untouched, nothing written");
+        let slim = Snapshot { mode: UiMode::NoBloat, ..snap };
+        let out = build_text(&slim, "").unwrap();
+        assert_eq!(config::parse(&out).unwrap().mode, UiMode::NoBloat);
+    }
+
+    #[test]
     fn list_edits_become_adds_and_removes() {
         let base = config::add_excluded_app("", "keepass.exe").unwrap();
         let base = config::add_custom_filter(&base, "Design", &["psd".into()]).unwrap();
@@ -812,6 +891,7 @@ mod tests {
             paused: false,
             warn: true,
             modifier: ClickModifier::Ctrl,
+            mode: UiMode::Complete,
             exclude: vec!["bitwarden.exe".into()],
             filters: vec![],
         };

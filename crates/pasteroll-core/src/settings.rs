@@ -1,7 +1,7 @@
 //! What a settings window offers and how its choices become `config.toml` edits. The windows
 //! themselves are platform code; this part is the same everywhere.
 
-use crate::config::{self, ClickModifier, Config};
+use crate::config::{self, ClickModifier, Config, UiMode};
 use crate::limits::{Limits, MB};
 
 const CLIP_STEPS: [u64; 10] = [100, 250, 500, 1_000, 2_500, 5_000, 10_000, 25_000, 50_000, 100_000];
@@ -138,6 +138,7 @@ pub struct Choice {
     pub warn_multiline: bool,
     pub size_percent: u32,
     pub advanced_modifier: ClickModifier,
+    pub mode: UiMode,
     pub exclude_apps: Vec<String>,
     pub filter_names: Vec<String>,
 }
@@ -154,6 +155,7 @@ impl Choice {
             warn_multiline: c.warn_multiline_in_terminals,
             size_percent: c.size_percent,
             advanced_modifier: c.advanced_image_modifier,
+            mode: c.mode,
             exclude_apps: c.exclude_apps.clone(),
             filter_names: c.custom_filters.iter().map(|f| f.name.clone()).collect(),
         }
@@ -188,6 +190,9 @@ pub fn build_text(orig: &Config, choice: &Choice, text: &str) -> Result<String, 
     }
     if choice.advanced_modifier != orig.advanced_image_modifier {
         t = config::set_value(&t, "advanced_image_modifier", choice.advanced_modifier.label())?;
+    }
+    if choice.mode != orig.mode {
+        t = config::set_value(&t, "mode", choice.mode.key())?;
     }
     for old in &orig.exclude_apps {
         if !choice.exclude_apps.contains(old) {
@@ -280,6 +285,22 @@ mod tests {
         assert_eq!(fmt_size(150), "150%");
         assert_eq!(size_factor(150), 1.5);
         assert_eq!(size_factor(50), 0.5);
+    }
+
+    #[test]
+    fn the_mode_is_written_only_when_it_changes() {
+        let orig = config::parse("").unwrap();
+        let same = Choice::from_config(&orig);
+        assert_eq!(same.mode, UiMode::Complete);
+        assert_eq!(build_text(&orig, &same, "").unwrap(), "");
+        let ch = Choice { mode: UiMode::NoBloat, ..same };
+        let out = build_text(&orig, &ch, "").unwrap();
+        assert_eq!(config::parse(&out).unwrap().mode, UiMode::NoBloat);
+        // a window opened before the tray switched modes does not undo the switch on Save
+        let switched = config::parse(&out).unwrap();
+        let stale = Choice::from_config(&orig);
+        assert_eq!(build_text(&orig, &stale, &out).unwrap(), out);
+        assert_eq!(config::parse(&build_text(&orig, &stale, &out).unwrap()).unwrap().mode, switched.mode);
     }
 
     #[test]

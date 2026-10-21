@@ -1,9 +1,10 @@
-//! Advanced Image Paste: the image editor that opens, instead of an immediate save, when an image
-//! is clicked onto the desktop with the configured modifier held.
+//! Advanced Image Paste: the image editor that opens, instead of an immediate paste or save, when
+//! an image is clicked onto the desktop or into any window with the configured modifier held.
 //!
 //! - The card grows into the editor exactly as it grows into the expanded viewer, and the carousel
 //!   stays behind it, dimmed and inactive. Cancel shrinks it back and the carousel carries on;
-//!   Paste Image saves the result and ends the session.
+//!   Paste Image ends the session after delivering the result: saved as a file on the desktop, and
+//!   in a window pasted as the picture, its file's path, or its file's name ([`PasteAs`]).
 //! - Everything is non-destructive: the clip is only read. The adjustments are plain data
 //!   ([`EditParams`]), the live preview is that data applied to a reduced copy on a worker thread,
 //!   and the saved file is the same data applied to the whole picture on another.
@@ -37,7 +38,76 @@ pub(crate) enum EditMsg {
     Loaded { id: i64, src: Arc<core_image::Rgba>, proxy: Arc<core_image::Rgba>, k: f32 },
     LoadFailed { id: i64 },
     Preview { gen: u64, img: Arc<core_image::Rgba>, dims: (u32, u32) },
-    Exported { result: Result<PathBuf, String> },
+    Exported { result: Result<Exported, String> },
+}
+
+/// What the export worker made.
+pub(crate) enum Exported {
+    /// The picture was saved as this file.
+    File(PathBuf),
+    /// The edited picture as PNG bytes, for the clipboard (nothing was saved).
+    Png(Vec<u8>),
+}
+
+/// What "Paste Image" delivers when the destination is a window rather than the desktop.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum PasteAs {
+    /// The edited picture itself, as a normal image paste (nothing is saved).
+    Image,
+    /// The picture is saved as a file and its full path is pasted as text.
+    Path,
+    /// The picture is saved as a file and only its name is pasted as text.
+    Name,
+}
+
+impl PasteAs {
+    const ALL: [PasteAs; 3] = [PasteAs::Image, PasteAs::Path, PasteAs::Name];
+
+    fn label(self) -> &'static str {
+        match self {
+            PasteAs::Image => "Image",
+            PasteAs::Path => "Path",
+            PasteAs::Name => "File name",
+        }
+    }
+
+    fn button(self) -> &'static str {
+        match self {
+            PasteAs::Image => "Paste Image",
+            PasteAs::Path => "Paste Path",
+            PasteAs::Name => "Paste Name",
+        }
+    }
+
+    fn note(self) -> &'static str {
+        match self {
+            PasteAs::Image => "Pastes the picture itself, as a PNG. Nothing is saved.",
+            PasteAs::Path => "Saves the file in the folder below and pastes its path.",
+            PasteAs::Name => "Saves the file in the folder below and pastes only its name.",
+        }
+    }
+}
+
+/// Text for a shell or chat box: anything but plain letters, digits and `. _ - : \\ /` is put in
+/// quotes, as Explorer's "Copy as path" does for a path with a space (and a `&` or `;` stays text).
+fn quoted_if_needed(text: &str) -> String {
+    if text.chars().all(|c| c.is_alphanumeric() || "._-:\\/".contains(c)) {
+        text.to_owned()
+    } else {
+        format!("\"{text}\"")
+    }
+}
+
+/// Characters a terminal acts on even inside quotes (PowerShell expands `$` and the backtick, cmd
+/// expands `%`), or that end the quotes: a path with one is not pasted into a terminal.
+fn unsafe_in_terminal(text: &str) -> bool {
+    text.chars().any(|c| matches!(c, '"' | '$' | '`' | '%'))
+}
+
+/// The edited picture is put on the clipboard as a PNG, which the platform decodes again: it has
+/// to be small enough for that (the editor itself allows somewhat larger results to be saved).
+fn exceeds_clipboard_limit(dims: (u32, u32)) -> bool {
+    u64::from(dims.0) * u64::from(dims.1) > core_image::MAX_PIXELS
 }
 
 struct Job {
@@ -197,6 +267,13 @@ pub(crate) struct Editor {
     presets: Presets,
     toast: Option<(String, u64)>,
     saving: bool,
+    /// The destination is a window, not the desktop: the result is pasted into it.
+    window: bool,
+    /// ...and that window is a terminal (so text pasted into it must be safe to run).
+    terminal: bool,
+    paste_as: PasteAs,
+    /// The result, waiting for the editor to close before it is pasted.
+    deliver: Option<Payload>,
     // window and animation
     pub(crate) rect: RectPx,
     lifted: Frame,
@@ -406,6 +483,9 @@ impl Drop for Editor {
         if let Some(f) = self.focus.as_mut() {
             use zeroize::Zeroize;
             f.text.zeroize();
+        }
+        if let Some(d) = self.deliver.as_mut() {
+            d.wipe();
         }
     }
 }
@@ -667,6 +747,10 @@ impl Editor {
                     String::new()
                 }
             }
+            Sec::Output if self.window => match self.paste_as {
+                PasteAs::Image => PasteAs::Image.label().to_owned(),
+                other => format!("{}, {}", other.label(), p.format.label()),
+            },
             Sec::Output => p.format.label().to_owned(),
         }
     }
@@ -824,6 +908,12 @@ impl Editor {
                 v.push(self.color_item(iid(s, 4), "Colour", ColorTarget::Padding));
             }
             Sec::Output => {
+                if self.window {
+                    let kinds: Vec<&str> = PasteAs::ALL.iter().map(|k| k.label()).collect();
+                    let sel = PasteAs::ALL.iter().position(|k| *k == self.paste_as);
+                    v.push(chips(iid(s, 5), "Paste as", &kinds, sel));
+                    v.push(note(iid(s, 6), self.paste_as.note()));
+                }
                 let fmts: Vec<&str> = Format::ALL.iter().map(|f| f.label()).collect();
                 let sel = Format::ALL.iter().position(|f| *f == p.format);
                 v.push(chips(iid(s, 1), "Format", &fmts, sel));
@@ -968,7 +1058,11 @@ impl Editor {
             name,
             ext,
             folder,
-            paste_label: if self.saving { "Saving...".into() } else { "Paste Image".into() },
+            paste_label: match (self.saving, self.window) {
+                (true, _) => "Saving...".into(),
+                (false, true) => self.paste_as.button().into(),
+                (false, false) => "Paste Image".into(),
+            },
             paste_enabled: !self.saving && self.src.is_some() && too_large.is_none(),
             popup: self.popup_view(),
             toast: self.toast.as_ref().map(|t| t.0.clone()).unwrap_or_default(),
@@ -1015,16 +1109,21 @@ impl Controller {
         self.editor.as_ref().map(|e| e.params.clone())
     }
 
-    /// The Ctrl, Shift or Alt that opens the editor when held while clicking the desktop.
+    /// The Ctrl, Shift or Alt that opens the editor when held while clicking where the picture goes.
     pub fn set_advanced_modifier(&mut self, m: pasteroll_core::config::ClickModifier) {
         self.advanced_modifier = m;
     }
 
     // ------------------------------------------------------------------ open and close
 
-    /// The picture under the carousel's pointer grows into the editor.
-    pub(super) fn open_editor(&mut self, p: &mut dyn Platform, now: u64) {
+    /// The picture under the carousel's pointer grows into the editor. `dest` is the window the
+    /// click landed in (the result will be pasted there); `None` is a click on the desktop.
+    pub(super) fn open_editor(&mut self, p: &mut dyn Platform, now: u64, dest: Option<Target>) {
         if self.editor.is_some() || self.viewer.is_some() {
+            return;
+        }
+        if dest.as_ref().is_some_and(|t| p.target_privileged(t)) {
+            self.cancel(p, "target runs at a higher privilege level; not opening the editor");
             return;
         }
         let Some(id) = self.open.as_ref().and_then(Open::current_id) else { return };
@@ -1042,19 +1141,32 @@ impl Controller {
             }
         };
         self.withdraw_warning();
+        // Only a click that landed in a window has a destination to paste into. A desktop click
+        // (`None`) saves a file even if the platform still names another program as the foreground.
+        let window = dest.as_ref().is_some_and(|t| !t.desktop);
         if let Some(o) = self.open.as_mut() {
-            // the click was on the desktop: that is where the carousel stands now
+            // the click was on the destination: that is where the carousel stands now
             o.ui.click = None;
             o.ui.dropdown_open = false;
             o.ui.hover = None;
             if o.ui.confirm_delete.take().is_some() {
                 self.status = None;
             }
-            match p.foreground() {
-                Some(t) => o.target = t,
-                None => o.target.desktop = true,
+            match dest {
+                Some(t) => {
+                    o.target = t;
+                    o.browse_only = false;
+                }
+                None => match p.foreground() {
+                    Some(t) => o.target = t,
+                    None => o.target.desktop = true,
+                },
             }
         }
+        // a terminal cannot take a picture, so it gets the file's path unless told otherwise
+        let terminal = window
+            && self.open.as_ref().is_some_and(|o| self.paste_policy.is_terminal(&o.target.exe, &o.target.class));
+        let paste_as = if terminal { PasteAs::Path } else { PasteAs::Image };
         let Some((card_img, card_rect, lifted)) = self.card_pictures() else {
             self.cancel(p, "no card to open");
             return;
@@ -1116,7 +1228,8 @@ impl Controller {
             gen: 0,
             pending: false,
             jobs,
-            open_sec: None,
+            // pasting into a window: the choice of what to paste is the first thing to see
+            open_sec: window.then_some(Sec::Output),
             scroll: 0.0,
             focus: None,
             popup: None,
@@ -1129,6 +1242,10 @@ impl Controller {
             presets,
             toast: None,
             saving: false,
+            window,
+            terminal,
+            paste_as,
+            deliver: None,
             rect: card_rect,
             lifted,
             dim: 1.0,
@@ -1243,11 +1360,16 @@ impl Controller {
     /// The editor is gone; what follows depends on how it was closed.
     fn finish_editor(&mut self, p: &mut dyn Platform) {
         let then = self.editor.as_ref().map_or(Then::Carousel, |e| e.then);
+        let deliver = self.editor.as_mut().and_then(|e| e.deliver.take()).map(WipeOnDrop);
+        let target = self.open.as_ref().map(|o| o.target.clone());
         self.drop_editor(p);
         match then {
             Then::EndSession => {
                 self.end_session(p);
                 p.log("image editor closed");
+                if let (Some(payload), Some(target)) = (deliver, target) {
+                    self.paste_edited(p, &target, &payload.0);
+                }
             }
             Then::Carousel => {
                 self.dirty = true;
@@ -1385,14 +1507,57 @@ impl Controller {
             self.editor_toast(why, now);
             return;
         }
-        let Some(folder) = self.effective_folder(p).filter(|f| f.is_dir()) else {
-            self.editor_toast("That folder does not exist. Choose another with the folder button.", now);
+        let (window, terminal, paste_as) = (e.window, e.terminal, e.paste_as);
+        let picture_only = window && paste_as == PasteAs::Image;
+        // This is the last point where the editor can stay open: after the export it closes, and
+        // a failure then can only be logged. So the destination, and what we are about to paste,
+        // are checked first.
+        if window {
+            let target = self.open.as_ref().map(|o| o.target.clone());
+            if target.is_some_and(|t| !p.target_is_current(&t)) {
+                self.editor_toast("The window you clicked is no longer in front. Bring it back, then press Paste.", now);
+                return;
+            }
+        }
+        if picture_only && exceeds_clipboard_limit(out) {
+            self.editor_toast("Too large to paste as a picture. Choose Path or File name, or make it smaller.", now);
             return;
+        }
+        let folder = if picture_only {
+            PathBuf::new() // nothing is saved
+        } else {
+            match self.effective_folder(p) {
+                Some(f) if !f.is_absolute() => {
+                    self.editor_toast("Type the full path of the folder, starting with the drive letter.", now);
+                    return;
+                }
+                Some(f) if f.is_dir() => f,
+                _ => {
+                    self.editor_toast("That folder does not exist. Choose another with the folder button.", now);
+                    return;
+                }
+            }
         };
         let Some(e) = self.editor.as_mut() else { return };
         let ext = e.params.format.ext();
         let fallback = format!("Pasteroll image {}", p.local_timestamp());
         let stem = clean_file_stem(&e.name, ext, &fallback);
+        if window && !picture_only {
+            // the path or name is pasted as text: nothing in it may act on the receiving program
+            let text = format!("{}{}", folder.to_string_lossy(), stem);
+            let problem = if text.chars().any(char::is_control) {
+                Some("The folder or file name has characters that cannot be pasted.")
+            } else if terminal && unsafe_in_terminal(&text) {
+                Some("That folder or file name has characters that are not safe to paste into a terminal.")
+            } else {
+                None
+            };
+            if let Some(why) = problem {
+                self.editor_toast(why, now);
+                return;
+            }
+        }
+        let Some(e) = self.editor.as_mut() else { return };
         let params = e.params.clone();
         e.saving = true;
         e.focus = None;
@@ -1404,19 +1569,40 @@ impl Controller {
         std::thread::spawn(move || {
             let result = (|| {
                 let img = imgedit::apply(&src, &params);
+                if picture_only {
+                    // the picture itself goes on the clipboard; it is always a PNG
+                    let png = pasteroll_core::imgout::encode(&img, Format::Png, params.quality, params.png_level)?;
+                    return Ok(Exported::Png(png));
+                }
                 let bytes = pasteroll_core::imgout::encode(&img, params.format, params.quality, params.png_level)?;
-                crate::files::save_unique(&folder, &stem, ext, &bytes).map_err(|e| format!("Could not save the file: {e}"))
+                crate::files::save_unique(&folder, &stem, ext, &bytes)
+                    .map(Exported::File)
+                    .map_err(|e| format!("Could not save the file: {e}"))
             })();
             let _ = tx.send(EditMsg::Exported { result });
             waker.wake();
         });
     }
 
-    fn on_exported(&mut self, p: &mut dyn Platform, result: Result<PathBuf, String>, now: u64) {
-        let Some(e) = self.editor.as_mut() else { return };
+    fn on_exported(&mut self, p: &mut dyn Platform, result: Result<Exported, String>, now: u64) {
+        let Some(e) = self.editor.as_mut() else {
+            // the editor was closed while the picture was being made: it is clip content
+            if let Ok(Exported::Png(mut png)) = result {
+                use zeroize::Zeroize;
+                png.zeroize();
+            }
+            return;
+        };
         e.saving = false;
         match result {
-            Ok(path) => {
+            Ok(Exported::Png(png)) => {
+                p.log("edited image ready to paste");
+                if let Some(e) = self.editor.as_mut() {
+                    e.deliver = Some(Payload::Image(png));
+                }
+                self.close_editor(p, now, Then::EndSession);
+            }
+            Ok(Exported::File(path)) => {
                 p.file_created(&path);
                 p.log(&format!("saved image as {}", path.file_name().unwrap_or_default().to_string_lossy()));
                 // remember where it went (the Desktop is the default and is not stored)
@@ -1431,6 +1617,18 @@ impl Controller {
                         p.log(&format!("could not save the presets file: {err}"));
                     }
                 }
+                // pasting into a window: the file's path or name goes in as text
+                if e.window {
+                    let text = match e.paste_as {
+                        // a bare name is pasted as it is, except into a terminal
+                        PasteAs::Name => path.file_name().map(|n| {
+                            let name = n.to_string_lossy();
+                            if e.terminal { quoted_if_needed(&name) } else { name.into_owned() }
+                        }),
+                        _ => Some(quoted_if_needed(&path.to_string_lossy())),
+                    };
+                    e.deliver = text.map(Payload::Text);
+                }
                 self.close_editor(p, now, Then::EndSession);
             }
             Err(msg) => {
@@ -1439,6 +1637,29 @@ impl Controller {
             }
         }
         self.dirty = true;
+    }
+
+    /// The editor is gone and the session over: paste what it made into the window that was clicked.
+    fn paste_edited(&mut self, p: &mut dyn Platform, target: &Target, payload: &Payload) {
+        if !p.target_is_current(target) {
+            p.log("foreground changed; not pasting the edited image");
+            return;
+        }
+        if p.target_privileged(target) {
+            p.log("target runs at a higher privilege level; not pasting the edited image");
+            return;
+        }
+        if matches!(payload, Payload::Text(t) if t.chars().any(char::is_control)) {
+            p.log("not pasting a path with control characters");
+            return;
+        }
+        if let Some(key) = self.deliver(p, target, payload) {
+            let what = match payload {
+                Payload::Image(_) => "edited image",
+                _ => "edited image's file reference",
+            };
+            p.log(&format!("pasted {what} with {key:?}"));
+        }
     }
 
     fn editor_toast(&mut self, text: impl Into<String>, now: u64) {
@@ -2042,6 +2263,10 @@ impl Controller {
                 e.checkpoint();
                 self.dirty = true;
             }
+            (Sec::Output, 5) => {
+                e.paste_as = PasteAs::ALL.get(part).copied().unwrap_or(PasteAs::Image);
+                self.dirty = true;
+            }
             (Sec::Output, 3) => {
                 e.params.png_level = [PngLevel::Fast, PngLevel::Balanced, PngLevel::Smallest].get(part).copied().unwrap_or(PngLevel::Balanced);
                 e.checkpoint();
@@ -2270,6 +2495,34 @@ fn parse_num(text: &str) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_for_a_shell_is_quoted_unless_it_is_plain() {
+        assert_eq!(quoted_if_needed(r"C:\Users\me\Pictures\pic.png"), r"C:\Users\me\Pictures\pic.png");
+        assert_eq!(quoted_if_needed("/home/me/pic_1-2.png"), "/home/me/pic_1-2.png");
+        assert_eq!(quoted_if_needed(r"C:\My Pictures\a.png"), "\"C:\\My Pictures\\a.png\"");
+        // the characters a shell reads as commands are kept inside the quotes
+        assert_eq!(quoted_if_needed("a&b.png"), "\"a&b.png\"");
+        assert_eq!(quoted_if_needed("a;b(c).png"), "\"a;b(c).png\"");
+    }
+
+    #[test]
+    fn a_terminal_refuses_what_it_would_act_on_inside_quotes() {
+        for bad in ["a$b", "a`b", "100%", "say \"hi\""] {
+            assert!(unsafe_in_terminal(bad), "{bad}");
+        }
+        for fine in [r"C:\Users\me\Pictures", "My Pictures", "a&b", "a;b", "(x)"] {
+            assert!(!unsafe_in_terminal(fine), "{fine}");
+        }
+    }
+
+    #[test]
+    fn a_picture_the_clipboard_path_cannot_decode_is_known_in_advance() {
+        assert!(!exceeds_clipboard_limit((4000, 4000)));
+        assert!(exceeds_clipboard_limit((6000, 6000)), "36 million pixels: the editor allows it, the clipboard path does not");
+        // the editor saves what it allows, and the clipboard limit is below that
+        assert!(core_image::MAX_PIXELS < imgedit::MAX_OUTPUT_PIXELS);
+    }
 
     const B: (f32, f32) = (1000.0, 800.0);
 

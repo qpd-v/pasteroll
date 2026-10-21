@@ -185,6 +185,7 @@ mod tests {
     fn accepted_settings_keep_unrelated_options_and_filters() {
         let previous = Config {
             advanced_image_modifier: pasteroll_core::config::ClickModifier::Alt,
+            mode: pasteroll_core::config::UiMode::NoBloat,
             custom_filters: vec![CustomFilter {
                 name: "Design".into(),
                 extensions: vec!["psd".into(), "ai".into()],
@@ -195,6 +196,7 @@ mod tests {
         assert_eq!(proposal.config.exclude_apps, vec!["keepassxc"]);
         assert_eq!(proposal.config.limits.max_age_days, None);
         assert_eq!(proposal.config.custom_filters, previous.custom_filters);
+        assert_eq!(proposal.config.mode, previous.mode, "a Linux save keeps the chosen mode");
         let text = render_config(&proposal.config).unwrap();
         let parsed = config::parse(&text).unwrap();
         assert_eq!(parsed, proposal.config);

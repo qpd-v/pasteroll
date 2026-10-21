@@ -303,7 +303,7 @@ fn config_cmd(db: &Path, args: &[String]) -> i32 {
         }
         Some("set") => {
             let (Some(key), Some(val)) = (positional.get(1), positional.get(2)) else {
-                return fail("usage: config set KEY VALUE   (keys: max_clips, max_total_mb, max_age_days, max_clip_mb, max_pins, paused, size)");
+                return fail("usage: config set KEY VALUE   (keys: max_clips, max_total_mb, max_age_days, max_clip_mb, max_pins, paused, size, mode)");
             };
             let text = match keystore::read_config_text(db) {
                 Ok(t) => t,

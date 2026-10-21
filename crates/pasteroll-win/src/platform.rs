@@ -158,6 +158,10 @@ impl Platform for WinPlatform {
         self.overlay.show(POINT { x: at.0, y: at.1 })
     }
 
+    fn ui_mode_changed(&mut self, mode: pasteroll_core::config::UiMode) {
+        self.overlay.set_mode(mode);
+    }
+
     fn overlay_present(&mut self, frame: &Frame) {
         self.overlay.present(frame);
     }

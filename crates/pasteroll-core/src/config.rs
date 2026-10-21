@@ -14,8 +14,8 @@ pub struct CustomFilter {
     pub extensions: Vec<String>,
 }
 
-/// The key that, held while clicking the desktop with an image chosen, opens the Advanced Image
-/// Paste window instead of saving the picture at once.
+/// The key that, held while clicking the desktop or a window with an image chosen, opens the
+/// Advanced Image Paste window instead of saving or pasting the picture at once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClickModifier {
     Ctrl,
@@ -44,6 +44,52 @@ impl ClickModifier {
     }
 }
 
+/// How the carousel looks. Every feature, the recording, the limits and the stored history are the
+/// same in both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UiMode {
+    /// Everything on show: clip list, search bar, filter button, buttons on the card.
+    #[default]
+    Complete,
+    /// Only the current clip, in a smaller window. The search bar and filter menu appear while
+    /// they are used; the rest is reached by keyboard (Ctrl+E, Ctrl+P, Delete, Ctrl+Z...).
+    NoBloat,
+}
+
+impl UiMode {
+    pub const ALL: [UiMode; 2] = [UiMode::Complete, UiMode::NoBloat];
+
+    /// The name shown in menus and settings windows.
+    pub fn label(self) -> &'static str {
+        match self {
+            UiMode::Complete => "Complete",
+            UiMode::NoBloat => "No Bloat",
+        }
+    }
+
+    /// The value written to `config.toml`.
+    pub fn key(self) -> &'static str {
+        match self {
+            UiMode::Complete => "complete",
+            UiMode::NoBloat => "no-bloat",
+        }
+    }
+
+    /// Case, spaces, `-` and `_` do not matter: "No Bloat", "no_bloat" and "nobloat" are one mode.
+    pub fn parse(text: &str) -> Option<UiMode> {
+        let flat: String = text
+            .chars()
+            .filter(|c| !matches!(c, '-' | '_' | ' '))
+            .map(|c| c.to_ascii_lowercase())
+            .collect();
+        match flat.as_str() {
+            "complete" => Some(UiMode::Complete),
+            "nobloat" => Some(UiMode::NoBloat),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub limits: Limits,
@@ -58,8 +104,10 @@ pub struct Config {
     pub terminal_apps: Vec<String>,
     /// Size of the carousel as a percentage of its normal size.
     pub size_percent: u32,
-    /// Hold this while clicking the desktop to edit the image before it is saved.
+    /// Hold this while clicking where an image should go, to edit it before it is saved or pasted.
     pub advanced_image_modifier: ClickModifier,
+    /// Which interface the carousel shows.
+    pub mode: UiMode,
 }
 
 /// The range the carousel size may take, in percent.
@@ -78,6 +126,7 @@ impl Default for Config {
             terminal_apps: Vec::new(),
             size_percent: SIZE_DEFAULT,
             advanced_image_modifier: ClickModifier::Ctrl,
+            mode: UiMode::Complete,
         }
     }
 }
@@ -104,12 +153,16 @@ exclude_apps = []
 warn_multiline_in_terminals = true
 # More programs to treat as terminals (the usual ones are built in).
 terminal_apps = []
-# Holding this key while clicking the desktop with an image chosen opens the image editor
-# (outline, resize, crop, shadow and more) instead of saving the picture right away.
+# Holding this key while clicking the desktop or any window with an image chosen opens the image
+# editor (outline, resize, crop, shadow and more) instead of saving or pasting the picture right away.
 # "ctrl", "shift" or "alt".
 advanced_image_modifier = "ctrl"
 
 [appearance]
+# "complete" shows everything. "no-bloat" shows only the current clip: no list and no buttons on the
+# card (search, filters and the other tools still work and appear when used). Switch it from the
+# tray menu or Settings.
+mode = "complete"
 # Size of the carousel as a percentage of its normal size, 50 .. 200.
 size = 100
 
@@ -275,6 +328,10 @@ pub fn parse(text: &str) -> Result<Config, Vec<String>> {
                                 }
                             }
                         }
+                        "mode" => match v.as_str().and_then(UiMode::parse) {
+                            Some(m) => cfg.mode = m,
+                            None => problems.push("mode must be \"complete\" or \"no-bloat\"".into()),
+                        },
                         other => problems.push(format!("unknown setting [appearance] {other}")),
                     }
                 }
@@ -351,6 +408,10 @@ pub fn set_value(text: &str, key: &str, val: &str) -> Result<String, Vec<String>
                 ("appearance", value(n))
             }
         }
+        "mode" => match UiMode::parse(val) {
+            Some(m) => ("appearance", value(m.key())),
+            None => return Err(vec![format!("mode must be complete or no-bloat (got {val:?})")]),
+        },
         other => return Err(vec![format!("unknown setting {other}")]),
     };
     let mut doc: DocumentMut = if text.trim().is_empty() {
@@ -495,7 +556,8 @@ pub fn describe(c: &Config) -> String {
         "carousel size:  {}\n",
         format!("{}%", c.size_percent)
     ));
-    s.push_str(&format!("image editor:   {}+click on the desktop\n", c.advanced_image_modifier.label()));
+    s.push_str(&format!("mode:           {}\n", c.mode.label()));
+    s.push_str(&format!("image editor:   {}+click where it should go\n", c.advanced_image_modifier.label()));
     if !c.exclude_apps.is_empty() {
         s.push_str(&format!("excluded apps:  {}\n", c.exclude_apps.join(", ")));
     }
@@ -533,6 +595,35 @@ mod tests {
         assert_eq!(parse(&out).unwrap().advanced_image_modifier, ClickModifier::Alt);
         assert!(set_value("", "paste.advanced_image_modifier", "super").is_err());
         assert!(describe(&c).contains("Shift+click"));
+    }
+
+    #[test]
+    fn the_mode_defaults_to_complete_and_can_be_changed() {
+        assert_eq!(parse("").unwrap().mode, UiMode::Complete, "a file from before modes existed");
+        assert_eq!(parse(TEMPLATE).unwrap().mode, UiMode::Complete);
+        for text in ["no-bloat", "NO_BLOAT", "No Bloat", "nobloat"] {
+            let c = parse(&format!("[appearance]
+mode = \"{text}\"
+")).unwrap();
+            assert_eq!(c.mode, UiMode::NoBloat, "{text}");
+        }
+        assert!(parse("[appearance]
+mode = \"minimal\"
+").is_err());
+        assert!(parse("[appearance]
+mode = 1
+").is_err());
+        let out = set_value("", "mode", "No Bloat").unwrap();
+        assert_eq!(parse(&out).unwrap().mode, UiMode::NoBloat);
+        assert!(out.contains("mode = \"no-bloat\""), "written in its canonical form");
+        let back = set_value(&out, "appearance.mode", "complete").unwrap();
+        assert_eq!(parse(&back).unwrap().mode, UiMode::Complete);
+        assert!(set_value("", "mode", "tiny").is_err());
+        for m in UiMode::ALL {
+            assert_eq!(UiMode::parse(m.key()), Some(m));
+            assert_eq!(UiMode::parse(m.label()), Some(m));
+        }
+        assert!(describe(&parse(&out).unwrap()).contains("No Bloat"));
     }
 
     #[test]
