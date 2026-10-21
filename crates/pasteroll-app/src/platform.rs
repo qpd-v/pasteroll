@@ -273,6 +273,12 @@ pub trait Platform {
     fn modifiers_released(&mut self, timeout: Duration) -> bool;
     /// Check a paste-at-click. `first` is true on the first poll after the click (reset state).
     fn poll_click(&mut self, first: bool) -> ClickPoll;
+    /// As [`Platform::poll_click`], for a click that will only open the image editor. Nothing is
+    /// typed into the window yet (the result is pasted after editing), so keys the person is still
+    /// holding, such as the Ctrl of the click itself, need not be waited out.
+    fn poll_click_editor(&mut self, first: bool) -> ClickPoll {
+        self.poll_click(first)
+    }
 
     // ---------------------------------------------------------------- paste
     fn write_clipboard(&mut self, payload: &Payload) -> Result<(), String>;

@@ -80,7 +80,90 @@ fn target_of(root: HWND) -> Target {
     }
 }
 
+/// Is `pt` (screen pixels) inside `h`'s client rectangle?
+fn client_rect_contains(h: HWND, pt: POINT) -> bool {
+    let mut rc = RECT::default();
+    let mut origin = POINT::default();
+    unsafe {
+        if GetClientRect(h, &mut rc).is_err() || !windows::Win32::Graphics::Gdi::ClientToScreen(h, &mut origin).as_bool() {
+            return false;
+        }
+    }
+    pt.x >= origin.x && pt.x < origin.x + rc.right && pt.y >= origin.y && pt.y < origin.y + rc.bottom
+}
+
+/// Did a click land in a window's client area, going by what the window answered to a hit test
+/// and where the point lies?
+///
+/// A window that draws its own frame, Windows Terminal for one, answers "title bar" for every point
+/// of its window, text area included. That answer still counts when the point is inside the client
+/// rectangle. A standard title bar and the borders are outside it, and the caption buttons and the
+/// resize edges answer something other than "title bar", so those clicks are still refused.
+fn is_client_hit(answer: Option<u32>, in_client_rect: bool) -> bool {
+    answer == Some(HTCLIENT) || (answer == Some(HTCAPTION) && in_client_rect)
+}
+
 impl WinPlatform {
+    /// Whether a click has settled. `wait_for_keys`: hold off while a modifier key is down, which
+    /// would turn the paste keystroke into another chord.
+    fn poll_click_keys(&mut self, first: bool, wait_for_keys: bool) -> ClickPoll {
+        if first {
+            self.last_focus = None;
+        }
+        let Some(hooks) = &self.hooks else {
+            return ClickPoll::Rejected("no input hooks");
+        };
+        let (clicked, pt) = hooks.clicked();
+        let root = root_of(clicked);
+        if root.0.is_null() || unsafe { !IsWindow(Some(root)).as_bool() } || is_taskbar(root) {
+            return ClickPoll::Rejected("click was not on an application window");
+        }
+        let desktop = is_desktop(root);
+        let fg = root_of(unsafe { GetForegroundWindow() });
+        if !same_place(fg, root) {
+            return ClickPoll::Pending; // the click is still activating the window
+        }
+        // Hit-test the clicked window and its root: the title bar, borders and caption buttons
+        // fail the root test; scrollbars and push buttons are refused by class.
+        let lparam = LPARAM(((pt.y as i16 as u16 as isize) << 16) | (pt.x as i16 as u16 as isize));
+        let hit = |h: HWND| -> Option<u32> {
+            let mut r = 0usize;
+            let ok = unsafe {
+                SendMessageTimeoutW(h, WM_NCHITTEST, WPARAM(0), lparam, SMTO_ABORTIFHUNG, 50, Some(&mut r))
+            };
+            (ok.0 != 0).then_some(r as u32)
+        };
+        let in_client = |h: HWND| client_rect_contains(h, pt);
+        if !is_client_hit(hit(root), in_client(root)) || (clicked != root && !is_client_hit(hit(clicked), in_client(clicked))) {
+            return ClickPoll::Rejected("click was not on a client area");
+        }
+        if matches!(class_of(clicked).as_str(), "Button" | "ScrollBar") {
+            return ClickPoll::Rejected("click was on a control, not a text area");
+        }
+        let down = |vk: VIRTUAL_KEY| unsafe { (GetAsyncKeyState(vk.0 as i32) as u16 & 0x8000) != 0 };
+        if down(VK_LBUTTON) {
+            return ClickPoll::Pending;
+        }
+        // no key is sent to the desktop, so a held Ctrl (the image editor's key) need not be waited out
+        if desktop {
+            return ClickPoll::Desktop;
+        }
+        // a paste keystroke would be corrupted by a held key: wait it out (the editor types nothing yet)
+        if wait_for_keys && !input::held_modifiers().is_empty() {
+            return ClickPoll::Pending;
+        }
+        let mut info = GUITHREADINFO { cbSize: size_of::<GUITHREADINFO>() as u32, ..Default::default() };
+        let tid = unsafe { GetWindowThreadProcessId(root, None) };
+        let focus = unsafe {
+            if GetGUIThreadInfo(tid, &mut info).is_ok() { info.hwndFocus } else { HWND::default() }
+        };
+        if self.last_focus != Some(focus) {
+            self.last_focus = Some(focus); // focus moved: wait one more tick for it to settle
+            return ClickPoll::Pending;
+        }
+        ClickPoll::Target(target_of(root))
+    }
+
     pub fn new(hwnd: HWND, overlay: OverlayWindow, viewer: OverlayWindow, hooks: Option<Hooks>) -> WinPlatform {
         WinPlatform {
             hwnd,
@@ -273,59 +356,11 @@ impl Platform for WinPlatform {
     /// Paste-at-click: after the user's click has landed, wait until the app has settled and the
     /// click was on a client area.
     fn poll_click(&mut self, first: bool) -> ClickPoll {
-        if first {
-            self.last_focus = None;
-        }
-        let Some(hooks) = &self.hooks else {
-            return ClickPoll::Rejected("no input hooks");
-        };
-        let (clicked, pt) = hooks.clicked();
-        let root = root_of(clicked);
-        if root.0.is_null() || unsafe { !IsWindow(Some(root)).as_bool() } || is_taskbar(root) {
-            return ClickPoll::Rejected("click was not on an application window");
-        }
-        let desktop = is_desktop(root);
-        let fg = root_of(unsafe { GetForegroundWindow() });
-        if !same_place(fg, root) {
-            return ClickPoll::Pending; // the click is still activating the window
-        }
-        // Hit-test the clicked window and its root: the title bar, borders and caption buttons
-        // fail the root test; scrollbars and push buttons are refused by class.
-        let lparam = LPARAM(((pt.y as i16 as u16 as isize) << 16) | (pt.x as i16 as u16 as isize));
-        let hit = |h: HWND| -> Option<u32> {
-            let mut r = 0usize;
-            let ok = unsafe {
-                SendMessageTimeoutW(h, WM_NCHITTEST, WPARAM(0), lparam, SMTO_ABORTIFHUNG, 50, Some(&mut r))
-            };
-            (ok.0 != 0).then_some(r as u32)
-        };
-        if hit(root) != Some(HTCLIENT) || (clicked != root && hit(clicked) != Some(HTCLIENT)) {
-            return ClickPoll::Rejected("click was not on a client area");
-        }
-        if matches!(class_of(clicked).as_str(), "Button" | "ScrollBar") {
-            return ClickPoll::Rejected("click was on a control, not a text area");
-        }
-        let down = |vk: VIRTUAL_KEY| unsafe { (GetAsyncKeyState(vk.0 as i32) as u16 & 0x8000) != 0 };
-        if down(VK_LBUTTON) {
-            return ClickPoll::Pending;
-        }
-        // no key is sent to the desktop, so a held Ctrl (the image editor's key) need not be waited out
-        if desktop {
-            return ClickPoll::Desktop;
-        }
-        if !input::held_modifiers().is_empty() {
-            return ClickPoll::Pending;
-        }
-        let mut info = GUITHREADINFO { cbSize: size_of::<GUITHREADINFO>() as u32, ..Default::default() };
-        let tid = unsafe { GetWindowThreadProcessId(root, None) };
-        let focus = unsafe {
-            if GetGUIThreadInfo(tid, &mut info).is_ok() { info.hwndFocus } else { HWND::default() }
-        };
-        if self.last_focus != Some(focus) {
-            self.last_focus = Some(focus); // focus moved: wait one more tick for it to settle
-            return ClickPoll::Pending;
-        }
-        ClickPoll::Target(target_of(root))
+        self.poll_click_keys(first, true)
+    }
+
+    fn poll_click_editor(&mut self, first: bool) -> ClickPoll {
+        self.poll_click_keys(first, false)
     }
 
     fn write_clipboard(&mut self, payload: &Payload) -> Result<(), String> {
@@ -397,5 +432,66 @@ impl Platform for WinPlatform {
         pasteroll_core::config::parse(&new_text)
             .map(|c| c.custom_filters)
             .map_err(|problems| problems.join("; "))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_client_answer_always_counts() {
+        assert!(is_client_hit(Some(HTCLIENT), false));
+        assert!(is_client_hit(Some(HTCLIENT), true));
+    }
+
+    #[test]
+    fn a_title_bar_answer_counts_only_inside_the_client_rectangle() {
+        // Windows Terminal answers "title bar" for its whole window, text area included
+        assert!(is_client_hit(Some(HTCAPTION), true));
+        // a standard title bar is outside the client rectangle
+        assert!(!is_client_hit(Some(HTCAPTION), false));
+    }
+
+    #[test]
+    fn borders_buttons_and_silence_are_never_the_client_area() {
+        for answer in [HTCLOSE, HTMINBUTTON, HTMAXBUTTON, HTSYSMENU, HTLEFT, HTBOTTOMRIGHT, HTBORDER, HTNOWHERE, HTVSCROLL] {
+            assert!(!is_client_hit(Some(answer), true), "{answer}");
+            assert!(!is_client_hit(Some(answer), false), "{answer}");
+        }
+        // no answer (the window did not respond in time)
+        assert!(!is_client_hit(None, true));
+    }
+
+    #[test]
+    fn a_real_window_has_a_client_rectangle_that_excludes_its_title_bar() {
+        unsafe {
+            let class = windows::core::w!("STATIC");
+            let hwnd = CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                class,
+                windows::core::w!("client rect fixture"),
+                WS_OVERLAPPEDWINDOW,
+                100,
+                100,
+                400,
+                300,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("fixture window");
+            let mut outer = RECT::default();
+            let _ = GetWindowRect(hwnd, &mut outer);
+            let mut origin = POINT::default();
+            let _ = windows::Win32::Graphics::Gdi::ClientToScreen(hwnd, &mut origin);
+            // inside the title bar (above the client area), and inside the client area
+            let title = POINT { x: outer.left + 50, y: outer.top + 3 };
+            let body = POINT { x: origin.x + 50, y: origin.y + 50 };
+            let (in_title, in_body) = (client_rect_contains(hwnd, title), client_rect_contains(hwnd, body));
+            let _ = DestroyWindow(hwnd);
+            assert!(!in_title && in_body, "title {in_title}, body {in_body}");
+        }
     }
 }

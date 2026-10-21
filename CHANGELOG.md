@@ -1,6 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-beta.6 (Windows only)
+
+- Fix Advanced Image Paste never opening in Windows Terminal (and so in PowerShell, Claude Code
+  and other programs run inside it). Windows Terminal answers "title bar" to Pasteroll's
+  click-area test for its whole window, so the click was refused as "not on a client area".
+  A click is now accepted when it lies inside the window's client rectangle, while a standard
+  title bar, borders and caption buttons are still refused. A plain click-to-paste into Windows
+  Terminal was refused the same way and works now too.
+- Fix the editor not opening when Ctrl is still held a second after the click. The click was
+  waited on until every key was released, with a one second limit, to protect the paste
+  keystroke; a click that only opens the editor types nothing yet, so it no longer waits.
 
 ## 0.1.0-beta.5 (Windows only)
 

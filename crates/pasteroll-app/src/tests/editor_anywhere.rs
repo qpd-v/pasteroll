@@ -420,3 +420,34 @@ fn the_paste_button_is_a_button_of_the_editor() {
     let at = (l.paste.x + l.paste.w / 2.0, l.paste.y + l.paste.h / 2.0);
     assert_eq!(h.c.editor_hit(at.0, at.1), Some(EHit::Paste));
 }
+
+#[test]
+fn a_click_that_only_opens_the_editor_does_not_wait_for_held_keys() {
+    // Ctrl+click on a picture: nothing is typed yet, so the Ctrl still being down is no reason to wait
+    let (mut h, _folder) = H::window_session(&[Clip::Gradient(30, 20)], "WindowsTerminal.exe");
+    let g = h.open();
+    h.click_window(g, ctrl());
+    assert_eq!(h.p.editor_polls, 1, "polled as an editor click");
+    assert!(h.c.editor_is_open());
+
+    // a plain click is the paste keystroke's business: it waits, as it always did
+    let (mut h, _folder) = H::window_session(&[Clip::Gradient(30, 20)], "WindowsTerminal.exe");
+    let g = h.open();
+    h.click_window(g, Modifiers::default());
+    assert_eq!(h.p.editor_polls, 0);
+    // and so does Ctrl+click on text, which is an ordinary paste
+    let (mut h, _folder) = H::window_session(&[Clip::Text("hello")], "WindowsTerminal.exe");
+    let g = h.open();
+    h.click_window(g, ctrl());
+    assert_eq!(h.p.editor_polls, 0);
+    assert_eq!(h.pasted_texts(), vec!["hello"]);
+}
+
+#[test]
+fn the_desktop_click_for_the_editor_is_polled_the_same_way() {
+    let (mut h, _folder) = H::desktop_session(&[Clip::Gradient(30, 20)]);
+    let g = h.open();
+    h.click_desktop(g, ctrl());
+    assert_eq!(h.p.editor_polls, 1);
+    assert!(h.c.editor_is_open());
+}

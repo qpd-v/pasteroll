@@ -191,7 +191,7 @@ fn probe() -> Result<Vec<Check>> {
     unsafe {
         let _ = GetCursorPos(&mut cursor);
     }
-    let result = probe_inner(&mut out).and_then(|()| probe_typing(&mut out)).and_then(|()| probe_no_bloat(&mut out)).and_then(|()| probe_editor_anywhere(&mut out));
+    let result = probe_inner(&mut out).and_then(|()| probe_typing(&mut out)).and_then(|()| probe_no_bloat(&mut out)).and_then(|()| probe_editor_anywhere(&mut out)).and_then(|()| probe_editor_holding_ctrl(&mut out)).and_then(|()| probe_editor_in_terminal(&mut out));
     // restore the user's pointer whatever happened
     input::move_to(cursor);
     result?;
@@ -939,6 +939,254 @@ fn probe_editor_anywhere(out: &mut Vec<Check>) -> Result<()> {
         let _ = DestroyWindow(target);
     }
     app::destroy();
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// A private history with one picture, an app with the real hooks, and a window of ours to click.
+struct EditorProbe {
+    dir: std::path::PathBuf,
+    target: HWND,
+    edit: HWND,
+}
+
+fn editor_probe_start(out: &mut Vec<Check>, tag: &str) -> Result<Option<EditorProbe>> {
+    let dir = std::env::temp_dir().join(format!("pasteroll-probe-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Pictures")).map_err(|e| windows::core::Error::new(E_FAIL, e.to_string()))?;
+    let db = dir.join("history.db");
+    {
+        let mut store = crate::keystore::open_store(&db).map_err(|e| windows::core::Error::new(E_FAIL, e))?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let img = Rgba { width: 100, height: 60, pixels: [60u8, 160, 200, 255].repeat(100 * 60) };
+        store.add_image_png(&encode_png(&img).unwrap(), now).ok();
+    }
+    let presets = pasteroll_core::imgedit::Presets { items: vec![], folder: Some(dir.join("Pictures").to_string_lossy().into_owned()) };
+    let _ = std::fs::write(dir.join("image-presets.txt"), presets.to_text());
+    let opts = app::Options { db, capture: false, accept_injected: true, max_seconds: None, hooks: true, tray: false, notice: false };
+    let _msg_window = app::create(&opts)?;
+    app::with_runtime(|rt| rt.platform.allow_own_process = true);
+    let (target, edit) = make_target()?;
+    let ok = make_foreground(target);
+    out.push(Check { name: "editor_probe_target_is_foreground", ok, detail: format!("{tag}: precondition") });
+    if !ok {
+        unsafe {
+            let _ = DestroyWindow(target);
+        }
+        app::destroy();
+        let _ = std::fs::remove_dir_all(&dir);
+        return Ok(None);
+    }
+    unsafe {
+        let _ = SetFocus(Some(edit));
+    }
+    Ok(Some(EditorProbe { dir, target, edit }))
+}
+
+fn editor_probe_stop(probe: EditorProbe) {
+    unsafe {
+        let _ = DestroyWindow(probe.target);
+    }
+    app::destroy();
+    let _ = std::fs::remove_dir_all(&probe.dir);
+}
+
+/// A point inside `window` that is on the window itself and not under the carousel.
+fn clear_spot(window: HWND) -> Option<POINT> {
+    unsafe {
+        let mut wr = RECT::default();
+        let _ = GetWindowRect(window, &mut wr);
+        let ov = app::with_runtime(|rt| rt.platform.overlay.screen_rect()).unwrap_or_default();
+        let covered = |p: POINT| p.x >= ov.left && p.x < ov.right && p.y >= ov.top && p.y < ov.bottom;
+        for fy in [0.7f32, 0.5, 0.8, 0.6, 0.4] {
+            for fx in [0.5f32, 0.3, 0.7, 0.2, 0.8] {
+                let pt = POINT {
+                    x: wr.left + ((wr.right - wr.left) as f32 * fx) as i32,
+                    y: wr.top + ((wr.bottom - wr.top) as f32 * fy) as i32,
+                };
+                if !covered(pt) && root(WindowFromPoint(pt)) == window {
+                    return Some(pt);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Opens the carousel with the pointer in the far corner, so it does not cover the window.
+fn open_carousel_in_corner() -> bool {
+    let (sw, sh) = unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
+    input::move_to(POINT { x: sw - 40, y: sh - 80 });
+    pump(60);
+    app::dispatch(Event::Activate);
+    pump(400);
+    app::with_runtime(|rt| rt.controller.is_open()).unwrap_or(false)
+}
+
+/// Presses Ctrl and clicks at `spot`, leaving Ctrl DOWN (a person waiting to see the editor does
+/// exactly that). The caller releases it with `ctrl_key(true)`.
+fn ctrl_click(spot: POINT) {
+    input::move_to(spot);
+    pump(40);
+    ctrl_key(false);
+    pump(40);
+    input::left_down();
+    input::left_up();
+}
+
+/// Escape twice (the editor, then the carousel), with the real keyboard.
+fn escape_everything() {
+    for _ in 0..2 {
+        input::send_chord(&[], VK_ESCAPE);
+        pump(500);
+    }
+}
+
+/// The person holds Ctrl for a while after the click, waiting for the editor to appear: it must
+/// still appear (and not be given up on after a second, as a paste waiting for the keys would).
+fn probe_editor_holding_ctrl(out: &mut Vec<Check>) -> Result<()> {
+    macro_rules! check {
+        ($name:expr, $ok:expr, $($detail:tt)*) => {
+            out.push(Check { name: $name, ok: $ok, detail: format!($($detail)*) })
+        };
+    }
+    let Some(probe) = editor_probe_start(out, "holdctrl")? else { return Ok(()) };
+    check!("hold_ctrl_session_opens", open_carousel_in_corner(), "");
+    let Some(spot) = clear_spot(probe.target) else {
+        check!("hold_ctrl_click_spot_is_clear", false, "");
+        editor_probe_stop(probe);
+        return Ok(());
+    };
+    ctrl_click(spot);
+    // Ctrl stays down for 1.6 seconds, longer than a click is waited for
+    pump(1_600);
+    let still_down = input::held_modifiers().contains(&VK_CONTROL);
+    let opened = editor_open();
+    let session = app::with_runtime(|rt| rt.controller.is_open()).unwrap_or(false);
+    ctrl_key(true);
+    check!("hold_ctrl_editor_opens_while_ctrl_is_held", opened && still_down, "editor open {opened}, session open {session}, ctrl still down {still_down}");
+    check!("hold_ctrl_nothing_typed_into_the_window", edit_text(probe.edit).is_empty(), "target text {:?}", edit_text(probe.edit));
+    pump(300);
+    if opened {
+        escape_everything();
+    }
+    editor_probe_stop(probe);
+    Ok(())
+}
+
+/// Visible top-level windows of a class, as handles.
+fn windows_of_class(class: &str) -> Vec<isize> {
+    use std::cell::RefCell;
+    thread_local! {
+        static FOUND: RefCell<(String, Vec<isize>)> = const { RefCell::new((String::new(), Vec::new())) };
+    }
+    unsafe extern "system" fn each(h: HWND, _: LPARAM) -> windows::core::BOOL {
+        let mut buf = [0u16; 128];
+        let n = unsafe { GetClassNameW(h, &mut buf) } as usize;
+        let name = String::from_utf16_lossy(&buf[..n]);
+        FOUND.with(|f| {
+            let mut f = f.borrow_mut();
+            if name == f.0 && unsafe { IsWindowVisible(h).as_bool() } {
+                f.1.push(h.0 as isize);
+            }
+        });
+        TRUE
+    }
+    FOUND.with(|f| *f.borrow_mut() = (class.to_owned(), Vec::new()));
+    unsafe {
+        let _ = EnumWindows(Some(each), LPARAM(0));
+    }
+    FOUND.with(|f| std::mem::take(&mut f.borrow_mut().1))
+}
+
+/// The same with a real Windows Terminal window (a new one, started and closed by this test, never
+/// one of the person's own): Ctrl+click it, hold Ctrl, and the editor opens, offering the path.
+fn probe_editor_in_terminal(out: &mut Vec<Check>) -> Result<()> {
+    macro_rules! check {
+        ($name:expr, $ok:expr, $($detail:tt)*) => {
+            out.push(Check { name: $name, ok: $ok, detail: format!($($detail)*) })
+        };
+    }
+    const CLASS: &str = "CASCADIA_HOSTING_WINDOW_CLASS";
+    let before = windows_of_class(CLASS);
+    let dir = std::env::temp_dir().join(format!("pasteroll-probe-terminal-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("Pictures")).map_err(|e| windows::core::Error::new(E_FAIL, e.to_string()))?;
+    let db = dir.join("history.db");
+    {
+        let mut store = crate::keystore::open_store(&db).map_err(|e| windows::core::Error::new(E_FAIL, e))?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let img = Rgba { width: 100, height: 60, pixels: [200u8, 120, 60, 255].repeat(100 * 60) };
+        store.add_image_png(&encode_png(&img).unwrap(), now).ok();
+    }
+    let presets = pasteroll_core::imgedit::Presets { items: vec![], folder: Some(dir.join("Pictures").to_string_lossy().into_owned()) };
+    let _ = std::fs::write(dir.join("image-presets.txt"), presets.to_text());
+    // a new terminal window with a quiet shell in it
+    let started = std::process::Command::new("wt.exe")
+        .args(["-w", "new", "powershell.exe", "-NoLogo", "-NoProfile", "-NoExit"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    if started.is_err() {
+        check!("terminal_probe_skipped", true, "Windows Terminal (wt.exe) is not available");
+        let _ = std::fs::remove_dir_all(&dir);
+        return Ok(());
+    }
+    let mut wt = None;
+    for _ in 0..100 {
+        pump(100);
+        if let Some(h) = windows_of_class(CLASS).into_iter().find(|h| !before.contains(h)) {
+            wt = Some(HWND(h as *mut _));
+            break;
+        }
+    }
+    let Some(wt) = wt else {
+        check!("terminal_window_appeared", false, "no new Windows Terminal window was found");
+        let _ = std::fs::remove_dir_all(&dir);
+        return Ok(());
+    };
+    pump(1_200); // let the shell start
+    let opts = app::Options { db, capture: false, accept_injected: true, max_seconds: None, hooks: true, tray: false, notice: false };
+    let _msg_window = app::create(&opts)?;
+    let fg_ok = make_foreground(wt);
+    check!("terminal_is_foreground", fg_ok, "precondition");
+    let mut finished = false;
+    if fg_ok {
+        let opened_session = open_carousel_in_corner();
+        check!("terminal_session_opens", opened_session, "");
+        let spot = if opened_session { clear_spot(wt) } else { None };
+        check!("terminal_click_spot_is_clear", spot.is_some(), "");
+        if let Some(spot) = spot {
+            ctrl_click(spot);
+            pump(1_600);
+            let opened = editor_open();
+            let label = app::with_runtime(|rt| rt.controller.editor_view().map(|v| v.paste_label)).flatten();
+            ctrl_key(true);
+            check!("terminal_editor_opens_while_ctrl_is_held", opened, "paste button {label:?}");
+            check!("terminal_defaults_to_the_path", label.as_deref() == Some("Paste Path"), "{label:?}");
+            pump(300);
+            if opened {
+                escape_everything();
+            }
+            finished = true;
+        }
+    }
+    let _ = finished;
+    app::destroy();
+    unsafe {
+        // only the window this test started
+        let _ = PostMessageW(Some(wt), WM_CLOSE, WPARAM(0), LPARAM(0));
+    }
+    pump(1_500);
+    let gone = !windows_of_class(CLASS).contains(&(wt.0 as isize));
+    check!("terminal_probe_window_closed", gone, "");
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }

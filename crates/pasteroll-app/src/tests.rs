@@ -69,6 +69,8 @@ struct Fake {
     /// The mode the carousel window is sized for (see `ui_mode_changed`).
     mode: pasteroll_core::config::UiMode,
     mode_changes: Vec<pasteroll_core::config::UiMode>,
+    /// How many clicks were polled as editor clicks (those do not wait for held keys).
+    editor_polls: u32,
 }
 
 fn target(id: u64, exe: &str) -> Target {
@@ -117,6 +119,7 @@ impl Fake {
             modal: false,
             mode: pasteroll_core::config::UiMode::Complete,
             mode_changes: Vec::new(),
+            editor_polls: 0,
         }
     }
 
@@ -226,6 +229,10 @@ impl Platform for Fake {
     }
     fn poll_click(&mut self, _first: bool) -> ClickPoll {
         self.click_polls.pop_front().unwrap_or(ClickPoll::Pending)
+    }
+    fn poll_click_editor(&mut self, first: bool) -> ClickPoll {
+        self.editor_polls += 1;
+        self.poll_click(first)
     }
     fn write_clipboard(&mut self, payload: &Payload) -> Result<(), String> {
         if !self.write_ok {

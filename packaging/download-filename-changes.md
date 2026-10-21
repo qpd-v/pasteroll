@@ -1,6 +1,6 @@
 # Beta.4 download filenames
 
-Beta.5 is a Windows-only release: tag v0.1.0-beta.5 carries only the two Windows packages and a
+Beta.6 is a Windows-only release: tag v0.1.0-beta.6 carries only the two Windows packages and a
 SHA256SUMS that covers just them. The X11 and GNOME downloads below stay on v0.1.0-beta.4.
 
 Use release tag v0.1.0-beta.4 for all six packages and SHA256SUMS after publication.

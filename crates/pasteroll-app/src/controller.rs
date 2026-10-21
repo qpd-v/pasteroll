@@ -1900,7 +1900,10 @@ impl Controller {
             self.cancel(p, "click paste timed out");
             return;
         }
-        match p.poll_click(first) {
+        // Ctrl+click (by default) on a picture opens the editor, which types nothing yet
+        let editor_click = self.current_is_image() && p.click_modifiers().has(self.advanced_modifier);
+        let polled = if editor_click { p.poll_click_editor(first) } else { p.poll_click(first) };
+        match polled {
             ClickPoll::Pending => {}
             ClickPoll::Rejected(why) => self.cancel(p, why),
             ClickPoll::Desktop => {
