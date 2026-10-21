@@ -40,6 +40,8 @@ const ID_FL_LIST: i32 = 140;
 const ID_FL_REMOVE: i32 = 141;
 const ID_STATUS: i32 = 150;
 const ID_SAVE: i32 = 1;
+/// Looks every second for a choice made elsewhere (see `sync_update_choice`).
+const TIMER_SYNC: usize = 77;
 const ID_CANCEL: i32 = 2;
 
 struct State {
@@ -74,6 +76,13 @@ struct State {
 /// Height of the mode choice and the update check at the top of the window; everything below it is
 /// pushed down.
 const MODE_H: i32 = 84;
+
+/// A settings window is open (the one-time update question waits for it to close).
+static OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn is_open() -> bool {
+    OPEN.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 thread_local! {
     static ST: RefCell<Option<State>> = const { RefCell::new(None) };
@@ -484,6 +493,8 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
             filters,
         };
         ST.with(|c| *c.borrow_mut() = Some(state));
+        OPEN.store(true, std::sync::atomic::Ordering::Relaxed);
+        SetTimer(Some(hwnd), TIMER_SYNC, 1000, None);
         update_values();
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = SetForegroundWindow(hwnd);
@@ -520,6 +531,34 @@ fn update_values() {
     });
 }
 
+/// The update-check choice is also made outside this window (the one-time question can appear while
+/// it is open, and `config.toml` can be edited). When the file now says something this window does
+/// not know about, the box follows it, and what Save compares against follows too, so Save neither
+/// shows a stale box nor undoes the choice.
+fn sync_update_choice() {
+    ST.with(|c| {
+        let Ok(mut g) = c.try_borrow_mut() else { return };
+        let Some(s) = g.as_mut() else { return };
+        let Some(now) = keystore::read_config_text(&s.db).ok().and_then(|t| config::parse(&t).ok()) else { return };
+        if now.updates != s.orig.updates && now.updates != UpdateCheck::Ask {
+            s.orig.updates = now.updates;
+            unsafe {
+                SendMessageW(s.updates, BM_SETCHECK, Some(WPARAM(usize::from(now.updates == UpdateCheck::On))), Some(LPARAM(0)));
+            }
+        }
+    });
+}
+
+/// Whether the update box is ticked right now (self-test).
+pub fn probe_updates_checked() -> Option<bool> {
+    sync_update_choice();
+    ST.with(|c| {
+        let g = c.try_borrow().ok()?;
+        let s = g.as_ref()?;
+        Some(unsafe { SendMessageW(s.updates, BM_GETCHECK, Some(WPARAM(0)), Some(LPARAM(0))).0 == 1 })
+    })
+}
+
 fn chosen_mode(s: &State) -> UiMode {
     let check = |h: HWND| unsafe { SendMessageW(h, BM_GETCHECK, Some(WPARAM(0)), Some(LPARAM(0))).0 == 1 };
     UiMode::ALL
@@ -530,6 +569,7 @@ fn chosen_mode(s: &State) -> UiMode {
 }
 
 fn close() {
+    OPEN.store(false, std::sync::atomic::Ordering::Relaxed);
     let taken = ST.with(|c| c.try_borrow_mut().ok().and_then(|mut g| g.take()));
     if let Some(s) = taken {
         unsafe {
@@ -729,6 +769,10 @@ fn save() {
 unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe {
         match msg {
+            WM_TIMER if wparam.0 == TIMER_SYNC => {
+                sync_update_choice();
+                LRESULT(0)
+            }
             WM_HSCROLL => {
                 update_values();
                 LRESULT(0)

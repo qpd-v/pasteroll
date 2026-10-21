@@ -387,6 +387,10 @@ fn ask() -> Answer {
 fn ask_in_background(window: isize, db: PathBuf) {
     let spawned = std::thread::Builder::new().name("pasteroll-update-question".into()).spawn(move || {
         std::thread::sleep(Duration::from_secs(8));
+        // not on top of the Settings window: wait until it is closed
+        while crate::settings::is_open() {
+            std::thread::sleep(Duration::from_secs(3));
+        }
         // the person may have decided in Settings meanwhile
         let undecided = crate::keystore::read_config_text(&db)
             .ok()

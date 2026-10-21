@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-beta.8 (Windows only)
+
+- Fix the Settings window not showing your answer to the one-time update question. If the question
+  appeared while Settings was open and you chose "Check for updates", the checkbox in Settings
+  stayed empty. The open window now follows a choice made elsewhere within a second, and the
+  question waits until Settings is closed instead of appearing on top of it.
+
 ## 0.1.0-beta.7 (Windows only)
 
 - Add an optional update check (Windows). It is off until you say yes: the first time you run this

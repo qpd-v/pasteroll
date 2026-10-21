@@ -298,6 +298,23 @@ size = {sz}
                 && on == Ok(pasteroll_core::config::UpdateCheck::On),
             "ticked={ticked} on={on:?}"
         );
+        // a choice made elsewhere (the one-time question) shows in the open window at once
+        crate::settings::probe_set_updates(false);
+        let wrote = app::db_path().is_some_and(|db| {
+            crate::keystore::edit_config(&db, |t| {
+                pasteroll_core::config::set_value(t, "check_for_updates", "true").map_err(|p| p.join("; "))
+            })
+            .is_ok()
+        });
+        pump(1500);
+        let shown = crate::settings::probe_updates_checked();
+        let after = crate::settings::pending_text().unwrap_or_default();
+        let unchanged = pasteroll_core::config::parse(&after).map(|c| c.updates) == Ok(pasteroll_core::config::UpdateCheck::On);
+        check!(
+            "settings_box_follows_a_choice_made_elsewhere",
+            wrote && shown == Some(true) && unchanged,
+            "wrote={wrote} shown={shown:?} unchanged={unchanged}"
+        );
     }
     let (open, visible, text_ok) = app::with_runtime(|rt| {
         (
