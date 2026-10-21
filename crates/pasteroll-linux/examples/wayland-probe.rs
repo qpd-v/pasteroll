@@ -51,6 +51,7 @@ fn main() {
             "context" => {
                 let context = c.context().expect("context");
                 assert!(context.scale > 0.0);
+                assert!(context.stage_scale > 0.0);
                 assert!(context.monitor.2 > 0 && context.monitor.3 > 0);
                 assert!(context.work.2 > 0 && context.work.3 > 0);
             }
@@ -137,6 +138,15 @@ fn main() {
                     .expect("viewer present");
                 c.viewer_hide(generation).expect("viewer hide");
             }
+            "viewer-4k" => {
+                c.viewer_show(generation, 0, 0, 3840, 2160, false).unwrap();
+                let frame = pasteroll_render::Frame {
+                    width: 3840, height: 2160,
+                    bgra: vec![31, 80, 60, 255].repeat(3840 * 2160),
+                };
+                c.viewer_present(generation, &frame).expect("lossless 4K viewer");
+            }
+            "viewer-hide" => c.viewer_hide(generation).expect("viewer hide"),
             "suspend" => c.suspend(generation, true).expect("suspend"),
             "resume" => c.suspend(generation, false).expect("resume"),
             "poll" => {

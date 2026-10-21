@@ -1,7 +1,7 @@
 Pasteroll for X11 and GNOME 46 Wayland - @VERSION@ development build
 ================================================================
 
-This is a development package, not the published beta.2 download. Read
+This is an experimental GNOME 46 package. Read
 GNOME-README.md for permissions, supported devices and validation limits.
 The app is static. The optional host helper uses glibc and system libevdev2.
 
@@ -45,10 +45,12 @@ Remove
   Debian package: use the package manager to remove pasteroll.
   These paths keep clipboard history, encryption keys and settings.
 
-Before public release
-  Physical desktop, device settings, real login/lock, multi-monitor and newer
-  GNOME validation are still required. Synthetic kernel/headless tests do not
-  establish these results. Versioning and publication are separate release work.
+Testing status and limitations
+  Mixed-scale display/viewer/editor checks passed on one physical Pop!_OS setup.
+  Further manual acceptance, including helper input, lock/login and suspend, is
+  deferred. GNOME remains experimental and supports version 46 only.
+  App and companion must both use protocol 3; reload the companion after upgrade.
+  OCR accuracy improvements and Linux tray/panel/About parity are deferred.
 
 License: MIT or Apache-2.0, at your option. See the included licenses/notices.
 Source: https://github.com/qpd-v/pasteroll

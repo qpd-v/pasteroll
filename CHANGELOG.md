@@ -2,7 +2,13 @@
 
 ## Unreleased
 
-## 0.1.0-beta.4 (Windows candidate)
+## 0.1.0-beta.4
+
+- GNOME 46: separate UI density from Shell stage coordinates for mixed-scale monitors.
+- Transfer large viewer/editor frames as bounded full-resolution strips; matching
+  protocol-3 app and companion are required. No viewer downsampling fallback.
+- Correct Linux transparent-icon test expectations. Additional manual acceptance
+  is deferred; GNOME remains experimental. Linux OCR quality is inconsistent.
 
 - Replace the boxed application icon with the approved transparent roll. Generate
   the tray, window, shortcut and installer sizes with preserved proportions.
@@ -22,8 +28,8 @@
   history clip. Repeated copies deduplicate; paused/excluded recording is respected.
   Automatic paste writes remain excluded from clipboard capture.
 - Verify Windows upgrades with disposable data and separate installer test identity.
-- Release tooling supports a Windows-only package/checksum set. Linux downloads
-  remain beta.3; Linux runtime work and testing are deferred.
+- Ship Windows, X11 and experimental GNOME 46 packages together. Linux
+  tray/panel/About parity and OCR accuracy improvements are deferred.
 
 ## 0.1.0-beta.3
 

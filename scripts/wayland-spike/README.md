@@ -160,3 +160,21 @@ The development guide warns that nesting alone is not full isolation; this
 launcher additionally uses Linux namespaces and private buses/profiles. These
 tests still do not establish physical GPU, real-device, multi-monitor, newer
 GNOME or KDE compatibility.
+# Rootless geometry checks
+
+On native Linux with bubblewrap/user namespaces available, the keyboard suites
+can also run with `bash scripts/wayland-spike/run-rootless.sh --phase2` (or
+`--phase3`). Build the requested app/probe under `target-dev/linux` first, as
+described below. The rootless launcher hides host home/runtime/device trees and
+uses private network, PID, user and mount namespaces. Namespace UID 0 is only the
+invoking host user; it is not host administrator access. It does not support the
+privileged mouse-helper suite.
+
+`PASTEROLL_GEOMETRY_LAYOUT=physical` or `logical` with `--phase2` configures only
+the isolated virtual monitor to 3840x2160 at 200%, verifies the independent UI and
+stage scales, and checks a full-resolution tiled viewer and rendered pixels on
+both sides of its strip seam. No live GNOME settings or clipboard are accessed.
+These synthetic results do not replace physical multi-monitor acceptance.
+For an exact staged binary, set `PASTEROLL_TEST_APP_BINARY` to its absolute path
+inside this checkout when running `--phase3`; the harness verifies its SHA256
+against the private installed copy before starting it.

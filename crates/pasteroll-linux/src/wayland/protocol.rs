@@ -3,7 +3,7 @@ use pasteroll_app::{Captured, Event, Key, MouseEvent, MouseKind, Payload, Skip, 
 use pasteroll_core::Step;
 use zeroize::Zeroize;
 
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 pub const CLIPBOARD: u32 = 1;
 pub const OVERLAY: u32 = 2;
 pub const INPUT: u32 = 4;
@@ -14,6 +14,9 @@ pub const VIEWER: u32 = 64;
 pub const SETTINGS: u32 = 128;
 pub const MAX_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
+// Complete viewer dimensions are bounded independently of each D-Bus message.
+// At most one displayed and one pending tiled frame exist in the companion.
+pub const MAX_VIEWER_BYTES: usize = 4096 * 4096 * 4;
 pub const MAX_EVENTS: usize = 256;
 pub const TEXT: &str = "text/plain;charset=utf-8";
 pub const PNG: &str = "image/png";
@@ -84,6 +87,15 @@ impl Capabilities {
 }
 
 pub fn frame_len(width: u32, height: u32) -> Result<usize, Error> {
+    let len = viewer_frame_len(width, height)?;
+    if len > MAX_FRAME_BYTES {
+        Err(Error::Bounds)
+    } else {
+        Ok(len)
+    }
+}
+
+pub fn viewer_frame_len(width: u32, height: u32) -> Result<usize, Error> {
     if width == 0 || height == 0 || width > 4096 || height > 4096 {
         return Err(Error::Bounds);
     }
@@ -91,7 +103,7 @@ pub fn frame_len(width: u32, height: u32) -> Result<usize, Error> {
         .checked_mul(height as usize)
         .and_then(|n| n.checked_mul(4))
         .ok_or(Error::Bounds)?;
-    if len > MAX_FRAME_BYTES {
+    if len > MAX_VIEWER_BYTES {
         Err(Error::Bounds)
     } else {
         Ok(len)

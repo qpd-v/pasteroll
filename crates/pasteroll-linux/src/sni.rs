@@ -397,9 +397,15 @@ mod tests {
             assert_eq!(w, h);
             assert_eq!(d.len(), (*w as usize) * (*h as usize) * 4);
         }
-        // The approved source has an opaque background; alpha is the first ARGB byte.
-        let (_, _, d) = &p[4];
-        assert!(d.chunks_exact(4).all(|px| px[0] == 255));
+        // StatusNotifier uses straight ARGB, preserving the roll's transparent edges.
+        for (w, _, data) in &p {
+            let rgba = logo::rgba(*w as u32, false);
+            for (argb, source) in data.chunks_exact(4).zip(rgba.chunks_exact(4)) {
+                assert_eq!(argb, &[source[3], source[0], source[1], source[2]]);
+            }
+            assert!(data.chunks_exact(4).any(|px| px[0] == 0));
+            assert!(data.chunks_exact(4).any(|px| px[0] > 100));
+        }
         assert_ne!(pixmaps(true)[4].2, p[4].2);
     }
 

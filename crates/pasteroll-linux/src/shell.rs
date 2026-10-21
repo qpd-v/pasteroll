@@ -1214,13 +1214,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_approved_opaque_icon_fills_its_shape_mask() {
+    fn the_transparent_icon_shape_matches_the_approved_artwork() {
         for n in [16u32, 24, 48] {
             let (bgra, solid) = icon_pixels(n, false);
             assert_eq!(bgra.len(), (n * n * 4) as usize);
             assert_eq!(solid.len(), (n * n) as usize);
             assert!(bgra.chunks_exact(4).all(|p| p[3] == 255));
-            assert!(solid.iter().all(|s| *s), "the approved artwork has an opaque background");
+            let rgba = pasteroll_core::logo::rgba(n, false);
+            assert_eq!(solid, rgba.chunks_exact(4).map(|p| p[3] >= 100).collect::<Vec<_>>());
+            assert!(solid.iter().any(|s| *s), "the roll must remain visible");
+            assert!(solid.iter().any(|s| !*s), "the transparent background must not become a square");
         }
     }
 

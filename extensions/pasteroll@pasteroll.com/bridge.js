@@ -4,18 +4,20 @@ import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import Graphene from 'gi://Graphene';
 import Meta from 'gi://Meta';
+import Mtk from 'gi://Mtk';
 import Shell from 'gi://Shell';
 import St from 'gi://St';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import {createPanel} from './panel.js';
+import {stageScaleForMonitor, ViewerTransfer} from './geometry.js';
 import {InputHelper} from './input-helper.js';
 import {showConfirmation, showSettings, showWelcome} from './settings-ui.js';
 
 const NAME = 'com.pasteroll.Gnome';
 const PATH = '/com/pasteroll/Gnome';
 const IFACE = 'com.pasteroll.Gnome.Bridge2';
-const VERSION = 2;
+const VERSION = 3;
 
 const CLIPBOARD = 1;
 const OVERLAY = 2;
@@ -69,7 +71,8 @@ const XML = `<node><interface name="${IFACE}">
  <method name="Context"><arg type="t" direction="out"/><arg type="u" direction="out"/>
   <arg type="s" direction="out"/><arg type="s" direction="out"/><arg type="b" direction="out"/>
   <arg type="i" direction="out"/><arg type="i" direction="out"/><arg type="u" direction="out"/>
-  <arg type="(iiuu)" direction="out"/><arg type="(iiuu)" direction="out"/><arg type="d" direction="out"/></method>
+  <arg type="(iiuu)" direction="out"/><arg type="(iiuu)" direction="out"/>
+  <arg type="d" direction="out"/><arg type="d" direction="out"/></method>
  <method name="Current"><arg type="t" direction="in"/><arg type="u" direction="in"/><arg type="b" direction="out"/></method>
  <method name="Privileged"><arg type="t" direction="in"/><arg type="u" direction="in"/><arg type="b" direction="out"/></method>
  <method name="InputActive"><arg type="b" direction="in"/><arg type="t" direction="out"/></method>
@@ -78,6 +81,11 @@ const XML = `<node><interface name="${IFACE}">
   <arg type="i" direction="in"/><arg type="u" direction="in"/><arg type="u" direction="in"/><arg type="b" direction="in"/></method>
  <method name="ViewerPresent"><arg type="t" direction="in"/><arg type="u" direction="in"/>
   <arg type="u" direction="in"/><arg type="ay" direction="in"/></method>
+ <method name="ViewerBegin"><arg type="t" direction="in"/><arg type="u" direction="in"/>
+  <arg type="u" direction="in"/><arg type="t" direction="out"/></method>
+ <method name="ViewerStrip"><arg type="t" direction="in"/><arg type="t" direction="in"/>
+  <arg type="u" direction="in"/><arg type="u" direction="in"/><arg type="ay" direction="in"/></method>
+ <method name="ViewerCommit"><arg type="t" direction="in"/><arg type="t" direction="in"/></method>
  <method name="ViewerHide"><arg type="t" direction="in"/></method>
  <method name="PollClick"><arg type="t" direction="in"/><arg type="b" direction="in"/>
   <arg type="u" direction="out"/><arg type="t" direction="out"/><arg type="u" direction="out"/>
@@ -100,7 +108,7 @@ const XML = `<node><interface name="${IFACE}">
   <arg type="u" direction="in"/></method>
 </interface></node>`;
 
-// Additive protocol: Bridge2 keyboard semantics remain unchanged.
+// Mouse activation shares the versioned bridge geometry contract.
 const MOUSE_IFACE = 'com.pasteroll.Gnome.Mouse1';
 const MOUSE_XML = `<node><interface name="${MOUSE_IFACE}">
  <method name="Arm"><arg type="b" direction="in"/><arg type="u" direction="out"/></method>
@@ -181,7 +189,8 @@ export class Bridge {
         this._image = null;
         this._width = 0;
         this._height = 0;
-        this._scale = 1;
+        this._scale = 1; // Device pixels per Shell stage unit.
+        this._uiScale = 1; // Device pixels per UI DIP.
         this._monitor = null;
         this._work = null;
         this._overlayOnStage = false;
@@ -189,6 +198,8 @@ export class Bridge {
 
         this._viewer = null;
         this._viewerImage = null;
+        this._viewerTiles = null;
+        this._pendingViewer = null;
         this._viewerWidth = 0;
         this._viewerHeight = 0;
         this._viewerContentWidth = 0;
@@ -838,6 +849,16 @@ export class Bridge {
             ? monitor.geometry_scale : 1;
     }
 
+    _stageScale(monitor) {
+        const views = global.stage.peek_stage_views().map(view => {
+            const rect = new Mtk.Rectangle();
+            view.get_layout(rect);
+            return {x: rect.x, y: rect.y, width: rect.width, height: rect.height,
+                scale: view.get_scale()};
+        });
+        return stageScaleForMonitor(monitor, views);
+    }
+
     _workFor(monitor) {
         try {
             const work = Main.layoutManager.getWorkAreaForMonitor(monitor.index);
@@ -862,6 +883,7 @@ export class Bridge {
             monitor: [monitor.x, monitor.y, monitor.width, monitor.height],
             work: [work.x, work.y, work.width, work.height],
             scale,
+            stageScale: this._stageScale(monitor),
         };
     }
 
@@ -871,10 +893,10 @@ export class Bridge {
         try {
             const context = this._context();
             const target = context.target;
-            invocation.return_value(new GLib.Variant('(tussbiiu(iiuu)(iiuu)d)', [
+            invocation.return_value(new GLib.Variant('(tussbiiu(iiuu)(iiuu)dd)', [
                 target.id, target.pid, target.exe, target.class, target.desktop,
                 context.pointer[0], context.pointer[1], context.modifiers,
-                context.monitor, context.work, context.scale,
+                context.monitor, context.work, context.scale, context.stageScale,
             ]));
         } catch (error) {
             console.error(`Pasteroll context unavailable: ${error.message}`);
@@ -1028,13 +1050,17 @@ export class Bridge {
     }
 
     _setViewerClip() {
+        if (this._viewerTiles) {
+            this._layoutViewerTiles(this._viewerTiles);
+            return;
+        }
         if (!this._viewerImage)
             return;
         try {
             const width = this._viewerContentWidth || this._viewerWidth;
             const height = this._viewerContentHeight || this._viewerHeight;
             this._viewerImage.rounded_clip_radius = this._viewerRounded
-                ? Math.round(14 * this._scale) : 0;
+                ? Math.round(14 * this._uiScale) : 0;
             const rect = new Graphene.Rect();
             rect.origin.x = 0;
             rect.origin.y = 0;
@@ -1079,7 +1105,7 @@ export class Bridge {
     ViewerPresentAsync([generation, width, height, pixels], invocation) {
         if (!this._authorize(invocation) || !this._secure(invocation))
             return;
-        if (!this._currentGeneration(generation) || !this._viewer || !this._viewerImage) {
+        if (!this._currentGeneration(generation) || !this._viewer) {
             fail(invocation, 'Stale');
             return;
         }
@@ -1089,7 +1115,13 @@ export class Bridge {
             return;
         }
         try {
-            this._viewerImage.set_data(pixels, Cogl.PixelFormat.BGRA_8888, width, height, width * 4);
+            this._discardPendingViewer();
+            const image = this._viewerImage ?? new Clutter.Image();
+            image.set_data(pixels, Cogl.PixelFormat.BGRA_8888, width, height, width * 4);
+            this._viewerTiles?.actor.destroy();
+            this._viewerTiles = null;
+            this._viewerImage = image;
+            this._viewer.set_content(image);
             this._viewerContentWidth = width;
             this._viewerContentHeight = height;
             this._setViewerClip();
@@ -1098,6 +1130,96 @@ export class Bridge {
         } catch (_) {
             fail(invocation, 'Protocol');
         }
+    }
+
+    _discardPendingViewer() {
+        this._pendingViewer?.actor.destroy();
+        this._pendingViewer = null;
+    }
+
+    _layoutViewerTiles(tiles) {
+        const width = this._viewerWidth / this._scale;
+        const height = this._viewerHeight / this._scale;
+        tiles.actor.set_size(width, height);
+        for (const tile of tiles.tiles) {
+            tile.actor.set_position(0, tile.y * height / tiles.transfer.height);
+            tile.actor.set_size(width, tile.height * height / tiles.transfer.height);
+        }
+    }
+
+    ViewerBeginAsync([generation, width, height], invocation) {
+        if (!this._authorize(invocation) || !this._secure(invocation))
+            return;
+        if (!this._currentGeneration(generation) || !this._viewer) {
+            fail(invocation, 'Stale');
+            return;
+        }
+        let transfer;
+        try {
+            transfer = new ViewerTransfer(width, height, MAX_FRAME);
+        } catch (_) {
+            fail(invocation, 'Bounds');
+            return;
+        }
+        this._discardPendingViewer();
+        const frame = this._nextViewerFrame = (this._nextViewerFrame ?? 0) + 1;
+        const actor = new St.Widget({visible: false, reactive: false});
+        this._viewer.add_child(actor);
+        this._pendingViewer = {frame, actor, transfer, tiles: []};
+        this._heartbeat = this._nowMs();
+        invocation.return_value(new GLib.Variant('(t)', [frame]));
+    }
+
+    ViewerStripAsync([generation, frame, y, height, pixels], invocation) {
+        if (!this._authorize(invocation) || !this._secure(invocation))
+            return;
+        const pending = this._pendingViewer;
+        if (!this._currentGeneration(generation) || !pending || pending.frame !== frame) {
+            fail(invocation, 'Stale');
+            return;
+        }
+        try {
+            pending.transfer.accept(y, height, pixels.length);
+            const image = new Clutter.Image();
+            image.set_data(pixels, Cogl.PixelFormat.BGRA_8888,
+                pending.transfer.width, height, pending.transfer.width * 4);
+            const actor = new St.Widget({reactive: false});
+            actor.set_content(image);
+            pending.actor.add_child(actor);
+            pending.tiles.push({actor, y, height});
+            this._heartbeat = this._nowMs();
+            invocation.return_value(null);
+        } catch (_) {
+            this._discardPendingViewer();
+            fail(invocation, 'Bounds');
+        }
+    }
+
+    ViewerCommitAsync([generation, frame], invocation) {
+        if (!this._authorize(invocation) || !this._secure(invocation))
+            return;
+        const pending = this._pendingViewer;
+        if (!this._currentGeneration(generation) || !this._viewer ||
+            !pending || pending.frame !== frame) {
+            fail(invocation, 'Stale');
+            return;
+        }
+        if (!pending.transfer.complete) {
+            this._discardPendingViewer();
+            fail(invocation, 'Bounds');
+            return;
+        }
+        this._layoutViewerTiles(pending);
+        this._viewer.set_content(null);
+        this._viewerImage = null;
+        this._viewerTiles?.actor.destroy();
+        this._viewerTiles = pending;
+        this._pendingViewer = null;
+        this._viewerContentWidth = pending.transfer.width;
+        this._viewerContentHeight = pending.transfer.height;
+        pending.actor.show();
+        this._heartbeat = this._nowMs();
+        invocation.return_value(null);
     }
 
     ViewerHideAsync([generation], invocation) {
@@ -1152,7 +1274,8 @@ export class Bridge {
                 return;
             }
             const work = this._workFor(monitor);
-            const scale = this._monitorScale(monitor);
+            const uiScale = this._monitorScale(monitor);
+            const scale = this._stageScale(monitor);
             const logicalWidth = width / scale;
             const logicalHeight = height / scale;
             if (logicalWidth > monitor.width || logicalHeight > monitor.height) {
@@ -1173,6 +1296,7 @@ export class Bridge {
             this._width = width;
             this._height = height;
             this._scale = scale;
+            this._uiScale = uiScale;
             this._monitor = monitor;
             this._work = work;
             this._actor.set_size(Math.max(1, logicalWidth), Math.max(1, logicalHeight));
@@ -1194,7 +1318,7 @@ export class Bridge {
             this._syncGrab();
             this._heartbeat = this._nowMs();
             invocation.return_value(new GLib.Variant('(tiid)',
-                [this._generation, ox, oy, scale]));
+                [this._generation, ox, oy, uiScale]));
         } catch (_) {
             fail(invocation, 'Protocol');
         }
@@ -1284,6 +1408,8 @@ export class Bridge {
     }
 
     _destroyViewer() {
+        this._discardPendingViewer();
+        this._viewerTiles = null;
         if (this._grabActor === this._viewer)
             this._releaseGrab();
         this._removeViewerFromStage();

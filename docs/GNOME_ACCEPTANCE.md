@@ -1,8 +1,9 @@
 # GNOME 46 candidate acceptance
 
-Use a spare Linux desktop with synthetic clipboard data. The experimental beta.3
-prerelease has automated headless and synthetic input coverage; physical testing
-is still required. Keep a terminal available to stop the optional input helper.
+Use a spare Linux desktop with synthetic clipboard data. The experimental beta.4
+prerelease has automated headless and synthetic input coverage. Mixed-scale
+viewer/editor checks passed on one Pop!_OS setup; further manual acceptance is
+deferred for beta.4 and the unchecked items below remain outstanding. Keep a terminal available to stop the optional input helper.
 
 ## Identify the desktop
 
@@ -16,7 +17,7 @@ than editing extension metadata to bypass the compatibility check.
 Verify the package against SHA256SUMS. On Debian/Ubuntu:
 
 ```sh
-sudo apt install ./pasteroll_0.1.0-beta.3_amd64-gnome-development.deb
+sudo apt install ./pasteroll_0.1.0-beta.4_amd64-gnome-development.deb
 systemctl is-enabled pasteroll-input.service
 ```
 
@@ -67,5 +68,5 @@ Confirm ordinary mouse behavior immediately after stopping the helper. Archive
 installs use their included uninstall scripts. Do not delete existing user data.
 
 Record PASS, FAIL or NOT TESTED for each item, candidate hashes and reproducible
-failure steps. Beta.3 was approved as experimental without completing physical acceptance.
+failure steps. Beta.4 was approved as experimental without completing physical acceptance.
 Complete these checks before broadening support claims.

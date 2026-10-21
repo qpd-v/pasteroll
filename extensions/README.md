@@ -47,15 +47,45 @@ Keyboard activation remains an explicit alternative:
 pasteroll run --backend gnome --wayland-keyboard
 ```
 
-Frame dimensions and BGRA bytes are device pixels. Global bridge coordinates,
-including Context pointer and monitor/work rectangles, are GNOME logical
-coordinates. `Show` returns a logical origin and scale; the Rust adapter scales
-exactly once at its boundary. Viewer positions are logical and viewer frame
-dimensions are device pixels.
+Bridge wire version **3** must be installed with its matching beta.4 app and
+companion; older clients/companions are rejected at the handshake. The D-Bus
+interface name remains `com.pasteroll.Gnome.Bridge2` for discovery, but its version
+check gates the revised Context contract before any data access.
 
-The tested target is GNOME 46 with a single scale-1 virtual monitor. Mixed-DPI,
-physical GPU, newer GNOME releases and non-GNOME Wayland desktops are not
-advertised as tested. Mouse activation capability is advertised only after the
+Frame dimensions and BGRA bytes are device pixels. Global Context pointer,
+monitor/work rectangles and Show/ViewerShow positions are **Shell stage units**,
+which are physical pixels in Mutter physical layout and logical units in logical
+layout. Context reports both UI scale (device pixels per DIP) and stage scale
+(device pixels per stage unit, read from the matching Clutter stage view).
+Show returns the actual UI scale. The adapter converts positions with stage scale
+and renders/hit-tests with UI scale; it must not multiply physical monitor geometry
+by the UI scale again. Monitor changes during activation are rejected if the
+returned UI scale differs from the requested context.
+
+Carousel and individual viewer messages remain capped at 16 MiB and dimensions
+at 4096. Viewers larger than one message use ViewerBegin/ViewerStrip/ViewerCommit:
+consecutive full-width BGRA strips, each at most 16 MiB, with no resampling. A
+complete viewer is at most 4096x4096 (64 MiB of pixel data). The companion retains
+at most one displayed frame plus one pending frame, bounding pixel backing to
+128 MiB, excluding driver/texture/internal copies. Pending strips stay hidden
+until a complete commit; malformed strips discard the pending frame. Every call
+checks owner authorization and the unlocked session generation. New begin, close,
+lock/revocation and disconnect cleanup discard abandoned transfers. Small frames
+retain the single-message path. Rendering and GObject/driver copies can consume
+additional memory; verify responsiveness and resource use on the physical setup.
+
+Synthetic checks: `node scripts/test-gnome-geometry.mjs` and native Rust Wayland
+unit tests. These cover coordinate conversion, 4K lossless strip coverage,
+malformed/stale/incomplete transfers and replacement/cleanup. They do not establish
+real GNOME compositor or hardware acceptance. To collect content-free geometry
+logs during a future approved candidate run, set `PASTEROLL_GEOMETRY_DIAGNOSTICS=1`.
+
+Headless GNOME 46 checks include a scale-1 virtual monitor and a single 4K virtual
+monitor at 200% in both physical and logical layout modes. Synthetic screenshots
+verify rendered pixels across the strip boundary. This does not establish
+physical mixed-DPI, NVIDIA, hotplug or suspend acceptance. Newer GNOME releases
+and non-GNOME Wayland desktops are not advertised as tested.
+Mouse activation capability is advertised only after the
 authenticated host helper has acquired supported devices.
 
 ### Executable identity and data protection
@@ -155,3 +185,10 @@ The production extension does not require X11 or XWayland. Keyboard mode needs
 no privileged helper; native mouse mode requires the optional host service.
 The test injector in `scripts/wayland-spike` is
 separate from this companion and must only be used inside its isolated launcher.
+
+## Beta.4 acceptance scope
+
+Mixed-scale carousel/viewer/editor checks passed by user report on one Pop!_OS
+GNOME 46 configuration (4K/200% plus 1080p/100%, app size 100%). Final physical
+helper/hotplug/login/lock/suspend acceptance is deferred. Linux panel/About parity
+and OCR accuracy improvements are deferred; the panel retains its symbolic icon.

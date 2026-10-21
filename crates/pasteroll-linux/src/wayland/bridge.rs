@@ -29,7 +29,7 @@ pub struct Snapshot {
     pub excluded: bool,
 }
 
-/// The foreground window and pointer state in GNOME logical coordinates.
+/// Foreground window and geometry in Shell stage units, with independent UI/device scales.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Context {
     pub id: u64,
@@ -42,6 +42,7 @@ pub struct Context {
     pub monitor: Rect,
     pub work: Rect,
     pub scale: f64,
+    pub stage_scale: f64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -134,35 +135,24 @@ fn string_list_ok(values: &[String]) -> bool {
     values.len() <= 128 && values.iter().all(|s| short_text(s, 256))
 }
 
-fn fit_frame(frame: &Frame, max_pixels: usize) -> Option<Frame> {
-    let pixels = (frame.width as usize).checked_mul(frame.height as usize)?;
-    if pixels == 0 || frame.bgra.len() != pixels.saturating_mul(4) {
-        return None;
+// Split only on complete rows: every source pixel is delivered exactly once,
+// without lowering UI/text resolution. Allocation is bounded before any IPC.
+fn viewer_strips(frame: &Frame) -> Result<Vec<(u32, u32, std::ops::Range<usize>)>, Error> {
+    let len = protocol::viewer_frame_len(frame.width, frame.height)?;
+    if frame.bgra.len() != len {
+        return Err(Error::Bounds);
     }
-    if pixels <= max_pixels && frame.width <= 4096 && frame.height <= 4096 {
-        return None;
+    let stride = frame.width as usize * 4;
+    let rows = (protocol::MAX_FRAME_BYTES / stride) as u32;
+    let mut strips = Vec::new();
+    let mut y = 0;
+    while y < frame.height {
+        let height = rows.min(frame.height - y);
+        let start = y as usize * stride;
+        strips.push((y, height, start..start + height as usize * stride));
+        y += height;
     }
-    let ratio = (max_pixels as f64 / pixels as f64).sqrt().min(1.0);
-    let width = ((frame.width as f64 * ratio).floor() as u32).clamp(1, 4096);
-    let height = ((frame.height as f64 * ratio).floor() as u32).clamp(1, 4096);
-    let mut bgra = Vec::with_capacity(
-        (width as usize)
-            .checked_mul(height as usize)?
-            .checked_mul(4)?,
-    );
-    for y in 0..height {
-        let sy = (((y as u64 * 2 + 1) * frame.height as u64) / (height as u64 * 2)) as u32;
-        for x in 0..width {
-            let sx = (((x as u64 * 2 + 1) * frame.width as u64) / (width as u64 * 2)) as u32;
-            let at = ((sy as usize * frame.width as usize) + sx as usize) * 4;
-            bgra.extend_from_slice(&frame.bgra[at..at + 4]);
-        }
-    }
-    Some(Frame {
-        width,
-        height,
-        bgra,
-    })
+    Ok(strips)
 }
 
 impl Client {
@@ -282,7 +272,7 @@ impl Client {
     }
 
     pub fn context(&self) -> Result<Context, Error> {
-        let (id, pid, exe, class, desktop, x, y, modifiers, monitor, work, scale): (
+        let (id, pid, exe, class, desktop, x, y, modifiers, monitor, work, scale, stage_scale): (
             u64,
             u32,
             String,
@@ -294,12 +284,14 @@ impl Client {
             Rect,
             Rect,
             f64,
+            f64,
         ) = self.proxy()?.call("Context", &()).map_err(transport)?;
         if !optional_text(&exe, 256)
             || !optional_text(&class, 256)
             || !valid_rect(monitor)
             || !valid_rect(work)
             || !valid_scale(scale)
+            || !valid_scale(stage_scale)
         {
             return Err(Error::Protocol);
         }
@@ -314,6 +306,7 @@ impl Client {
             monitor,
             work,
             scale,
+            stage_scale,
         })
     }
 
@@ -368,29 +361,39 @@ impl Client {
             .map_err(transport)
     }
 
-    /// Large device-pixel frames are sampled down to the negotiated transport bound. The
-    /// companion stretches the result to the viewer actor.
+    /// Small frames use one message. Larger viewers use bounded, lossless strips,
+    /// made visible atomically only after the whole frame has been accepted.
     pub fn viewer_present(&self, generation: u64, frame: &Frame) -> Result<(), Error> {
         if generation == 0 {
             return Err(Error::Stale);
         }
-        let fitted = fit_frame(frame, protocol::MAX_FRAME_BYTES / 4);
-        let sent = fitted.as_ref().unwrap_or(frame);
-        protocol::frame_len(sent.width, sent.height)?;
-        if sent.bgra.len() != protocol::frame_len(sent.width, sent.height)? {
-            return Err(Error::Bounds);
+        let strips = viewer_strips(frame)?;
+        let proxy = self.proxy()?;
+        if strips.len() == 1 {
+            return proxy
+                .call(
+                    "ViewerPresent",
+                    &(generation, frame.width, frame.height, frame.bgra.as_slice()),
+                )
+                .map_err(transport);
         }
-        let result = self
-            .proxy()?
-            .call(
-                "ViewerPresent",
-                &(generation, sent.width, sent.height, sent.bgra.as_slice()),
-            )
-            .map_err(transport);
-        if let Some(mut fitted) = fitted {
-            fitted.bgra.zeroize();
+        let token: u64 = proxy
+            .call("ViewerBegin", &(generation, frame.width, frame.height))
+            .map_err(transport)?;
+        if token == 0 {
+            return Err(Error::Protocol);
         }
-        result
+        for (y, height, bytes) in strips {
+            proxy
+                .call::<_, _, ()>(
+                    "ViewerStrip",
+                    &(generation, token, y, height, &frame.bgra[bytes]),
+                )
+                .map_err(transport)?;
+        }
+        proxy
+            .call("ViewerCommit", &(generation, token))
+            .map_err(transport)
     }
 
     pub fn viewer_hide(&self, generation: u64) -> Result<(), Error> {
@@ -720,40 +723,158 @@ pub fn check() -> Result<(), Error> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn large_frames_are_sampled_to_a_transport_safe_size() {
-        let frame = Frame {
-            width: 8,
-            height: 8,
-            bgra: vec![7; 8 * 8 * 4],
-        };
-        assert!(fit_frame(&frame, 64).is_none());
-        let fitted = fit_frame(&frame, 16).expect("frame must shrink");
-        assert_eq!((fitted.width, fitted.height), (4, 4));
-        assert_eq!(fitted.bgra.len(), 4 * 4 * 4);
-        assert!(fitted.bgra.iter().all(|b| *b == 7));
+    #[derive(Default)]
+    struct TransferEvidence {
+        width: u32,
+        height: u32,
+        next_y: u32,
+        bytes: usize,
+        strips: usize,
+        valid: bool,
+        committed: bool,
+    }
+
+    struct SyntheticViewer(std::sync::Arc<std::sync::Mutex<TransferEvidence>>);
+
+    #[zbus::interface(name = "com.pasteroll.Gnome.Bridge2")]
+    impl SyntheticViewer {
+        fn viewer_begin(&self, generation: u64, width: u32, height: u32) -> u64 {
+            let mut state = self.0.lock().unwrap();
+            *state = TransferEvidence {
+                width,
+                height,
+                valid: generation == 7,
+                ..Default::default()
+            };
+            19
+        }
+
+        fn viewer_strip(&self, generation: u64, frame: u64, y: u32, height: u32, bytes: Vec<u8>) {
+            let mut state = self.0.lock().unwrap();
+            let correct = generation == 7
+                && frame == 19
+                && y == state.next_y
+                && bytes.len() == (state.width * height * 4) as usize
+                && bytes.len() <= protocol::MAX_FRAME_BYTES
+                && bytes
+                    .iter()
+                    .enumerate()
+                    .all(|(i, b)| *b == ((state.bytes + i) % 251) as u8);
+            state.valid &= correct;
+            state.next_y += height;
+            state.bytes += bytes.len();
+            state.strips += 1;
+        }
+
+        fn viewer_commit(&self, generation: u64, frame: u64) {
+            let mut state = self.0.lock().unwrap();
+            state.committed = generation == 7 && frame == 19 && state.next_y == state.height;
+        }
     }
 
     #[test]
-    fn malformed_frames_are_refused() {
-        assert!(fit_frame(
-            &Frame {
+    fn four_k_viewer_crosses_a_private_bus_without_resampling() {
+        use std::io::{BufRead, BufReader};
+        use std::process::{Command, Stdio};
+        struct PrivateBus(std::process::Child);
+        impl Drop for PrivateBus {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        // Explicit address on both connections; never use the desktop/session bus.
+        let mut bus = PrivateBus(
+            Command::new("dbus-daemon")
+                .args(["--session", "--nofork", "--nopidfile", "--print-address=1"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let mut address = String::new();
+        BufReader::new(bus.0.stdout.take().unwrap())
+            .read_line(&mut address)
+            .unwrap();
+        let address = address.trim();
+        let evidence = std::sync::Arc::new(std::sync::Mutex::new(TransferEvidence::default()));
+        let server = Builder::address(address)
+            .unwrap()
+            .serve_at(PATH, SyntheticViewer(evidence.clone()))
+            .unwrap()
+            .build()
+            .unwrap();
+        let client = Client {
+            connection: Builder::address(address).unwrap().build().unwrap(),
+            owner: server.unique_name().unwrap().to_string(),
+            capabilities: Capabilities(protocol::VIEWER),
+            epoch: 1,
+        };
+        let len = protocol::viewer_frame_len(3840, 2160).unwrap();
+        let frame = Frame {
+            width: 3840,
+            height: 2160,
+            bgra: (0..len).map(|i| (i % 251) as u8).collect(),
+        };
+        client.viewer_present(7, &frame).unwrap();
+        let state = evidence.lock().unwrap();
+        assert!(state.valid && state.committed);
+        assert_eq!((state.width, state.height, state.strips), (3840, 2160, 2));
+        assert_eq!(state.bytes, frame.bgra.len());
+    }
+
+    #[test]
+    fn four_k_viewers_keep_every_pixel_in_bounded_strips() {
+        for (width, height) in [(2880, 1620), (3840, 2160), (4096, 4096), (520, 440)] {
+            let len = protocol::viewer_frame_len(width, height).unwrap();
+            let frame = Frame {
+                width,
+                height,
+                bgra: (0..len).map(|i| (i % 251) as u8).collect(),
+            };
+            let strips = viewer_strips(&frame).unwrap();
+            let mut next_y = 0;
+            let mut next_byte = 0;
+            for (y, height, range) in strips {
+                assert_eq!(y, next_y);
+                assert_eq!(range.start, next_byte);
+                assert_eq!(range.len(), protocol::frame_len(width, height).unwrap());
+                assert!(range.len() <= protocol::MAX_FRAME_BYTES);
+                assert_eq!(frame.bgra[range.clone()].len(), range.len());
+                next_y += height;
+                next_byte = range.end;
+            }
+            assert_eq!(next_y, frame.height);
+            assert_eq!(next_byte, frame.bgra.len());
+        }
+    }
+
+    #[test]
+    fn malformed_or_oversized_viewers_are_refused_before_ipc() {
+        for frame in [
+            Frame {
                 width: 0,
+                height: 8,
+                bgra: vec![],
+            },
+            Frame {
+                width: 8,
+                height: 8,
+                bgra: vec![0; 1],
+            },
+            Frame {
+                width: 4097,
                 height: 1,
-                bgra: Vec::new()
+                bgra: vec![0; 4097 * 4],
             },
-            16
-        )
-        .is_none());
-        assert!(fit_frame(
-            &Frame {
-                width: 2,
-                height: 2,
-                bgra: vec![0; 15]
+            Frame {
+                width: 1,
+                height: u32::MAX,
+                bgra: vec![],
             },
-            16
-        )
-        .is_none());
+        ] {
+            assert!(viewer_strips(&frame).is_err());
+        }
     }
 
     #[test]

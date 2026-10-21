@@ -31,6 +31,7 @@ pub struct GnomePlatform {
     client: Client,
     db: PathBuf,
     size_percent: u32,
+    stage_scale: f32,
     keyboard_opt_in: bool,
     mouse_ticket: Option<u64>,
     generation: u64,
@@ -67,6 +68,33 @@ fn device_rect((x, y, w, h): (i32, i32, u32, u32), scale: f32) -> (i32, i32, u32
         (f64::from(w) * f64::from(scale)).round() as u32,
         (f64::from(h) * f64::from(scale)).round() as u32,
     )
+}
+
+// UI scale determines text/card density; stage scale only converts Shell positions.
+// Keeping these distinct supports both Mutter physical and logical layout modes.
+fn overlay_geometry(context: &Context, size_percent: u32) -> OverlayInfo {
+    let scale = context.scale as f32;
+    let stage_scale = context.stage_scale as f32;
+    let monitor = device_rect(context.monitor, stage_scale);
+    let factor = pasteroll_core::settings::size_factor(size_percent);
+    let max_w = monitor.2.max(200).min(4096);
+    let max_h = monitor.3.max(150).min(4096);
+    let mut width = ((WIDTH * factor * scale).round() as u32).clamp(200.min(max_w), max_w);
+    let mut height = ((HEIGHT * factor * scale).round() as u32).clamp(150.min(max_h), max_h);
+    let pixels = u64::from(width) * u64::from(height);
+    let max_pixels = (MAX_FRAME_BYTES / 4) as u64;
+    if pixels > max_pixels {
+        let fit = (max_pixels as f64 / pixels as f64).sqrt();
+        width = ((f64::from(width) * fit).floor() as u32).clamp(1, 4096);
+        height = ((f64::from(height) * fit).floor() as u32).clamp(1, 4096);
+    }
+    OverlayInfo {
+        scale,
+        size_px: (width, height),
+        origin_px: (0, 0),
+        monitor_px: monitor,
+        work_px: device_rect(context.work, stage_scale),
+    }
 }
 
 fn target_from_context(context: &Context) -> Option<Target> {
@@ -129,6 +157,7 @@ impl GnomePlatform {
             client,
             db,
             size_percent,
+            stage_scale: 1.0,
             keyboard_opt_in,
             mouse_ticket: None,
             generation: 0,
@@ -290,7 +319,7 @@ impl Platform for GnomePlatform {
             .context()
             .or_else(|_| self.last_context.clone().ok_or(Error::Disconnected))
             .map(|c| {
-                let scale = c.scale as f32;
+                let scale = c.stage_scale as f32;
                 (device(c.pointer.0, scale), device(c.pointer.1, scale))
             })
             .unwrap_or((0, 0))
@@ -305,33 +334,21 @@ impl Platform for GnomePlatform {
             }
         };
         self.remember_context(context.clone());
-        let scale = context.scale as f32;
-        let monitor = device_rect(context.monitor, scale);
-        let _work = device_rect(context.work, scale);
-        let factor = pasteroll_core::settings::size_factor(self.size_percent);
-        let max_w = monitor.2.max(200).min(4096);
-        let max_h = monitor.3.max(150).min(4096);
-        let mut width = ((WIDTH * factor * scale).round() as u32).clamp(200.min(max_w), max_w);
-        let mut height = ((HEIGHT * factor * scale).round() as u32).clamp(150.min(max_h), max_h);
-        let pixels = u64::from(width) * u64::from(height);
-        let max_pixels = (MAX_FRAME_BYTES / 4) as u64;
-        if pixels > max_pixels {
-            let fit = (max_pixels as f64 / pixels as f64).sqrt();
-            width = ((f64::from(width) * fit).floor() as u32).clamp(1, 4096);
-            height = ((f64::from(height) * fit).floor() as u32).clamp(1, 4096);
-        }
+        let geometry = overlay_geometry(&context, self.size_percent);
+        let stage_scale = context.stage_scale as f32;
+        let (width, height) = geometry.size_px;
         let shown = if self.keyboard_opt_in {
             self.client.show(
-                logical(at.0, scale),
-                logical(at.1, scale),
+                logical(at.0, stage_scale),
+                logical(at.1, stage_scale),
                 width,
                 height,
                 self.keyboard_opt_in,
             )
         } else {
             self.client.show_mouse(
-                logical(at.0, scale),
-                logical(at.1, scale),
+                logical(at.0, stage_scale),
+                logical(at.1, stage_scale),
                 width,
                 height,
                 self.generation,
@@ -345,11 +362,18 @@ impl Platform for GnomePlatform {
                 return self.overlay;
             }
         };
+        if actual_scale != context.scale {
+            let _ = self.client.hide(generation);
+            self.overlay_visible = false;
+            self.log("the monitor scale changed while opening the GNOME carousel; activate again");
+            return self.overlay;
+        }
         if self.active && generation != self.generation {
             self.log("the companion changed the input generation while a session was active");
             self.overlay_visible = false;
             return self.overlay;
         }
+        self.stage_scale = stage_scale;
         self.overlay_generation = generation;
         self.overlay_visible = true;
         if !self.active {
@@ -361,10 +385,17 @@ impl Platform for GnomePlatform {
         self.overlay = OverlayInfo {
             scale: actual_scale,
             size_px: (width, height),
-            origin_px: (device(x, actual_scale), device(y, actual_scale)),
-            monitor_px: device_rect(context.monitor, actual_scale),
-            work_px: device_rect(context.work, actual_scale),
+            origin_px: (device(x, stage_scale), device(y, stage_scale)),
+            monitor_px: device_rect(context.monitor, stage_scale),
+            work_px: device_rect(context.work, stage_scale),
         };
+        if std::env::var_os("PASTEROLL_GEOMETRY_DIAGNOSTICS").as_deref()
+            == Some(std::ffi::OsStr::new("1"))
+        {
+            self.log(&format!("GNOME geometry: ui_scale={} stage_scale={} carousel_px={:?} monitor_px={:?} work_px={:?}",
+                self.overlay.scale, self.stage_scale, self.overlay.size_px,
+                self.overlay.monitor_px, self.overlay.work_px));
+        }
         self.overlay
     }
 
@@ -397,7 +428,7 @@ impl Platform for GnomePlatform {
         if self.generation == 0 {
             return;
         }
-        let scale = self.overlay.scale.max(0.1);
+        let scale = self.stage_scale;
         match self.client.viewer_show(
             self.generation,
             logical(rect.0, scale),
@@ -407,7 +438,9 @@ impl Platform for GnomePlatform {
             rounded,
         ) {
             Ok(()) => self.viewer_visible = true,
-            Err(e) => self.log(&format!("could not show the GNOME viewer: {e}")),
+            Err(e) => self.log(&format!(
+                "could not show the GNOME viewer: {e} (device_size={}x{}, ui_scale={}, stage_scale={})",
+                rect.2, rect.3, self.overlay.scale, self.stage_scale)),
         }
     }
 
@@ -802,6 +835,56 @@ mod tests {
         assert_eq!(device_rect((10, 20, 300, 400), 1.5), (15, 30, 450, 600));
     }
 
+    fn monitor_context(scale: f64, stage_scale: f64, monitor: (i32, i32, u32, u32)) -> Context {
+        Context {
+            id: 0,
+            pid: 0,
+            exe: String::new(),
+            class: String::new(),
+            desktop: true,
+            pointer: (monitor.0 + 20, monitor.1 + 20),
+            modifiers: 0,
+            monitor,
+            work: monitor,
+            scale,
+            stage_scale,
+        }
+    }
+
+    #[test]
+    fn mixed_dpi_physical_layout_does_not_double_monitor_dimensions() {
+        let external = monitor_context(1.0, 1.0, (0, 0, 1920, 1080));
+        let builtin = monitor_context(2.0, 1.0, (1920, 0, 3840, 2160));
+        for percent in [50, 100, 150, 200] {
+            let low = overlay_geometry(&external, percent);
+            let high = overlay_geometry(&builtin, percent);
+            assert_eq!(high.size_px, (low.size_px.0 * 2, low.size_px.1 * 2));
+            assert_eq!(high.monitor_px, (1920, 0, 3840, 2160));
+            // The home viewer is 75%: 2880x1620, not an invalid 5760x3240.
+            assert_eq!(
+                (high.monitor_px.2 * 3 / 4, high.monitor_px.3 * 3 / 4),
+                (2880, 1620)
+            );
+        }
+    }
+
+    #[test]
+    fn logical_layout_has_the_same_device_size_and_reversible_positions() {
+        let physical = monitor_context(2.0, 1.0, (-3840, 0, 3840, 2160));
+        let logical_layout = monitor_context(2.0, 2.0, (-1920, 0, 1920, 1080));
+        assert_eq!(
+            overlay_geometry(&physical, 100),
+            overlay_geometry(&logical_layout, 100)
+        );
+        for context in [physical, logical_layout] {
+            let stage_scale = context.stage_scale as f32;
+            assert_eq!(
+                logical(device(context.pointer.0, stage_scale), stage_scale),
+                context.pointer.0
+            );
+        }
+    }
+
     #[test]
     fn only_the_three_fixed_paste_chords_are_mapped() {
         assert_eq!(chord(PasteKey::CtrlV), 0);
@@ -828,6 +911,7 @@ mod tests {
             monitor: (0, 0, 1920, 1080),
             work: (0, 0, 1920, 1040),
             scale: 1.0,
+            stage_scale: 1.0,
         };
         assert!(target_from_context(&context).is_none());
     }

@@ -26,6 +26,9 @@ RELEASE = '--release' in sys.argv or os.environ.get('PASTEROLL_RELEASE_TEST') ==
 PHASE3 = MOUSE or '--phase3' in sys.argv or os.environ.get('PASTEROLL_PHASE3') == '1'
 OUT = ROOT / 'target-dev' / ('wayland-mouse-release' if MOUSE and RELEASE else ('wayland-mouse' if MOUSE else ('wayland-phase3' if PHASE3 else ('wayland-phase2' if PHASE2 else 'wayland-phase1'))))
 APP_BINARY=ROOT/('target-dev/wayland-mouse/release-inputs/pasteroll' if RELEASE else 'target-dev/linux/debug/pasteroll')
+if os.environ.get('PASTEROLL_TEST_APP_BINARY'):
+    APP_BINARY = Path(os.environ['PASTEROLL_TEST_APP_BINARY']).resolve()
+    assert APP_BINARY.is_relative_to(ROOT), 'test binary must be inside the isolated checkout'
 HELPER_BINARY=ROOT/('target-dev/wayland-mouse/release-inputs/pasteroll-input' if RELEASE else 'target-dev/linux/debug/pasteroll-input')
 UUID = 'wayland-spike@pasteroll.com'
 

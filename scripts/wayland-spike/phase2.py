@@ -15,7 +15,9 @@ OUT, SOURCE = common.OUT, common.SOURCE
 
 def session():
     procs, checks = [], []
+    completed = False
     env = dict(os.environ)
+    geometry_layout = env.get('PASTEROLL_GEOMETRY_LAYOUT', '')
     env.update(WAYLAND_DISPLAY='pasteroll-test', GDK_BACKEND='wayland')
     bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
     def call(name, method, params=None, path=None, interface=None):
@@ -50,11 +52,32 @@ def session():
             "['wayland-spike@pasteroll.com', 'pasteroll@pasteroll.com']"], check=True, env=env)
         subprocess.run(['gsettings', 'set', 'org.gnome.shell', 'disable-user-extensions', 'false'], check=True, env=env)
         subprocess.run(['gsettings', 'set', 'org.gnome.desktop.interface', 'enable-animations', 'false'], check=True, env=env)
-        shell = common.launch(['gnome-shell', '--headless', '--virtual-monitor', '1280x800',
+        if geometry_layout == 'logical':
+            subprocess.run(['gsettings', 'set', 'org.gnome.mutter', 'experimental-features',
+                "['scale-monitor-framebuffer']"], check=True, env=env)
+        shell = common.launch(['gnome-shell', '--headless', '--virtual-monitor',
+            '3840x2160' if geometry_layout else '1280x800',
             '--wayland', '--no-x11', '--sm-disable', '--wayland-display=pasteroll-test'], env, 'shell')
         procs.append(shell)
         wait(state, 45)
         check('stock GNOME Wayland with XWayland disabled', state()['wayland'])
+        if geometry_layout:
+            current = call('org.gnome.Mutter.DisplayConfig', 'GetCurrentState').unpack()
+            connector, modes = current[1][0][0][0], current[1][0][1]
+            mode = next(m[0] for m in modes if m[-1].get('is-current'))
+            layout_mode = 2 if geometry_layout == 'physical' else 1
+            properties = {}
+            if current[3]['layout-mode'] != layout_mode:
+                assert current[3].get('supports-changing-layout-mode'), 'headless layout is fixed'
+                properties['layout-mode'] = GLib.Variant('u', layout_mode)
+            call('org.gnome.Mutter.DisplayConfig', 'ApplyMonitorsConfig',
+                GLib.Variant('(uua(iiduba(ssa{sv}))a{sv})', (current[0], 1,
+                    [(0, 0, 2.0, 0, True, [(connector, mode, {})])],
+                    properties)))
+            wait(lambda: state()['monitor'][4] == 2)
+            expected_size = [3840, 2160] if layout_mode == 2 else [1920, 1080]
+            check('isolated 4K 200% ' + geometry_layout + ' layout configured',
+                state()['monitor'][2:4] == expected_size)
         procs.append(common.launch(['/usr/bin/python3', str(SOURCE / 'fixture.py')], env, 'fixture'))
         native = wait(lambda: json.loads(call('com.pasteroll.WaylandFixture', 'State').unpack()[0]))
         check('native GTK4 provider and consumer', native['display'] == 'GdkWaylandDisplay')
@@ -66,7 +89,7 @@ def session():
         # The fixture has now received an actual Wayland input serial.
         rejected = False
         try:
-            call('com.pasteroll.Gnome', 'Handshake', GLib.Variant('(u)', (2,)),
+            call('com.pasteroll.Gnome', 'Handshake', GLib.Variant('(u)', (3,)),
                 path='/com/pasteroll/Gnome', interface='com.pasteroll.Gnome.Bridge2')
         except GLib.Error as error:
             rejected = 'AccessDenied' in str(error)
@@ -116,7 +139,34 @@ def session():
         wait(lambda: state()['bridgeVisible'])
         time.sleep(.4)
         check('Rust renderer frame appears on GNOME surface', state()['bridgeVisible'])
+        if geometry_layout:
+            geometry = state()['companion']
+            expected_stage = 1 if geometry_layout == 'physical' else 2
+            check('real Clutter stage and UI scales are independent',
+                geometry['uiScale'] == 2 and geometry['stageScale'] == expected_stage)
         check('Bridge2 viewer transfer accepts device-pixel frames', request('viewer'))
+        check('4K viewer is transferred without a downsampling fallback', request('viewer-4k'))
+        view = state()['companion']
+        check('real GNOME commits exactly two full-resolution 4K strips',
+            view['viewerSize'] == [3840, 2160] and view['viewerTiles'] == 2 and not view['viewerPending'])
+        if geometry_layout:
+            # Only this isolated synthetic compositor is captured. Check both sides
+            # of the strip seam in actual rendered output, not just actor metadata.
+            import gi
+            gi.require_version('GdkPixbuf', '2.0')
+            from gi.repository import GdkPixbuf
+            name = 'snap-geometry-viewer.png'
+            call('com.pasteroll.WaylandSpike', 'Snapshot', GLib.Variant('(s)', (name,)))
+            image = GdkPixbuf.Pixbuf.new_from_file(str(Path(env['PASTEROLL_SPIKE_OUTPUT']) / name))
+            pixels = image.get_pixels()
+            width, height = image.get_width(), image.get_height()
+            stride, channels = image.get_rowstride(), image.get_n_channels()
+            sample_y = [100, 1090, 1094, 2000]
+            colors = [list(pixels[int(y * height / 2160) * stride + int(width / 2) * channels:][:3])
+                      for y in sample_y]
+            check('rendered 4K pixels are intact above and below the strip seam',
+                all(all(abs(a - b) <= 1 for a, b in zip(color, [60, 80, 31])) for color in colors))
+        request('viewer-hide')
         check('Bridge2 suspend/resume keeps the active generation', request('suspend'))
         time.sleep(3.4)  # A legitimate native dialog can outlive the regular watchdog.
         request('resume')
@@ -151,8 +201,12 @@ def session():
         probe.stdin.write(b'quit\n'); probe.stdin.flush()
         probe.wait(timeout=5)
         check('Rust probe exits cleanly', probe.returncode == 0)
+        completed = True
     finally:
         (OUT / 'results.json').write_text(json.dumps({'checks': checks,
+            'geometry_layout': geometry_layout,
+            'completed': completed,
+            'required_checks_passed': completed and all(c['pass'] for c in checks),
             'full_controller_integrated': False, 'global_mouse_activation': False}, indent=2) + '\n')
         for proc in reversed(procs):
             common.stop(proc)

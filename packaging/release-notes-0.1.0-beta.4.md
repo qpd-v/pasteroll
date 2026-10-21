@@ -1,41 +1,56 @@
-# Pasteroll 0.1.0-beta.4 — Windows candidate
+# Pasteroll 0.1.0-beta.4
 
-Unpublished candidate. Linux downloads remain on beta.3.
+Experimental prerelease for Windows, X11 and GNOME 46 Wayland.
 
-## Changes
+## New and fixed
 
-- Transparent roll icon across the tray, taskbar/window, shortcuts and installer.
-- Single tray click opens history near the icon; double-click opens Settings;
-  right-click retains the existing menu. From tray browsing, choose a destination
-  window to paste. Single click waits for the Windows double-click interval.
-- About Pasteroll in the tray: version, installation type and activation reminder.
-- Tray tooltip shows the current version and recording/paused state.
-- Freehand OCR areas in the expanded image viewer: choose the lasso, draw around
-  one or more areas, then press Enter or Extract selected text. Ctrl+Z undoes an
-  area; Delete clears areas; Escape cancels. Zooming/scrolling keeps outlines
-  attached to image pixels. Text outside the outlines is masked before local OCR;
-  overlapping regions form a union, read in the OCR engine's normal reading order.
-  The source image and saved clip are never changed. Up to16 areas are supported.
+- Transparent roll branding. Windows tray single click opens history near the
+  icon; double click opens Settings; right click keeps its menu. Windows About
+  shows version/installation information; tooltip shows recording status.
+- Freehand OCR areas in the regular expanded image viewer (Ctrl+E): draw up to
+  16 outlines, Enter extracts, Ctrl+Z undoes, Delete clears and Escape cancels.
+  Outside pixels are masked and the source image is unchanged.
+- Explicitly copied OCR/viewer-selected text enters history, respecting pause,
+  exclusions and deduplication. Returning from the viewer refreshes the existing
+  carousel even when the background save finishes later; filters remain applied.
+- GNOME 46 mixed-scale geometry fixes distinguish UI density from Shell stage
+  coordinates. Large viewer/editor frames use bounded full-resolution strips.
+  Upgrade the app and companion together: both require wire protocol 3. Log out
+  and back in to reload the companion after installation.
 
-- Copied OCR text refreshes the existing carousel when the viewer closes, even
-  when its background save completes later. Active filters remain applied.
-- Fixed copied OCR text missing from carousel history. Explicitly copied viewer
-  text selections are recorded too; duplicates are merged. Paused recording and
-  app exclusions still apply, and automatic paste writes remain excluded.
+## Downloads
 
-## Packages
+- pasteroll-0.1.0-beta.4-windows-x64-setup.exe
+- pasteroll-0.1.0-beta.4-windows-x64-portable.zip
+- pasteroll-0.1.0-beta.4-linux-x86_64.tar.gz (X11)
+- pasteroll_0.1.0-beta.4_amd64.deb (X11)
+- pasteroll-0.1.0-beta.4-linux-x86_64-gnome-development.tar.gz
+- pasteroll_0.1.0-beta.4_amd64-gnome-development.deb
+- SHA256SUMS covering all six packages
 
-- `pasteroll-0.1.0-beta.4-windows-x64-setup.exe`
-- `pasteroll-0.1.0-beta.4-windows-x64-portable.zip`
-- `SHA256SUMS` covering these two Windows packages
+The X11 and GNOME Debian packages are alternatives, not coinstallable. The GNOME
+package needs GNOME 46, glibc 2.34+, libevdev2 and systemd. Its optional privileged
+mouse helper stays disabled after a fresh install; keyboard mode uses
+Ctrl+Shift+Space. See extensions/INPUT_HELPER.md for setup and permissions.
 
-Windows builds are unsigned. Setup upgrades retain history, keys and settings;
-uninstall retains them unless data deletion is explicitly requested.
+## Testing and known limitations
 
-## Acceptance still requiring a separate Windows environment
+Mixed-scale carousel/viewer/editor tests passed by user report on Pop!_OS GNOME
+46 with a 4K/200% built-in display and a 1080p/100% external display. Automated
+platform, geometry, transport and package checks supplement that limited result.
 
-All-users/UAC installation, enabling autostart across login, and the interactive
-uninstall data-deletion prompt need a disposable account/VM. Current-host fixture
-tests use a separate AppId/shortcut names and synthetic data to protect the live app.
-Review the UI and icon appearance before publication. No Linux runtime tests are
-part of this Windows update.
+Further user/manual testing is deferred. Physical mouse-helper input/hotplug,
+lock/unlock, suspend/resume, autostart across login and full upgrade/removal
+acceptance have not been completed for this final candidate. Windows all-users
+UAC and interactive uninstall choices have not had final clean-machine manual
+acceptance. Automated fixtures do not establish those results.
+
+Linux OCR may return empty or garbled text; accuracy improvements are deferred
+until the next version. Linux tray/panel/About/version interaction parity with
+Windows is also deferred; Linux retains its existing interactions and GNOME
+symbolic panel icon. Selection boundaries and source preservation still apply.
+GNOME support remains experimental and version-46-only. Native COSMIC/KDE/newer
+GNOME, Flatpak and Snap are not supported by this release. Windows is unsigned.
+
+Upgrades preserve history, encryption keys and settings. Windows uninstall keeps
+data unless deletion is explicitly chosen; Linux package removal retains data.

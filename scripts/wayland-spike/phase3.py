@@ -88,7 +88,7 @@ def session():
     limitations = []
     private_home = Path(os.environ['HOME'])
     installed = private_home / '.local/bin/pasteroll'
-    built = common.ROOT / 'target-dev/linux/debug/pasteroll'
+    built = common.APP_BINARY
     digest = hashlib.sha256(installed.read_bytes()).hexdigest() if installed.is_file() else ''
     built_digest = hashlib.sha256(built.read_bytes()).hexdigest() if built.is_file() else ''
     if not digest or digest != built_digest:
@@ -516,7 +516,7 @@ def session():
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
         wire_text = (wire.stdout + wire.stderr).decode('utf-8', 'replace')
         record('real binary completes Bridge2 handshake',
-               wire.returncode == 0 and 'protocol 2' in wire_text and 'global-mouse=false' in wire_text,
+               wire.returncode == 0 and 'protocol 3' in wire_text and 'global-mouse=false' in wire_text,
                detail=wire_text[-1200:])
         record('Bridge2 reports paste, viewer and settings capabilities',
                all(token in wire_text for token in ('paste=true', 'viewer=true', 'settings=true')))

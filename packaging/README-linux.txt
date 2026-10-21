@@ -1,4 +1,4 @@
-Pasteroll for Linux (X11) - 0.1.0-beta.3
+Pasteroll for Linux (X11) - 0.1.0-beta.4
 ========================================
 
 Pasteroll keeps a history of what you copy and lets you paste it again: scroll through
@@ -11,7 +11,7 @@ Requirements
   older XEmbed tray); the program works without one.
 
 Install (for your account, no root)
-  Extract pasteroll-0.1.0-beta.3-linux-x86_64.tar.gz, enter its folder, then run ./install.sh.
+  Extract pasteroll-0.1.0-beta.4-linux-x86_64.tar.gz, enter its folder, then run ./install.sh.
   This delegates to ./pasteroll install: ~/.local/bin, application menu entry and icon.
   Make sure ~/.local/bin is in your PATH. Start it from the menu or with:  pasteroll run
 
@@ -22,11 +22,11 @@ Install (all users, root required)
   Quit and restart running copies after an upgrade. Existing marked installs can be upgraded.
 
 Debian / Ubuntu package
-  sudo dpkg -i pasteroll_0.1.0-beta.3_amd64.deb
+  sudo dpkg -i pasteroll_0.1.0-beta.4_amd64.deb
   Installs /usr/bin/pasteroll, a menu entry, icons and licenses. No scripts run at install time.
   The binary is static and has no package dependencies. Optional recommendations are
   tesseract-ocr (local text extraction) and zenity (save dialogs); install them separately if wanted.
-  The internal Debian version is 0.1.0~beta.2 so the beta sorts before the stable 0.1.0.
+  The internal Debian version is 0.1.0~beta.4 so the beta sorts before the stable 0.1.0.
 
 Use
   Ctrl+Shift+middle-click      open the carousel at the pointer
@@ -68,3 +68,8 @@ Command line
 License
   MIT or Apache-2.0, at your option (LICENSE-MIT, LICENSE-APACHE).
   Source and issues: https://github.com/qpd-v/pasteroll
+
+Beta.4 notes
+  Freehand OCR areas and copied-text history/refresh use the shared viewer.
+  OCR accuracy can be inconsistent; improvements are deferred. Linux tray/About
+  parity with Windows is deferred. Additional manual acceptance is not complete.
