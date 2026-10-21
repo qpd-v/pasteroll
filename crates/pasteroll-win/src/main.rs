@@ -15,6 +15,7 @@
 //! pasteroll     rotate-key                   replace the master key now (Pasteroll must not be running)
 //! pasteroll     reset-history --yes          delete history and its key
 //! pasteroll     seed                         add synthetic demo clips
+//! pasteroll     update-check                 ask GitHub once whether a newer version exists (the only network use)
 //! pasteroll     probe                        self-test of the overlay with real input (no clipboard)
 //! pasteroll     clipboard-selftest           round-trips synthetic items through the real clipboard
 //!                                           (overwrites the clipboard)
@@ -39,6 +40,7 @@ mod selftest;
 mod settings;
 mod setup;
 mod tray;
+mod update;
 mod winsys;
 
 use pasteroll_core::config;
@@ -96,7 +98,7 @@ fn usage() -> ! {
         "usage: pasteroll     run | status | config [show|path|init|set KEY VALUE] | exclude EXE | \
          clear --yes [--keep-pinned] | repair --yes | key-export --out FILE | key-import --in FILE | \
          rotate-key | reset-history --yes | seed | probe | clipboard-selftest | stop | install | \
-         uninstall [--remove-data --yes] | autostart [on|off] | about [--text]\n\
+         uninstall [--remove-data --yes] | autostart [on|off] | about [--text] | update-check\n\
          options: --db FILE   --no-capture   --max-seconds N   --yes   --no-notice"
     );
     std::process::exit(2);
@@ -567,6 +569,7 @@ fn main() {
             0
         }
         "probe" => probe::run(),
+        "update-check" => update::command(),
         // debug aid: a picture of the settings window
         "settings-snapshot" => {
             unsafe {

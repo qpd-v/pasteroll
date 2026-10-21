@@ -6,7 +6,7 @@
 //! every part (capture, limits, exclusions) starts from the same file.
 
 use crate::{app, keystore};
-use pasteroll_core::config::{self, ClickModifier, Config, UiMode};
+use pasteroll_core::config::{self, ClickModifier, Config, UiMode, UpdateCheck};
 use pasteroll_core::limits::MB;
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -31,6 +31,7 @@ const ID_WARN: i32 = 121;
 const ID_AUTOSTART: i32 = 122;
 const ID_MOD: [i32; 3] = [123, 124, 125];
 const ID_MODE: [i32; 2] = [126, 127];
+const ID_UPDATES: i32 = 128;
 const ID_EX_LIST: i32 = 130;
 const ID_EX_EDIT: i32 = 131;
 const ID_EX_ADD: i32 = 132;
@@ -61,6 +62,7 @@ struct State {
     autostart_was: bool,
     modifier: [HWND; 3],
     mode: [HWND; 2],
+    updates: HWND,
     ex_list: HWND,
     ex_edit: HWND,
     fl_list: HWND,
@@ -69,8 +71,9 @@ struct State {
     filters: Vec<String>,
 }
 
-/// Height of the mode choice at the top of the window; everything below it is pushed down.
-const MODE_H: i32 = 56;
+/// Height of the mode choice and the update check at the top of the window; everything below it is
+/// pushed down.
+const MODE_H: i32 = 84;
 
 thread_local! {
     static ST: RefCell<Option<State>> = const { RefCell::new(None) };
@@ -276,6 +279,18 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
             );
             SendMessageW(mode[i], BM_SETCHECK, Some(WPARAM(usize::from(*m == cfg.mode))), Some(LPARAM(0)));
         }
+        let updates = child(
+            hwnd,
+            w!("BUTTON"),
+            "Check for updates once a day (asks GitHub; never downloads anything)",
+            BS_AUTOCHECKBOX as u32 | WS_TABSTOP.0,
+            0,
+            (16, 62, 488, 22),
+            ID_UPDATES,
+            dpi,
+            font,
+        );
+        SendMessageW(updates, BM_SETCHECK, Some(WPARAM(usize::from(cfg.updates == UpdateCheck::On))), Some(LPARAM(0)));
         TOP.set(MODE_H);
 
         child(hwnd, w!("STATIC"), "How much history to keep", 0, 0, (16, 12, 480, 20), 0, dpi, font);
@@ -460,6 +475,7 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
             autostart_was: crate::setup::autostart_enabled(),
             modifier,
             mode,
+            updates,
             ex_list,
             ex_edit,
             fl_list,
@@ -533,6 +549,7 @@ struct Snapshot {
     warn: bool,
     modifier: ClickModifier,
     mode: UiMode,
+    updates: bool,
     exclude: Vec<String>,
     filters: Vec<String>,
 }
@@ -556,6 +573,7 @@ fn current_choices() -> Option<Snapshot> {
                 .find(|(_, h)| check(**h))
                 .map_or(s.orig.advanced_image_modifier, |(m, _)| *m),
             mode: chosen_mode(s),
+            updates: check(s.updates),
             exclude: s.exclude.clone(),
             filters: s.filters.clone(),
         })
@@ -578,7 +596,13 @@ fn build_text(snap: &Snapshot, text: &str) -> Result<String, Vec<String>> {
         exclude_apps: snap.exclude.clone(),
         filter_names: snap.filters.clone(),
     };
-    settings::build_text(&snap.orig, &choice, text)
+    let text = settings::build_text(&snap.orig, &choice, text)?;
+    // the update check is a Windows-only setting: written only when the box was changed (an
+    // undecided setting with the box left empty stays undecided, so the one-time question is kept)
+    if snap.updates != (snap.orig.updates == UpdateCheck::On) {
+        return config::set_value(&text, "check_for_updates", &snap.updates.to_string());
+    }
+    Ok(text)
 }
 
 /// Applies the "start with Windows" box if it changed (a registry entry, not part of config.toml).
@@ -611,6 +635,18 @@ pub fn probe_choose_mode(mode: UiMode) -> bool {
             unsafe {
                 SendMessageW(*h, BM_SETCHECK, Some(WPARAM(usize::from(*m == mode))), Some(LPARAM(0)));
             }
+        }
+        true
+    })
+}
+
+/// Ticks or clears the update-check box as a click would (self-test).
+pub fn probe_set_updates(on: bool) -> bool {
+    ST.with(|c| {
+        let Ok(g) = c.try_borrow() else { return false };
+        let Some(s) = g.as_ref() else { return false };
+        unsafe {
+            SendMessageW(s.updates, BM_SETCHECK, Some(WPARAM(usize::from(on))), Some(LPARAM(0)));
         }
         true
     })
@@ -837,6 +873,7 @@ mod tests {
             warn: true,
             modifier: ClickModifier::Ctrl,
             mode: UiMode::Complete,
+            updates: false,
             exclude: vec![],
             filters: vec![],
         };
@@ -867,6 +904,7 @@ mod tests {
             warn: true,
             modifier: ClickModifier::Ctrl,
             mode: UiMode::Complete,
+            updates: false,
             exclude: vec![],
             filters: vec![],
         };
@@ -874,6 +912,37 @@ mod tests {
         let slim = Snapshot { mode: UiMode::NoBloat, ..snap };
         let out = build_text(&slim, "").unwrap();
         assert_eq!(config::parse(&out).unwrap().mode, UiMode::NoBloat);
+    }
+
+    #[test]
+    fn the_update_check_is_written_only_when_the_box_changes() {
+        let snap = |orig: &str, updates: bool| {
+            let orig = config::parse(orig).unwrap();
+            let lim = orig.limits;
+            Snapshot {
+                hwnd: HWND::default(),
+                db: PathBuf::new(),
+                orig: orig.clone(),
+                limits: (lim.max_clips, lim.max_bytes / MB, lim.max_age_days, lim.max_clip_bytes / MB),
+                size: 100,
+                paused: false,
+                warn: true,
+                modifier: ClickModifier::Ctrl,
+                mode: UiMode::Complete,
+                updates,
+                exclude: vec![],
+                filters: vec![],
+            }
+        };
+        // undecided and left unticked: nothing is written, so the one-time question still comes
+        assert_eq!(build_text(&snap("", false), "").unwrap(), "");
+        // ticking it turns the check on; unticking a decided "on" turns it off
+        let on = build_text(&snap("", true), "").unwrap();
+        assert_eq!(config::parse(&on).unwrap().updates, UpdateCheck::On);
+        let off = build_text(&snap(&on, false), &on).unwrap();
+        assert_eq!(config::parse(&off).unwrap().updates, UpdateCheck::Off);
+        // an explicit "off" with the box still empty is left alone
+        assert_eq!(build_text(&snap(&off, false), &off).unwrap(), off);
     }
 
     #[test]
@@ -892,6 +961,7 @@ mod tests {
             warn: true,
             modifier: ClickModifier::Ctrl,
             mode: UiMode::Complete,
+            updates: false,
             exclude: vec!["bitwarden.exe".into()],
             filters: vec![],
         };

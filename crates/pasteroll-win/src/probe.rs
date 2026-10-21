@@ -286,6 +286,18 @@ size = {sz}
             chose && mode == Ok(pasteroll_core::config::UiMode::NoBloat),
             "chose={chose} mode={mode:?}"
         );
+        // the update check: off until ticked, and ticking it is what Save would write
+        let before = crate::settings::pending_text().unwrap_or_default();
+        let ticked = crate::settings::probe_set_updates(true);
+        let after = crate::settings::pending_text().unwrap_or_default();
+        let on = pasteroll_core::config::parse(&after).map(|c| c.updates);
+        check!(
+            "settings_update_check_is_ticked_by_choice_only",
+            ticked
+                && pasteroll_core::config::parse(&before).map(|c| c.updates) == Ok(pasteroll_core::config::UpdateCheck::Ask)
+                && on == Ok(pasteroll_core::config::UpdateCheck::On),
+            "ticked={ticked} on={on:?}"
+        );
     }
     let (open, visible, text_ok) = app::with_runtime(|rt| {
         (

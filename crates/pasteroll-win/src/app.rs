@@ -285,7 +285,10 @@ pub fn create(opts: &Options) -> Result<HWND> {
         if opts.tray {
             match Tray::create(cfg.paused) {
                 Ok(t) => {
+                    let tray_window = t.window().0 as isize;
                     with_runtime(|rt| rt.tray = Some(t));
+                    // the update check runs only when the setting is on; "not decided" asks once
+                    crate::update::begin(tray_window, &opts.db, cfg.updates, opts.notice && opts.hooks);
                 }
                 Err(e) => eprintln!("[pasteroll] no notification icon: {e}"),
             }
@@ -331,9 +334,9 @@ pub fn toggle_pause() {
         (paused, rt.db.clone())
     });
     let Some((paused, db)) = state else { return };
-    let saved = keystore::read_config_text(&db)
-        .and_then(|text| pasteroll_core::config::set_value(&text, "paused", &paused.to_string()).map_err(|p| p.join("; ")))
-        .and_then(|text| keystore::write_config_text(&db, &text));
+    let saved = keystore::edit_config(&db, |text| {
+        pasteroll_core::config::set_value(text, "paused", &paused.to_string()).map_err(|p| p.join("; "))
+    });
     if let Err(e) = saved {
         eprintln!("[pasteroll] could not remember the pause setting: {e}");
     }
@@ -355,9 +358,9 @@ pub fn set_ui_mode(mode: UiMode) {
     })
     .flatten();
     let Some(db) = db else { return };
-    let saved = keystore::read_config_text(&db)
-        .and_then(|text| pasteroll_core::config::set_value(&text, "mode", mode.key()).map_err(|p| p.join("; ")))
-        .and_then(|text| keystore::write_config_text(&db, &text));
+    let saved = keystore::edit_config(&db, |text| {
+        pasteroll_core::config::set_value(text, "mode", mode.key()).map_err(|p| p.join("; "))
+    });
     if let Err(e) = saved {
         eprintln!("[pasteroll] could not remember the mode: {e}");
     }

@@ -60,7 +60,7 @@ fn setup_data_only_removal_requires_consent_and_keeps_the_program_and_unrelated_
     let data = c.0.join("data");
     std::fs::create_dir_all(&data).unwrap();
     for name in ["custom.sqlite", "custom.sqlite-wal", "custom.sqlite-shm", "custom.sqlite-journal", "custom.key", "config.toml", "image-presets.txt",
-        "image-presets.txt.tmp", "pasteroll.log", "unrelated.txt"] {
+        "image-presets.txt.tmp", "update-check.txt", "pasteroll.log", "unrelated.txt"] {
         std::fs::write(data.join(name), b"scratch fixture").unwrap();
     }
     let db = data.join("custom.sqlite");

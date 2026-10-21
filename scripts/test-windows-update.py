@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Test Setup upgrade using synthetic data and a separate fixture AppId/shortcut names.
 
-The actual previous-release (beta.5) and current app payloads and production installer recipe are used.
+The actual previous-release (beta.6) and current app payloads and production installer recipe are used.
 The fixture identity avoids replacing the user's installed product registration.
 No clipboard capture, autostart changes, elevation or live-data access.
 """
@@ -22,8 +22,8 @@ BASE = ROOT / "target-dev"
 BASE.mkdir(exist_ok=True)
 VERSION = tomllib.loads((ROOT / "crates/pasteroll-win/Cargo.toml").read_text())["package"]["version"]
 CURRENT = ROOT / "target/windows-packaging/setup"
-PREVIOUS = "0.1.0-beta.5"
-OLD_ZIP = BASE / f"beta5-release/github-download/pasteroll-{PREVIOUS}-windows-x64-portable.zip"
+PREVIOUS = "0.1.0-beta.6"
+OLD_ZIP = BASE / f"beta6-release/github-download/pasteroll-{PREVIOUS}-windows-x64-portable.zip"
 REAL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{E04386D3-6242-420F-864E-35305B8A20FC}_is1"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 checks = []

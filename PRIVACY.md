@@ -19,15 +19,33 @@ from. A small preview is kept for images.
 
 ## Where it goes
 
-**Nowhere.** There is no network code in Pasteroll: no telemetry, no analytics, no crash upload,
-no update check, no cloud sync. You can confirm that by reading the source or watching its
-network activity. The only files it writes are in its own data folder
+**Nowhere.** Your clipboard never leaves your computer: no telemetry, no analytics, no crash
+upload, no cloud sync. The one thing in Pasteroll that can use the internet is the optional
+**update check** (Windows), described below. Nothing else has any network code, which you can
+confirm by reading the source or watching its network activity. The only files it writes are in its own data folder
 (`%LOCALAPPDATA%\Pasteroll` or `~/.local/share/pasteroll`), plus the files `install` creates
 (program, Start menu or application-menu entry, uninstall entry).
 
 With `portable.txt` beside the program, its application data stays in the adjacent `data` folder.
 Portable mode does not install the app or change autostart. On Linux a local control pipe in the
 data folder lets `pasteroll stop` request a graceful exit; it does not use the network.
+
+## The update check (Windows, off until you say yes)
+
+Until you have answered, Pasteroll asks whether it may check for updates (once you answer it does
+not ask again); "Never check" is the default button and closing the window decides nothing. If you say yes (or tick **Check for updates** in Settings), then about
+once a day it makes one HTTPS request to `api.github.com` for the list of releases of this project
+and compares the newest version number with its own. GitHub, like any website, sees your IP address
+and the program name and version (`Pasteroll/<version>`), plus the usual request headers
+(`Accept`, `X-GitHub-Api-Version`); nothing else is sent: no clipboard content, no history, no
+settings, no identifier. Windows is told not to sign in to a proxy or server on its own. Your
+network may do its own name lookups and proxy discovery for any program. If a newer version exists you get a notification
+and a menu entry that opens its release page in your browser. **Nothing is downloaded or installed
+by Pasteroll.** You can also check by hand from the tray menu (*Check for updates now*) or with
+`pasteroll update-check`; that one request is made only when you ask. Choose No (or untick the box)
+and Pasteroll makes no network request at all. The date of the last check and the newest version
+you were told about are kept in `update-check.txt` in the data folder. The setting is
+`[updates] check_for_updates` in `config.toml`.
 
 ## How it is stored
 

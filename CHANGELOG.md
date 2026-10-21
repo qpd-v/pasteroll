@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.0-beta.7 (Windows only)
+
+- Add an optional update check (Windows). It is off until you say yes: the first time you run this
+  version Pasteroll asks once (the default answer is No), and Settings has a checkbox for it. When
+  on, about once a day it makes one request to GitHub for the list of releases and tells you if a
+  newer version exists, with a menu entry and a notification that open its release page. It never
+  downloads or installs anything. The tray menu has *Check for updates now* and the command line
+  has `pasteroll update-check`, which check only when you ask. With the check off, Pasteroll makes
+  no network request at all. See PRIVACY.md. `config.toml` gains `[updates] check_for_updates`.
+
 ## 0.1.0-beta.6 (Windows only)
 
 - Fix Advanced Image Paste never opening in Windows Terminal (and so in PowerShell, Claude Code

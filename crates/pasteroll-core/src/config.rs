@@ -90,6 +90,18 @@ impl UiMode {
     }
 }
 
+/// Whether Pasteroll may look for a newer version on the internet. This is the only thing in the
+/// program that ever makes a network request, so nothing happens until the person says yes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UpdateCheck {
+    /// Not decided yet: no request is made, and the person is asked once.
+    #[default]
+    Ask,
+    /// Once a day, ask GitHub whether a newer version exists and say so. Nothing is downloaded.
+    On,
+    Off,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub limits: Limits,
@@ -108,6 +120,8 @@ pub struct Config {
     pub advanced_image_modifier: ClickModifier,
     /// Which interface the carousel shows.
     pub mode: UiMode,
+    /// Whether to look for a newer version (see [`UpdateCheck`]).
+    pub updates: UpdateCheck,
 }
 
 /// The range the carousel size may take, in percent.
@@ -127,6 +141,7 @@ impl Default for Config {
             size_percent: SIZE_DEFAULT,
             advanced_image_modifier: ClickModifier::Ctrl,
             mode: UiMode::Complete,
+            updates: UpdateCheck::Ask,
         }
     }
 }
@@ -165,6 +180,13 @@ advanced_image_modifier = "ctrl"
 mode = "complete"
 # Size of the carousel as a percentage of its normal size, 50 .. 200.
 size = 100
+
+[updates]
+# Pasteroll never uses the internet unless you allow it here. true: once a day it asks GitHub
+# whether a newer version exists (GitHub sees your IP address and the version you run, nothing
+# else) and tells you if there is one. It never downloads or installs anything. false: never.
+# Left out: Windows asks you once.
+# check_for_updates = false
 
 # Add your own filters for the search dropdown, for example:
 # [[filters]]
@@ -336,6 +358,22 @@ pub fn parse(text: &str) -> Result<Config, Vec<String>> {
                     }
                 }
             }
+            "updates" => {
+                let Some(t) = item.as_table() else {
+                    problems.push("[updates] must be a table".into());
+                    continue;
+                };
+                for (k, v) in t.iter() {
+                    match k {
+                        "check_for_updates" => match v.as_bool() {
+                            Some(true) => cfg.updates = UpdateCheck::On,
+                            Some(false) => cfg.updates = UpdateCheck::Off,
+                            None => problems.push("check_for_updates must be true or false".into()),
+                        },
+                        other => problems.push(format!("unknown setting [updates] {other}")),
+                    }
+                }
+            }
             other => problems.push(format!("unknown section [{other}]")),
         }
     }
@@ -356,6 +394,7 @@ pub fn set_value(text: &str, key: &str, val: &str) -> Result<String, Vec<String>
         .or_else(|| key.strip_prefix("capture."))
         .or_else(|| key.strip_prefix("paste."))
         .or_else(|| key.strip_prefix("appearance."))
+        .or_else(|| key.strip_prefix("updates."))
         .unwrap_or(key);
     let (section, item) = match key {
         "max_clips" | "max_total_mb" | "max_clip_mb" | "max_pins" => {
@@ -412,6 +451,14 @@ pub fn set_value(text: &str, key: &str, val: &str) -> Result<String, Vec<String>
             Some(m) => ("appearance", value(m.key())),
             None => return Err(vec![format!("mode must be complete or no-bloat (got {val:?})")]),
         },
+        "check_for_updates" => {
+            let b = match val.trim().to_ascii_lowercase().as_str() {
+                "true" | "yes" | "on" => true,
+                "false" | "no" | "off" => false,
+                _ => return Err(vec![format!("check_for_updates must be true or false (got {val:?})")]),
+            };
+            ("updates", value(b))
+        }
         other => return Err(vec![format!("unknown setting {other}")]),
     };
     let mut doc: DocumentMut = if text.trim().is_empty() {
@@ -557,6 +604,14 @@ pub fn describe(c: &Config) -> String {
         format!("{}%", c.size_percent)
     ));
     s.push_str(&format!("mode:           {}\n", c.mode.label()));
+    s.push_str(&format!(
+        "update check:   {}\n",
+        match c.updates {
+            UpdateCheck::Ask => "not decided yet (Windows asks once)",
+            UpdateCheck::On => "once a day",
+            UpdateCheck::Off => "never",
+        }
+    ));
     s.push_str(&format!("image editor:   {}+click where it should go\n", c.advanced_image_modifier.label()));
     if !c.exclude_apps.is_empty() {
         s.push_str(&format!("excluded apps:  {}\n", c.exclude_apps.join(", ")));
@@ -744,6 +799,23 @@ mode = 1
         let a = add_excluded_app("", "KeePass.exe").unwrap();
         let b = add_excluded_app(&a, "keepass.exe").unwrap();
         assert_eq!(parse(&b).unwrap().exclude_apps, vec!["keepass.exe"]);
+    }
+
+    #[test]
+    fn the_update_check_is_off_until_you_decide() {
+        assert_eq!(parse("").unwrap().updates, UpdateCheck::Ask, "a file from before the setting existed");
+        assert_eq!(parse(TEMPLATE).unwrap().updates, UpdateCheck::Ask, "the template does not decide for you");
+        assert_eq!(Config::default().updates, UpdateCheck::Ask);
+        let on = set_value("", "check_for_updates", "yes").unwrap();
+        assert_eq!(parse(&on).unwrap().updates, UpdateCheck::On);
+        assert!(on.contains("check_for_updates = true"));
+        let off = set_value(&on, "updates.check_for_updates", "false").unwrap();
+        assert_eq!(parse(&off).unwrap().updates, UpdateCheck::Off);
+        assert!(set_value("", "check_for_updates", "maybe").is_err());
+        assert!(parse("[updates]\ncheck_for_updates = \"yes\"\n").is_err(), "a word is not a boolean");
+        assert!(parse("[updates]\ncheck = true\n").is_err(), "typos are errors");
+        assert!(describe(&parse(&on).unwrap()).contains("once a day"));
+        assert!(describe(&Config::default()).contains("not decided"));
     }
 
     #[test]

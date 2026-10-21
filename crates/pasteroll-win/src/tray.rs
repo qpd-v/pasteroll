@@ -1,10 +1,11 @@
 //! The notification-area icon and its menu: pause or resume recording, the Complete / No Bloat
 //! mode, settings, the data folder and quit. The icon is drawn in code, so there is no resource file to ship.
 
-use crate::{about, app, settings};
+use crate::{about, app, settings, update};
 use pasteroll_core::config::UiMode;
+use pasteroll_core::update::Version;
 use std::cell::UnsafeCell;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use windows::core::{w, Result, PCWSTR};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::{CreateBitmap, DeleteObject};
@@ -21,6 +22,10 @@ const ID_QUIT: usize = 4;
 const ID_ABOUT: usize = 5;
 const ID_COMPLETE: usize = 6;
 const ID_NO_BLOAT: usize = 7;
+const ID_CHECK_UPDATE: usize = 8;
+const ID_OPEN_UPDATE: usize = 9;
+/// The shell's message for a click on a notification balloon.
+const NIN_BALLOONUSERCLICK: u32 = WM_USER + 5;
 const ICON_ID: u32 = 1;
 const CLICK_TIMER: usize = 1;
 
@@ -52,6 +57,8 @@ impl ClickState {
 }
 
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
+/// The balloon on screen announces a newer version, so a click on it opens that release's page.
+static BALLOON_OPENS_RELEASE: AtomicBool = AtomicBool::new(false);
 
 pub struct Tray {
     hwnd: HWND,
@@ -149,6 +156,11 @@ impl Tray {
         }
     }
 
+    /// The window that receives the icon's messages (also the update check's results).
+    pub fn window(&self) -> HWND {
+        self.hwnd
+    }
+
     /// Refreshes the tooltip after recording was paused or resumed.
     pub fn update(&self, paused: bool) {
         unsafe {
@@ -175,16 +187,80 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+/// A balloon (a toast on current Windows) from the notification icon.
+fn balloon(hwnd: HWND, title: &str, text: &str) {
+    let mut nid = NOTIFYICONDATAW {
+        cbSize: size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: hwnd,
+        uID: ICON_ID,
+        uFlags: NIF_INFO,
+        dwInfoFlags: NIIF_INFO,
+        ..Default::default()
+    };
+    for (to, from) in [(&mut nid.szInfoTitle[..], title), (&mut nid.szInfo[..], text)] {
+        for (i, u) in from.encode_utf16().take(to.len() - 1).enumerate() {
+            to[i] = u;
+        }
+    }
+    unsafe {
+        let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
+    }
+}
+
+/// Opens the release page of the newer version in the browser (the address is built from a version
+/// that was parsed strictly, never copied from the server's answer).
+fn open_release_page() {
+    let Some(v) = update::newer() else { return };
+    let url = wide(&v.release_page());
+    unsafe {
+        ShellExecuteW(None, w!("open"), PCWSTR(url.as_ptr()), None, None, SW_SHOW);
+    }
+}
+
+/// Shows what a finished update check found. Automatic checks speak only when there is news.
+unsafe fn show_update_results(hwnd: HWND) {
+    let current = Version::current();
+    for d in update::take_deliveries() {
+        match d.outcome {
+            update::Outcome::Newer(v) => {
+                balloon(
+                    hwnd,
+                    "Pasteroll update available",
+                    &format!("Pasteroll {v} is out; you have {current}. Click to read about it."),
+                );
+                BALLOON_OPENS_RELEASE.store(true, Ordering::Relaxed);
+                update::set_newer(v);
+            }
+            update::Outcome::UpToDate(_) if d.manual => {
+                BALLOON_OPENS_RELEASE.store(false, Ordering::Relaxed);
+                balloon(hwnd, "Pasteroll is up to date", &format!("Pasteroll {current} is the newest version."));
+            }
+            update::Outcome::Failed(e) if d.manual => {
+                BALLOON_OPENS_RELEASE.store(false, Ordering::Relaxed);
+                balloon(hwnd, "Could not check for updates", &e);
+            }
+            _ => {}
+        }
+    }
+}
+
 /// The right-click menu for the current recording state and mode. The caller destroys it.
-unsafe fn build_menu(paused: bool, mode: UiMode) -> Option<HMENU> {
+/// `newer` is a newer version that a check has found, offered at the top.
+unsafe fn build_menu(paused: bool, mode: UiMode, newer: Option<&Version>) -> Option<HMENU> {
     unsafe {
         let menu = CreatePopupMenu().ok()?;
+        if let Some(v) = newer {
+            let text = wide(&format!("Update available: {v} (open release page)"));
+            let _ = AppendMenuW(menu, MF_STRING, ID_OPEN_UPDATE, PCWSTR(text.as_ptr()));
+            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+        }
         let pause = wide(if paused { "Resume recording" } else { "Pause recording" });
         let complete = wide(UiMode::Complete.label());
         let no_bloat = wide(UiMode::NoBloat.label());
         let settings_t = wide("Settings...");
         let folder = wide("Open data folder");
         let about_t = wide("About Pasteroll...");
+        let check_t = wide("Check for updates now");
         let quit = wide("Quit Pasteroll");
         let _ = AppendMenuW(menu, MF_STRING, ID_PAUSE, PCWSTR(pause.as_ptr()));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
@@ -196,6 +272,7 @@ unsafe fn build_menu(paused: bool, mode: UiMode) -> Option<HMENU> {
         let _ = AppendMenuW(menu, MF_STRING, ID_SETTINGS, PCWSTR(settings_t.as_ptr()));
         let _ = AppendMenuW(menu, MF_STRING, ID_FOLDER, PCWSTR(folder.as_ptr()));
         let _ = AppendMenuW(menu, MF_STRING, ID_ABOUT, PCWSTR(about_t.as_ptr()));
+        let _ = AppendMenuW(menu, MF_STRING, ID_CHECK_UPDATE, PCWSTR(check_t.as_ptr()));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(menu, MF_STRING, ID_QUIT, PCWSTR(quit.as_ptr()));
         Some(menu)
@@ -204,7 +281,8 @@ unsafe fn build_menu(paused: bool, mode: UiMode) -> Option<HMENU> {
 
 unsafe fn show_menu(hwnd: HWND) {
     unsafe {
-        let Some(menu) = build_menu(app::is_paused(), app::ui_mode()) else { return };
+        let newer = update::newer();
+        let Some(menu) = build_menu(app::is_paused(), app::ui_mode(), newer.as_ref()) else { return };
         let mut at = POINT::default();
         let _ = GetCursorPos(&mut at);
         // the menu only closes when clicking elsewhere if its owner is the foreground window
@@ -219,6 +297,8 @@ unsafe fn show_menu(hwnd: HWND) {
             ID_SETTINGS => settings::open(),
             ID_FOLDER => app::open_data_folder(),
             ID_ABOUT => about::show(Some(hwnd)),
+            ID_CHECK_UPDATE => update::check_now(hwnd.0 as isize, app::db_path()),
+            ID_OPEN_UPDATE => open_release_page(),
             ID_QUIT => app::quit(),
             _ => {}
         }
@@ -261,8 +341,17 @@ unsafe extern "system" fn tray_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                     if !clicks.is_null() { (*clicks).double_clicked(); }
                     settings::open();
                 }
+                NIN_BALLOONUSERCLICK => {
+                    if BALLOON_OPENS_RELEASE.load(Ordering::Relaxed) {
+                        open_release_page();
+                    }
+                }
                 _ => {}
             }
+            return LRESULT(0);
+        }
+        if msg == update::WM_UPDATE_RESULT {
+            show_update_results(hwnd);
             return LRESULT(0);
         }
         if msg == WM_TIMER && wparam.0 == CLICK_TIMER {
@@ -370,7 +459,7 @@ mod tests {
     fn the_menu_offers_both_modes_with_the_current_one_marked() {
         unsafe {
             for (mode, on, off) in [(UiMode::Complete, ID_COMPLETE, ID_NO_BLOAT), (UiMode::NoBloat, ID_NO_BLOAT, ID_COMPLETE)] {
-                let menu = build_menu(false, mode).expect("menu");
+                let menu = build_menu(false, mode, None).expect("menu");
                 let checked = |id: usize| GetMenuState(menu, id as u32, MF_BYCOMMAND) & MF_CHECKED.0 != 0;
                 assert!(checked(on), "{mode:?} is marked");
                 assert!(!checked(off), "the other mode is not");
@@ -380,10 +469,31 @@ mod tests {
                 let item = |id: usize| id as u32;
                 assert_eq!(
                     ids,
-                    [item(ID_PAUSE), SEPARATOR, item(ID_COMPLETE), item(ID_NO_BLOAT), SEPARATOR, item(ID_SETTINGS), item(ID_FOLDER), item(ID_ABOUT), SEPARATOR, item(ID_QUIT)]
+                    [item(ID_PAUSE), SEPARATOR, item(ID_COMPLETE), item(ID_NO_BLOAT), SEPARATOR, item(ID_SETTINGS), item(ID_FOLDER), item(ID_ABOUT), item(ID_CHECK_UPDATE), SEPARATOR, item(ID_QUIT)]
                 );
                 let _ = DestroyMenu(menu);
             }
+        }
+    }
+
+    #[test]
+    fn a_found_update_is_offered_first_and_only_then() {
+        unsafe {
+            let first = |newer: Option<&Version>| {
+                let menu = build_menu(false, UiMode::Complete, newer).expect("menu");
+                let n = GetMenuItemCount(Some(menu)) as u32;
+                let ids: Vec<u32> = (0..n).map(|i| GetMenuItemID(menu, i as i32)).collect();
+                let _ = DestroyMenu(menu);
+                ids
+            };
+            let plain = first(None);
+            assert!(!plain.contains(&(ID_OPEN_UPDATE as u32)), "nothing to offer yet");
+            let found = Version::parse("99.0.0").unwrap();
+            let with = first(Some(&found));
+            assert_eq!(with[0], ID_OPEN_UPDATE as u32, "the news comes first");
+            assert_eq!(with[1], 0, "and is set apart");
+            assert_eq!(&with[2..], &plain[..], "the rest of the menu is unchanged");
+            assert!(plain.contains(&(ID_CHECK_UPDATE as u32)), "a check by hand is always there");
         }
     }
 

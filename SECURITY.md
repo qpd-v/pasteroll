@@ -43,7 +43,17 @@ Pasteroll encrypts the history at rest. It is **not** a defence against malware 
   picture is decoded and edited in memory; the original clip is only read.
 - **Recycle bin**: a deleted clip stays in the database, encrypted, for 30 days (so it can be
   restored), unless it is deleted permanently. Permanent deletion overwrites it as before.
-- **No network**: see [PRIVACY.md](PRIVACY.md).
+- **Network**: none, except the optional update check on Windows (off until the person says yes).
+  It makes one HTTPS GET to `api.github.com` with the system's certificate checks and proxy
+  settings (WinHTTP). TLS 1.2 or newer is required, and so is refusing redirects and Windows'
+  automatic sign-in to proxies and servers: if one of those settings cannot be applied the request
+  is not made. The whole check has a 45-second limit and the reply a 1 MB cap. Certificate
+  revocation is not checked and nothing is pinned, so someone who controls a trusted certificate
+  authority on the network could read the request or give a false answer; the worst that does is a
+  wrong "update available" message. Only `"tag_name"` strings that are exactly this project's
+  release tags (`v0.1.0-beta.7`) are read, and the page that is opened is built from that parsed version, never
+  copied from the reply. Nothing is downloaded or run, so a hostile reply can at worst show a wrong
+  "update available" message. See [PRIVACY.md](PRIVACY.md).
 
 ## Known issues and accepted risks
 

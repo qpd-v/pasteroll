@@ -384,7 +384,7 @@ pub fn remove_user_data(db: &Path) -> Result<usize, String> {
     let mut files = vec![db.to_path_buf(), sidecar("-wal"), sidecar("-shm"), sidecar("-journal"),
         db.with_extension("key"), db.with_extension("key.tmp")];
     for name in ["config.toml", "config.toml.tmp", "paste_keys.txt", "image-presets.txt",
-        "image-presets.txt.tmp", "first-run.txt", "pasteroll.log"] {
+        "image-presets.txt.tmp", "first-run.txt", "update-check.txt", "pasteroll.log"] {
         files.push(dir.join(name));
     }
     // Refuse links before deleting anything, just as reset-history does.
@@ -410,7 +410,7 @@ pub fn remove_user_data(db: &Path) -> Result<usize, String> {
 // ------------------------------------------------------------------ first run
 
 pub const NOTICE: &str = "Pasteroll keeps a history of what you copy so you can paste it again later.\n\n\
-- It is stored only on this PC, encrypted for your Windows account. Nothing is sent anywhere.\n\
+- It is stored only on this PC, encrypted for your Windows account. Your clips are never sent anywhere. (The only thing that can use the internet is an optional check for new versions, off until you say yes.)\n\
 - Open it with Ctrl+Shift+middle-click. Pick a clip with the wheel and press Enter, or select part of it first to paste just that part.\n\
 - Pause recording, or exclude programs such as password managers, from the tray icon: Settings.\n\
 - Pasteroll does not start with Windows unless you turn that on in Settings.\n\n\
@@ -525,7 +525,7 @@ mod tests {
 
     #[test]
     fn the_notice_says_what_matters() {
-        for needle in ["only on this PC", "encrypted", "Nothing is sent", "does not start with Windows"] {
+        for needle in ["only on this PC", "encrypted", "never sent anywhere", "off until you say yes", "does not start with Windows"] {
             assert!(NOTICE.contains(needle), "{needle}");
         }
     }

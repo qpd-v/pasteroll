@@ -198,6 +198,21 @@ pub fn write_config_text(db: &Path, text: &str) -> Result<(), String> {
     core_ks::write_config_text::<WinOs>(db, text)
 }
 
+static CONFIG_EDIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Reads config.toml, lets `edit` change the text, and writes it back, all under one lock so two
+/// edits made at the same moment (the tray menu and the update question, say) cannot overwrite each
+/// other. Nothing is written when the text did not change.
+pub fn edit_config(db: &Path, edit: impl FnOnce(&str) -> Result<String, String>) -> Result<(), String> {
+    let _only_one = CONFIG_EDIT.lock().unwrap_or_else(|e| e.into_inner());
+    let text = read_config_text(db)?;
+    let new = edit(&text)?;
+    if new == text {
+        return Ok(());
+    }
+    write_config_text(db, &new)
+}
+
 pub fn export_contents(db: &Path) -> Result<pasteroll_core::export::ExportContents, String> {
     core_ks::export_contents::<WinOs>(db)
 }
