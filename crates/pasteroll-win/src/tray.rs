@@ -1,7 +1,7 @@
 //! The notification-area icon and its menu: pause or resume recording, the Complete / No Bloat
 //! mode, settings, the data folder and quit. The icon is drawn in code, so there is no resource file to ship.
 
-use crate::{about, app, settings, update};
+use crate::{about, app, installui, settings, update};
 use pasteroll_core::config::UiMode;
 use pasteroll_core::update::Version;
 use std::cell::UnsafeCell;
@@ -24,6 +24,7 @@ const ID_COMPLETE: usize = 6;
 const ID_NO_BLOAT: usize = 7;
 const ID_CHECK_UPDATE: usize = 8;
 const ID_OPEN_UPDATE: usize = 9;
+const ID_INSTALL_UPDATE: usize = 10;
 /// The shell's message for a click on a notification balloon.
 const NIN_BALLOONUSERCLICK: u32 = WM_USER + 5;
 const ICON_ID: u32 = 1;
@@ -217,6 +218,36 @@ fn open_release_page() {
     }
 }
 
+/// Starts the confirmation for installing the newer version that a check found.
+fn offer_install(hwnd: HWND) {
+    if let (Some(v), Some(db)) = (update::newer(), app::db_path()) {
+        installui::offer(hwnd.0 as isize, db, v);
+    }
+}
+
+/// Shows progress or failure of an update the person chose to install.
+unsafe fn show_install_events(hwnd: HWND) {
+    for event in installui::take_events() {
+        match event {
+            installui::Event::Say(text) => {
+                BALLOON_OPENS_RELEASE.store(false, Ordering::Relaxed);
+                balloon(hwnd, "Updating Pasteroll", &text);
+            }
+            installui::Event::SetupStarted => {
+                balloon(hwnd, "Updating Pasteroll", "Installing the update. Pasteroll will close and start again by itself.");
+            }
+            installui::Event::Replaced(exe) => {
+                balloon(hwnd, "Updating Pasteroll", "Update installed. Pasteroll is restarting.");
+                app::restart_to(Some(&exe));
+            }
+            installui::Event::Failed(text) => {
+                BALLOON_OPENS_RELEASE.store(false, Ordering::Relaxed);
+                balloon(hwnd, "Pasteroll update", &text);
+            }
+        }
+    }
+}
+
 /// Shows what a finished update check found. Automatic checks speak only when there is news.
 unsafe fn show_update_results(hwnd: HWND) {
     let current = Version::current();
@@ -226,7 +257,11 @@ unsafe fn show_update_results(hwnd: HWND) {
                 balloon(
                     hwnd,
                     "Pasteroll update available",
-                    &format!("Pasteroll {v} is out; you have {current}. Click to read about it."),
+                    &if installui::installable() {
+                        format!("Pasteroll {v} is out; you have {current}. Click to install it or read about it.")
+                    } else {
+                        format!("Pasteroll {v} is out; you have {current}. Click to read about it.")
+                    },
                 );
                 BALLOON_OPENS_RELEASE.store(true, Ordering::Relaxed);
                 update::set_newer(v);
@@ -246,12 +281,16 @@ unsafe fn show_update_results(hwnd: HWND) {
 
 /// The right-click menu for the current recording state and mode. The caller destroys it.
 /// `newer` is a newer version that a check has found, offered at the top.
-unsafe fn build_menu(paused: bool, mode: UiMode, newer: Option<&Version>) -> Option<HMENU> {
+unsafe fn build_menu(paused: bool, mode: UiMode, newer: Option<&Version>, installable: bool) -> Option<HMENU> {
     unsafe {
         let menu = CreatePopupMenu().ok()?;
         if let Some(v) = newer {
             let text = wide(&format!("Update available: {v} (open release page)"));
             let _ = AppendMenuW(menu, MF_STRING, ID_OPEN_UPDATE, PCWSTR(text.as_ptr()));
+            if installable {
+                let install_text = wide(&format!("Download and install {v}..."));
+                let _ = AppendMenuW(menu, MF_STRING, ID_INSTALL_UPDATE, PCWSTR(install_text.as_ptr()));
+            }
             let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         }
         let pause = wide(if paused { "Resume recording" } else { "Pause recording" });
@@ -282,7 +321,7 @@ unsafe fn build_menu(paused: bool, mode: UiMode, newer: Option<&Version>) -> Opt
 unsafe fn show_menu(hwnd: HWND) {
     unsafe {
         let newer = update::newer();
-        let Some(menu) = build_menu(app::is_paused(), app::ui_mode(), newer.as_ref()) else { return };
+        let Some(menu) = build_menu(app::is_paused(), app::ui_mode(), newer.as_ref(), installui::installable()) else { return };
         let mut at = POINT::default();
         let _ = GetCursorPos(&mut at);
         // the menu only closes when clicking elsewhere if its owner is the foreground window
@@ -299,6 +338,7 @@ unsafe fn show_menu(hwnd: HWND) {
             ID_ABOUT => about::show(Some(hwnd)),
             ID_CHECK_UPDATE => update::check_now(hwnd.0 as isize, app::db_path()),
             ID_OPEN_UPDATE => open_release_page(),
+            ID_INSTALL_UPDATE => offer_install(hwnd),
             ID_QUIT => app::quit(),
             _ => {}
         }
@@ -343,11 +383,20 @@ unsafe extern "system" fn tray_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
                 }
                 NIN_BALLOONUSERCLICK => {
                     if BALLOON_OPENS_RELEASE.load(Ordering::Relaxed) {
-                        open_release_page();
+                        // an update that this copy can install is offered for installation
+                        if installui::installable() {
+                            offer_install(hwnd);
+                        } else {
+                            open_release_page();
+                        }
                     }
                 }
                 _ => {}
             }
+            return LRESULT(0);
+        }
+        if msg == installui::WM_INSTALL_EVENT {
+            show_install_events(hwnd);
             return LRESULT(0);
         }
         if msg == update::WM_UPDATE_RESULT {
@@ -459,7 +508,7 @@ mod tests {
     fn the_menu_offers_both_modes_with_the_current_one_marked() {
         unsafe {
             for (mode, on, off) in [(UiMode::Complete, ID_COMPLETE, ID_NO_BLOAT), (UiMode::NoBloat, ID_NO_BLOAT, ID_COMPLETE)] {
-                let menu = build_menu(false, mode, None).expect("menu");
+                let menu = build_menu(false, mode, None, false).expect("menu");
                 let checked = |id: usize| GetMenuState(menu, id as u32, MF_BYCOMMAND) & MF_CHECKED.0 != 0;
                 assert!(checked(on), "{mode:?} is marked");
                 assert!(!checked(off), "the other mode is not");
@@ -480,7 +529,7 @@ mod tests {
     fn a_found_update_is_offered_first_and_only_then() {
         unsafe {
             let first = |newer: Option<&Version>| {
-                let menu = build_menu(false, UiMode::Complete, newer).expect("menu");
+                let menu = build_menu(false, UiMode::Complete, newer, false).expect("menu");
                 let n = GetMenuItemCount(Some(menu)) as u32;
                 let ids: Vec<u32> = (0..n).map(|i| GetMenuItemID(menu, i as i32)).collect();
                 let _ = DestroyMenu(menu);
@@ -494,6 +543,13 @@ mod tests {
             assert_eq!(with[1], 0, "and is set apart");
             assert_eq!(&with[2..], &plain[..], "the rest of the menu is unchanged");
             assert!(plain.contains(&(ID_CHECK_UPDATE as u32)), "a check by hand is always there");
+            // a copy that can install the update gets its own entry, right after the news
+            let menu = build_menu(false, UiMode::Complete, Some(&found), true).expect("menu");
+            let n = GetMenuItemCount(Some(menu)) as u32;
+            let ids: Vec<u32> = (0..n).map(|i| GetMenuItemID(menu, i as i32)).collect();
+            let _ = DestroyMenu(menu);
+            assert_eq!(&ids[..3], &[ID_OPEN_UPDATE as u32, ID_INSTALL_UPDATE as u32, 0]);
+            assert_eq!(&ids[3..], &plain[..]);
         }
     }
 

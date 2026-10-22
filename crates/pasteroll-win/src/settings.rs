@@ -291,7 +291,7 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
         let updates = child(
             hwnd,
             w!("BUTTON"),
-            "Check for updates once a day (asks GitHub; never downloads anything)",
+            "Check for updates once a day (asks GitHub; you choose whether to install)",
             BS_AUTOCHECKBOX as u32 | WS_TABSTOP.0,
             0,
             (16, 62, 488, 22),

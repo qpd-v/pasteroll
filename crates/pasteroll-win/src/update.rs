@@ -24,7 +24,7 @@ pub const WM_UPDATE_RESULT: u32 = WM_APP + 241;
 
 /// How long a whole check may take, whatever the server does (a server that trickles bytes cannot
 /// keep resetting the per-operation timeouts).
-const DEADLINE: Duration = Duration::from_secs(45);
+pub(crate) const DEADLINE: Duration = Duration::from_secs(45);
 /// After a failed check, the next automatic one waits this long. Any two automatic checks are at
 /// least this far apart in one run, whatever happens to the state file.
 const RETRY_AFTER: Duration = Duration::from_secs(6 * 3600);
@@ -77,23 +77,28 @@ fn deliver(window: isize, outcome: Outcome, manual: bool) {
 }
 
 /// Where the one request goes. The real one is fixed; tests point it at a local server.
-struct Endpoint {
-    host: String,
-    port: u16,
-    secure: bool,
-    path: String,
+pub(crate) struct Endpoint {
+    pub(crate) host: String,
+    pub(crate) port: u16,
+    pub(crate) secure: bool,
+    pub(crate) path: String,
+    /// The request headers after the user agent (each ends without a line break).
+    pub(crate) headers: &'static str,
 }
+
+/// Headers for GitHub's API.
+pub(crate) const API_HEADERS: &str = "Accept: application/vnd.github+json\r\nX-GitHub-Api-Version: 2022-11-28";
 
 impl Endpoint {
     fn github() -> Endpoint {
         // by the repository's number, so renaming or moving the repository does not break the
         // check in programs that are already installed (redirects are refused)
-        Endpoint { host: "api.github.com".into(), port: 443, secure: true, path: "/repositories/1422347446/releases?per_page=10".into() }
+        Endpoint { host: "api.github.com".into(), port: 443, secure: true, path: "/repositories/1422347446/releases?per_page=10".into(), headers: API_HEADERS }
     }
 }
 
 /// Closes a WinHTTP handle when it goes out of scope.
-struct Handle(*mut c_void);
+pub(crate) struct Handle(*mut c_void);
 
 impl Handle {
     fn open(raw: *mut c_void, what: &str) -> Result<Handle, String> {
@@ -125,11 +130,19 @@ unsafe fn require(handle: *mut c_void, option: u32, value: u32, what: &str) -> R
     }
 }
 
-/// One GET. Redirects are refused, TLS 1.2 and newer is required, certificates are checked (nothing
-/// here turns that off), the system's automatic sign-in to proxies and servers is off, the reply and
-/// the total time are capped, and a status other than 200 is an error.
-fn get(ep: &Endpoint, agent: &str) -> Result<String, String> {
-    let started = Instant::now();
+/// An answered request. Its handles close in the order request, connection, session.
+pub(crate) struct Response {
+    request: Handle,
+    _connect: Handle,
+    _session: Handle,
+    pub status: u32,
+}
+
+/// Sends one GET and waits for the answer's headers. Redirects are never followed here (the caller
+/// decides), TLS 1.2 and newer is required, certificates are checked (nothing here turns that off),
+/// and the system's automatic sign-in to proxies and servers is off: if a setting that guards against
+/// those cannot be applied, nothing is sent.
+pub(crate) fn send(ep: &Endpoint, agent: &str) -> Result<Response, String> {
     unsafe {
         let session = Handle::open(
             WinHttpOpen(PCWSTR(wide(agent).as_ptr()), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, PCWSTR::null(), PCWSTR::null(), 0),
@@ -158,10 +171,9 @@ fn get(ep: &Endpoint, agent: &str) -> Result<String, String> {
         // with your account on its own: both are refused, and failing to refuse them stops the check
         require(request.0, WINHTTP_OPTION_REDIRECT_POLICY, WINHTTP_OPTION_REDIRECT_POLICY_NEVER, "the redirect policy")?;
         require(request.0, WINHTTP_OPTION_DISABLE_FEATURE, WINHTTP_DISABLE_AUTHENTICATION, "the sign-in policy")?;
-        let headers: Vec<u16> = "Accept: application/vnd.github+json\r\nX-GitHub-Api-Version: 2022-11-28".encode_utf16().collect();
+        let headers: Vec<u16> = ep.headers.encode_utf16().collect();
         WinHttpSendRequest(request.0, Some(&headers), None, 0, 0, 0).map_err(|e| format!("could not send the request ({})", e.message()))?;
         WinHttpReceiveResponse(request.0, std::ptr::null_mut()).map_err(|e| format!("no answer ({})", e.message()))?;
-
         let mut status = 0u32;
         let mut size = size_of::<u32>() as u32;
         WinHttpQueryHeaders(
@@ -173,38 +185,100 @@ fn get(ep: &Endpoint, agent: &str) -> Result<String, String> {
             std::ptr::null_mut(),
         )
         .map_err(|e| format!("no status ({})", e.message()))?;
-        if status != 200 {
-            return Err(match status {
-                403 | 429 => "GitHub is limiting requests from this address; try again later".to_owned(),
-                407 => "a proxy on this network wants you to sign in".to_owned(),
-                s => format!("the server answered {s}"),
-            });
-        }
-
-        let mut body: Vec<u8> = Vec::new();
-        loop {
-            if started.elapsed() > DEADLINE {
-                return Err("the server answered too slowly".to_owned());
-            }
-            let mut available = 0u32;
-            WinHttpQueryDataAvailable(request.0, &mut available).map_err(|e| format!("the answer was cut off ({})", e.message()))?;
-            if available == 0 {
-                break;
-            }
-            let mut chunk = vec![0u8; (available as usize).min(16 * 1024)];
-            let mut read = 0u32;
-            WinHttpReadData(request.0, chunk.as_mut_ptr() as *mut c_void, chunk.len() as u32, &mut read)
-                .map_err(|e| format!("the answer was cut off ({})", e.message()))?;
-            if read == 0 {
-                break;
-            }
-            body.extend_from_slice(&chunk[..read as usize]);
-            if body.len() > MAX_REPLY_BYTES {
-                return Err("the answer was unexpectedly large".to_owned());
-            }
-        }
-        String::from_utf8(body).map_err(|_| "the answer was not text".to_owned())
+        Ok(Response { request, _connect: connect, _session: session, status })
     }
+}
+
+impl Response {
+    /// The `Location` header, for a redirect.
+    pub(crate) fn location(&self) -> Option<String> {
+        unsafe {
+            let mut size = 0u32;
+            let _ = WinHttpQueryHeaders(self.request.0, WINHTTP_QUERY_LOCATION, PCWSTR::null(), None, &mut size, std::ptr::null_mut());
+            if size == 0 || size > 8192 {
+                return None;
+            }
+            let mut buf = vec![0u16; size as usize / 2 + 1];
+            WinHttpQueryHeaders(
+                self.request.0,
+                WINHTTP_QUERY_LOCATION,
+                PCWSTR::null(),
+                Some(buf.as_mut_ptr() as *mut c_void),
+                &mut size,
+                std::ptr::null_mut(),
+            )
+            .ok()?;
+            String::from_utf16(&buf[..size as usize / 2]).ok()
+        }
+    }
+
+    /// The `Content-Length` header, when there is one.
+    pub(crate) fn content_length(&self) -> Option<u64> {
+        unsafe {
+            let mut value = 0u32;
+            let mut size = size_of::<u32>() as u32;
+            WinHttpQueryHeaders(
+                self.request.0,
+                WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
+                PCWSTR::null(),
+                Some(&mut value as *mut u32 as *mut c_void),
+                &mut size,
+                std::ptr::null_mut(),
+            )
+            .ok()?;
+            Some(u64::from(value))
+        }
+    }
+
+    /// Reads the next piece of the body into `buf` (up to its length); 0 means the end.
+    pub(crate) fn read(&self, buf: &mut [u8]) -> Result<usize, String> {
+        unsafe {
+            let mut available = 0u32;
+            WinHttpQueryDataAvailable(self.request.0, &mut available).map_err(|e| format!("the answer was cut off ({})", e.message()))?;
+            if available == 0 {
+                return Ok(0);
+            }
+            let want = (available as usize).min(buf.len());
+            let mut read = 0u32;
+            WinHttpReadData(self.request.0, buf.as_mut_ptr() as *mut c_void, want as u32, &mut read)
+                .map_err(|e| format!("the answer was cut off ({})", e.message()))?;
+            Ok(read as usize)
+        }
+    }
+}
+
+/// What a status other than 200 means to a person.
+pub(crate) fn status_message(status: u32) -> String {
+    match status {
+        403 | 429 => "GitHub is limiting requests from this address; try again later".to_owned(),
+        407 => "a proxy on this network wants you to sign in".to_owned(),
+        s => format!("the server answered {s}"),
+    }
+}
+
+/// One GET of a small answer: the status must be 200, the body is capped and the total time limited.
+fn get(ep: &Endpoint, agent: &str) -> Result<String, String> {
+    let started = Instant::now();
+    let response = send(ep, agent)?;
+    if response.status != 200 {
+        return Err(status_message(response.status));
+    }
+    let mut body: Vec<u8> = Vec::new();
+    let mut chunk = vec![0u8; 16 * 1024];
+    loop {
+        if started.elapsed() > DEADLINE {
+            return Err("the server answered too slowly".to_owned());
+        }
+        let n = response.read(&mut chunk)?;
+        if n == 0 {
+            break;
+        }
+        body.extend_from_slice(&chunk[..n]);
+        if body.len() > MAX_REPLY_BYTES {
+            return Err("the answer was unexpectedly large".to_owned());
+        }
+    }
+    String::from_utf8(body).map_err(|_| "the answer was not text".to_owned())
 }
 
 fn check_at(ep: &Endpoint) -> Outcome {
@@ -453,11 +527,82 @@ pub fn command() -> i32 {
     }
 }
 
+/// `pasteroll update [--yes]`: one check, printed; with `--yes` the update is downloaded, verified
+/// and installed the way the tray menu does it (without the confirmation window, since the flag is
+/// the confirmation). Exit code 0 when it worked or there was nothing to do, 1 when it did not.
+pub fn install_command(db: &Path, yes: bool) -> i32 {
+    use crate::install::{self, Done, Trust};
+    #[cfg(feature = "e2e-test-server")]
+    let announced = match std::env::var("PASTEROLL_UPDATE_ANNOUNCE").ok().and_then(|v| Version::parse(&v)) {
+        Some(v) => Outcome::Newer(v), // the end-to-end test build names the release itself
+        None => check(),
+    };
+    #[cfg(not(feature = "e2e-test-server"))]
+    let announced = check();
+    match announced {
+        Outcome::Failed(e) => {
+            eprintln!("pasteroll: could not check for updates: {e}");
+            1
+        }
+        Outcome::UpToDate(_) => {
+            println!("Pasteroll {} is the newest version.", env!("CARGO_PKG_VERSION"));
+            0
+        }
+        Outcome::Newer(v) => {
+            println!("Pasteroll {v} is available (this is {}).\n{}", env!("CARGO_PKG_VERSION"), v.release_page());
+            if !yes {
+                println!("Run `pasteroll update --yes` to download, verify and install it.");
+                return 0;
+            }
+            let mode = install::mode();
+            let Some(dir) = db.parent() else {
+                eprintln!("pasteroll: the data folder is unknown");
+                return 1;
+            };
+            match install::run_update(&Trust::github(), &mode, &v, &Version::current(), dir, &mut |s| println!("{s}"), &mut |_, _| {}) {
+                Ok(Done::SetupStarted) => {
+                    println!("The installer was started; it closes Pasteroll and starts the new version.");
+                    0
+                }
+                Ok(Done::Replaced(exe)) => {
+                    println!("Replaced {}. Start Pasteroll again to use the new version.", exe.display());
+                    0
+                }
+                Err(e) => {
+                    eprintln!("pasteroll: the update was not installed: {e}");
+                    1
+                }
+            }
+        }
+    }
+}
+
+/// `pasteroll update-verify MANIFEST SIGNATURE`: checks a release's manifest against the keys built
+/// into this program, the way the updater will. Used by the release process to prove that the real
+/// signature works with the real keys before anything is published.
+pub fn verify_command(manifest: &Path, signature: &Path) -> i32 {
+    use pasteroll_core::update_manifest::{configured_keys, verify_manifest};
+    let (Ok(m), Ok(s)) = (std::fs::read(manifest), std::fs::read(signature)) else {
+        eprintln!("pasteroll: could not read the manifest or the signature");
+        return 1;
+    };
+    match verify_manifest(&m, &s, &configured_keys(), &crate::sigcheck::CngVerifier) {
+        Ok(parsed) => {
+            println!("PASS: signed by a Pasteroll release key; version {}, installer {}, program {}", parsed.version, parsed.setup.name, parsed.exe.name);
+            0
+        }
+        Err(e) => {
+            eprintln!("FAIL: {e}");
+            1
+        }
+    }
+}
+
 /// The wording of the one-time question.
 pub const QUESTION: &str = "Once a day Pasteroll would ask GitHub whether a newer version exists. \
 GitHub sees your IP address and the Pasteroll version you run (plus the usual request headers), \
-nothing else: no clipboard content, no history. Nothing is downloaded or installed; you are only \
-told, and the download is up to you.\n\n\
+nothing else: no clipboard content, no history. You are only told: nothing is downloaded \
+or installed unless you later choose to install an update.\n\n\
 If you choose \"Never check\", Pasteroll never uses the internet. You can change this any time in \
 Settings, or check by hand from the tray menu.";
 
@@ -488,7 +633,7 @@ mod tests {
             let _ = s.write_all(body.as_bytes());
             String::from_utf8_lossy(&req).into_owned()
         });
-        (Endpoint { host: "127.0.0.1".into(), port, secure: false, path: "/repos/x/releases".into() }, handle)
+        (Endpoint { host: "127.0.0.1".into(), port, secure: false, path: "/repos/x/releases".into(), headers: API_HEADERS }, handle)
     }
 
     fn list(newest: &str) -> String {
@@ -567,7 +712,7 @@ mod tests {
             let l = TcpListener::bind("127.0.0.1:0").unwrap();
             l.local_addr().unwrap().port()
         };
-        let ep = Endpoint { host: "127.0.0.1".into(), port, secure: false, path: "/".into() };
+        let ep = Endpoint { host: "127.0.0.1".into(), port, secure: false, path: "/".into(), headers: API_HEADERS };
         assert!(matches!(check_at(&ep), Outcome::Failed(_)));
     }
 

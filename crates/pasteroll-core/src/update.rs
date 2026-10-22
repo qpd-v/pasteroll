@@ -64,6 +64,12 @@ impl Version {
         }
     }
 
+    /// A version number as the update manifest writes it (`0.1.0-beta.9`, no `v`), held to the same
+    /// rules as a release tag.
+    pub fn from_release_number(number: &str) -> Option<Version> {
+        Version::from_tag(&format!("v{number}"))
+    }
+
     /// Whether this is a pre-release (a beta).
     pub fn is_pre(&self) -> bool {
         self.pre.is_some()

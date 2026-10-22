@@ -1,7 +1,7 @@
 # Beta.4 download filenames
 
-Beta.8 is a Windows-only release: tag v0.1.0-beta.8 carries only the two Windows packages and a
-SHA256SUMS that covers just them. The X11 and GNOME downloads below stay on v0.1.0-beta.4.
+Beta.9 is a Windows-only release: tag v0.1.0-beta.9 carries only Windows files (Setup, portable ZIP, program file, update manifest and signature) and a
+SHA256SUMS that covers the three Windows packages. The X11 and GNOME downloads below stay on v0.1.0-beta.4.
 
 Use release tag v0.1.0-beta.4 for all six packages and SHA256SUMS after publication.
 Windows: pasteroll-0.1.0-beta.4-windows-x64-setup.exe and

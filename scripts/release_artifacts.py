@@ -31,7 +31,8 @@ def artifact_names(version, *, with_gnome=False, windows_only=False):
             f"pasteroll-{version}-linux-x86_64.tar.gz",
             f"pasteroll_{version}_amd64.deb")
     if windows_only:
-        return names[:2]
+        # Setup, the portable ZIP, and the bare program file the updater uses for portable copies
+        return names[:2] + (f"pasteroll-{version}-windows-x64.exe",)
     if with_gnome:
         names += (f"pasteroll-{version}-linux-x86_64-gnome-development.tar.gz",
                   f"pasteroll_{version}_amd64-gnome-development.deb")

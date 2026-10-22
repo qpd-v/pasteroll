@@ -1,10 +1,16 @@
 # Releasing Pasteroll
 
-Current version: **0.1.0-beta.8** (Windows only; Linux stays on **0.1.0-beta.4**), experimental
+Current version: **0.1.0-beta.9** (Windows only; Linux stays on **0.1.0-beta.4**), experimental
 prerelease. A Windows-only release uses `--windows-only` for checksums and verification, publishes
 just Setup, the portable ZIP and their SHA256SUMS, and leaves the Linux links on beta.4.
 Use a reviewed source commit and build all six packages fresh. Never select assets
-with a dist wildcard. No CI, automatic updater or application networking is added.
+with a dist wildcard. There is no CI. The only network use in the program is the optional update
+check and "Download and install" (Windows), so every release also carries a signed update manifest:
+`python scripts/make-update-manifest.py` (before `checksums.py --windows-only`), then
+`scripts/release-keys.ps1 sign` run by the maintainer (it asks for the key passphrase), then
+`pasteroll update-verify dist/update-manifest.txt dist/update-manifest.txt.sig` (must print PASS) and
+`make-update-manifest.py --verify`. A Windows-only release publishes six files: Setup, the portable
+ZIP, the bare `pasteroll-<version>-windows-x64.exe`, the manifest, its signature and SHA256SUMS.
 
 ## Scope and acceptance
 

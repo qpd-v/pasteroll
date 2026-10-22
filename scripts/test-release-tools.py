@@ -140,7 +140,8 @@ class ReleaseTools(unittest.TestCase):
 
     def test_windows_only_manifest_does_not_require_or_include_linux(self):
         names = artifact_names("0.1.0-beta.4", windows_only=True)
-        self.assertEqual(len(names), 2)
+        self.assertEqual(len(names), 3)
+        self.assertIn("pasteroll-0.1.0-beta.4-windows-x64.exe", names)
         for name in names:
             (self.temp / name).write_bytes(b"fixture")
         stale = "pasteroll_0.1.0-beta.3_amd64.deb"

@@ -20,8 +20,9 @@ from. A small preview is kept for images.
 ## Where it goes
 
 **Nowhere.** Your clipboard never leaves your computer: no telemetry, no analytics, no crash
-upload, no cloud sync. The one thing in Pasteroll that can use the internet is the optional
-**update check** (Windows), described below. Nothing else has any network code, which you can
+upload, no cloud sync. The only things in Pasteroll that can use the internet are the optional
+**update check** (Windows) and, only when you ask for it, installing an update, both described below.
+Nothing else has any network code, which you can
 confirm by reading the source or watching its network activity. The only files it writes are in its own data folder
 (`%LOCALAPPDATA%\Pasteroll` or `~/.local/share/pasteroll`), plus the files `install` creates
 (program, Start menu or application-menu entry, uninstall entry).
@@ -40,12 +41,25 @@ and the program name and version (`Pasteroll/<version>`), plus the usual request
 (`Accept`, `X-GitHub-Api-Version`); nothing else is sent: no clipboard content, no history, no
 settings, no identifier. Windows is told not to sign in to a proxy or server on its own. Your
 network may do its own name lookups and proxy discovery for any program. If a newer version exists you get a notification
-and a menu entry that opens its release page in your browser. **Nothing is downloaded or installed
-by Pasteroll.** You can also check by hand from the tray menu (*Check for updates now*) or with
+and a menu entry that opens its release page in your browser. **The check itself downloads nothing
+and installs nothing** (installing is a separate step you must choose, described below). You can also check by hand from the tray menu (*Check for updates now*) or with
 `pasteroll update-check`; that one request is made only when you ask. Choose No (or untick the box)
 and Pasteroll makes no network request at all. The date of the last check and the newest version
 you were told about are kept in `update-check.txt` in the data folder. The setting is
 `[updates] check_for_updates` in `config.toml`.
+
+### Download and install (Windows, only when you ask)
+
+When a newer version has been found, the tray menu offers **Download and install**. Nothing is
+downloaded until you click it and confirm. Then Pasteroll fetches the update from GitHub: a small
+signed description of the release and the installer (or, for a portable copy, the program file) from
+`github.com`, which hands the download over to GitHub's own file hosts
+(`release-assets.githubusercontent.com`, `objects.githubusercontent.com`). GitHub sees your IP address
+and the program name and version, as for any download. Before anything is run, Pasteroll checks that the
+release description is signed with the Pasteroll release key (its public half is built into the
+program) and that the downloaded file matches it exactly; a file that fails is deleted, not run.
+`pasteroll update --yes` does the same from the command line, without the confirmation window. The installer is kept in a private `pasteroll-update` folder inside the data folder until the next update (and Setup may write `update-setup.log` there, and its own temporary files in your temp folder). Your
+clipboard history, settings and keys are never sent, and the installer does not touch them.
 
 ## How it is stored
 

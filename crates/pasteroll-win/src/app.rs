@@ -289,6 +289,10 @@ pub fn create(opts: &Options) -> Result<HWND> {
                     with_runtime(|rt| rt.tray = Some(t));
                     // the update check runs only when the setting is on; "not decided" asks once
                     crate::update::begin(tray_window, &opts.db, cfg.updates, opts.notice && opts.hooks);
+                    // an update that was started earlier and did not finish is worth saying
+                    if let Some(text) = opts.db.parent().and_then(crate::install::startup_report) {
+                        crate::installui::report(tray_window, text);
+                    }
                 }
                 Err(e) => eprintln!("[pasteroll] no notification icon: {e}"),
             }
@@ -421,16 +425,24 @@ pub fn log_line(dir: Option<&std::path::Path>, msg: &str) {
 /// Starts a fresh copy of this program with the same arguments and quits this one. The new copy
 /// waits for this one's single-instance mutex, so the two never run side by side.
 pub fn restart() {
+    restart_to(None);
+}
+
+/// Like [`restart`], starting the program file `program` (an updated copy that replaced this one).
+pub fn restart_to(program: Option<&std::path::Path>) {
     use std::os::windows::process::CommandExt;
     use std::process::Stdio;
     let dir = db_path().and_then(|d| d.parent().map(|p| p.to_path_buf()));
-    let exe = match std::env::current_exe() {
-        Ok(e) => e,
-        Err(e) => {
-            log_line(dir.as_deref(), &format!("restart: cannot find the program: {e}"));
-            restart_failed(&e.to_string());
-            return;
-        }
+    let exe = match program {
+        Some(p) => p.to_path_buf(),
+        None => match std::env::current_exe() {
+            Ok(e) => e,
+            Err(e) => {
+                log_line(dir.as_deref(), &format!("restart: cannot find the program: {e}"));
+                restart_failed(&e.to_string());
+                return;
+            }
+        },
     };
     let mut args: Vec<std::ffi::OsString> =
         std::env::args_os().skip(1).filter(|a| a != "--restart").collect();
@@ -513,6 +525,8 @@ pub fn run(opts: Options) -> i32 {
             }
         }
     };
+    // the old program file left by an update that replaced it
+    crate::install::remove_leftover();
     if opts.notice && opts.hooks {
         crate::setup::first_run_notice(&opts.db);
     }

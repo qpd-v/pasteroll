@@ -64,6 +64,8 @@ Name: "{autodesktop}\Pasteroll"; Filename: "{app}\pasteroll.exe"; Parameters: "r
 
 [Run]
 Filename: "{app}\pasteroll.exe"; Parameters: "run"; Description: "Run Pasteroll"; Flags: postinstall nowait skipifsilent runasoriginaluser
+; Started by Pasteroll's own "Download and install update": a silent install that starts the new version again.
+Filename: "{app}\pasteroll.exe"; Parameters: "run"; Flags: nowait runasoriginaluser; Check: RelaunchRequested
 
 [Code]
 const
@@ -71,6 +73,12 @@ const
 
 var
   RemoveData: Boolean;
+
+// True only when Pasteroll's updater asked for it (/RELAUNCH=1); an ordinary silent install does not start the program.
+function RelaunchRequested: Boolean;
+begin
+  Result := ExpandConstant('{param:RELAUNCH|0}') = '1';
+end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var

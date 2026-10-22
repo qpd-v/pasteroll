@@ -15,7 +15,8 @@
 //! pasteroll     rotate-key                   replace the master key now (Pasteroll must not be running)
 //! pasteroll     reset-history --yes          delete history and its key
 //! pasteroll     seed                         add synthetic demo clips
-//! pasteroll     update-check                 ask GitHub once whether a newer version exists (the only network use)
+//! pasteroll     update-check                 ask GitHub once whether a newer version exists
+//! pasteroll     update [--yes]               the same, and with --yes download, verify and install it
 //! pasteroll     probe                        self-test of the overlay with real input (no clipboard)
 //! pasteroll     clipboard-selftest           round-trips synthetic items through the real clipboard
 //!                                           (overwrites the clipboard)
@@ -29,8 +30,12 @@ mod about;
 mod app;
 mod clipboard;
 mod dialogs;
+mod elevated;
+mod fetch;
 mod hooks;
 mod input;
+mod install;
+mod installui;
 mod keystore;
 mod ocr;
 mod overlay;
@@ -39,6 +44,7 @@ mod probe;
 mod selftest;
 mod settings;
 mod setup;
+mod sigcheck;
 mod tray;
 mod update;
 mod winsys;
@@ -98,7 +104,7 @@ fn usage() -> ! {
         "usage: pasteroll     run | status | config [show|path|init|set KEY VALUE] | exclude EXE | \
          clear --yes [--keep-pinned] | repair --yes | key-export --out FILE | key-import --in FILE | \
          rotate-key | reset-history --yes | seed | probe | clipboard-selftest | stop | install | \
-         uninstall [--remove-data --yes] | autostart [on|off] | about [--text] | update-check\n\
+         uninstall [--remove-data --yes] | autostart [on|off] | about [--text] | update-check | update [--yes] | update-verify MANIFEST SIGNATURE\n\
          options: --db FILE   --no-capture   --max-seconds N   --yes   --no-notice"
     );
     std::process::exit(2);
@@ -570,6 +576,15 @@ fn main() {
         }
         "probe" => probe::run(),
         "update-check" => update::command(),
+        "update" => update::install_command(&db, flag(&args, "--yes")),
+        #[cfg(feature = "e2e-test-server")]
+        "update-dialog-preview" => installui::preview_confirmation(),
+        // the administrator half of an update for a copy in Program Files (see elevated.rs)
+        "apply-update" => elevated::apply_update(args.get(1).map(String::as_str), args.get(2..).unwrap_or(&[])),
+        "update-verify" => match (args.get(1), args.get(2)) {
+            (Some(m), Some(s)) => update::verify_command(Path::new(m), Path::new(s)),
+            _ => fail("usage: update-verify MANIFEST SIGNATURE"),
+        },
         // debug aid: a picture of the settings window
         "settings-snapshot" => {
             unsafe {

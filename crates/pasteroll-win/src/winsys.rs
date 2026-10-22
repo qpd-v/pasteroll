@@ -186,6 +186,60 @@ pub fn restrict_to_current_user(path: &Path, folder: bool) -> Result<(), String>
     }
 }
 
+/// Creates the folder `path`, which must not exist yet, so that only Administrators and the system
+/// account can open, list or change it, and nothing inside it inherits anyone else's access. The
+/// folder is made in one step with that protection, so there is no moment when it is open to others.
+/// Used by the update helper that runs with administrator rights.
+pub fn create_admin_only_dir(path: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::Storage::FileSystem::CreateDirectoryW;
+    unsafe {
+        let mut psd = PSECURITY_DESCRIPTOR::default();
+        // D:P = protected (does not inherit), full control for the system account (SY) and for
+        // Administrators (BA), inherited by what is created inside (OICI)
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            PCWSTR(wide("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)").as_ptr()),
+            SDDL_REVISION_1,
+            &mut psd,
+            None,
+        )
+        .map_err(|e| format!("security descriptor: {e}"))?;
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: psd.0,
+            bInheritHandle: false.into(),
+        };
+        let w: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+        let result = CreateDirectoryW(PCWSTR(w.as_ptr()), Some(&attributes)).map_err(|e| format!("cannot create {} ({})", path.display(), e.message()));
+        let _ = LocalFree(Some(HLOCAL(psd.0)));
+        result
+    }
+}
+
+/// `n` random bytes from Windows' system generator, as hex.
+pub fn random_hex(n: usize) -> String {
+    use windows::Win32::Security::Cryptography::{BCryptGenRandom, BCRYPT_USE_SYSTEM_PREFERRED_RNG};
+    let mut bytes = vec![0u8; n];
+    let ok = unsafe { BCryptGenRandom(None, &mut bytes, BCRYPT_USE_SYSTEM_PREFERRED_RNG) }.is_ok();
+    assert!(ok, "the system random number generator failed");
+    pasteroll_core::update_manifest::hex(&bytes)
+}
+
+fn system_folder(f: unsafe fn(Option<&mut [u16]>) -> u32) -> Option<std::path::PathBuf> {
+    let mut buf = [0u16; 260];
+    let n = unsafe { f(Some(&mut buf)) } as usize;
+    (n > 0 && n < buf.len()).then(|| std::path::PathBuf::from(String::from_utf16_lossy(&buf[..n])))
+}
+
+/// Windows' own system folder (System32), from Windows and not from the environment.
+pub fn system_dir() -> Option<std::path::PathBuf> {
+    system_folder(windows::Win32::System::SystemInformation::GetSystemDirectoryW)
+}
+
+/// The folder Windows is installed in, from Windows and not from the environment.
+pub fn windows_dir() -> Option<std::path::PathBuf> {
+    system_folder(windows::Win32::System::SystemInformation::GetSystemWindowsDirectoryW)
+}
 
 /// The user's local app-data folder from the shell (not from the environment, which a parent
 /// process controls).
@@ -212,6 +266,13 @@ pub fn is_reparse_point(path: &Path) -> bool {
 /// Whether `path` is owned by the current user (or, when we run elevated, by Administrators,
 /// which owns files an elevated process creates).
 pub fn owned_by_current_user(path: &Path) -> Result<bool, String> {
+    let owner_str = owner_sid(path)?;
+    let me = current_user_sid().ok_or("could not determine the current user")?;
+    Ok(owner_str == me || (self_elevated() && owner_str == "S-1-5-32-544"))
+}
+
+/// The owner of `path` as a SID string ("S-1-5-32-544" is Administrators, "S-1-5-18" the system).
+pub fn owner_sid(path: &Path) -> Result<String, String> {
     use std::os::windows::ffi::OsStrExt;
     unsafe {
         let w: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
@@ -237,9 +298,7 @@ pub fn owned_by_current_user(path: &Path) -> Result<bool, String> {
             let _ = LocalFree(Some(HLOCAL(s.0 as *mut _)));
         }
         let _ = LocalFree(Some(HLOCAL(psd.0)));
-        let owner_str = owner_str.ok_or("could not read the owner SID")?;
-        let me = current_user_sid().ok_or("could not determine the current user")?;
-        Ok(owner_str == me || (self_elevated() && owner_str == "S-1-5-32-544"))
+        owner_str.ok_or_else(|| "could not read the owner SID".to_owned())
     }
 }
 

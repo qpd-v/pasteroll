@@ -96,7 +96,7 @@ fn unprotect(sealed: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 /// Makes sure `dir` exists, is a real folder we own, and is locked to the current user.
-fn private_dir(dir: &Path) -> Result<(), String> {
+pub(crate) fn private_dir(dir: &Path) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     if crate::winsys::is_reparse_point(dir) {
         return Err(format!("{} is a junction or symbolic link; refusing to use it", dir.display()));

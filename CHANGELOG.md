@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.0-beta.9 (Windows only)
+
+- Add **Download and install** to the update check (Windows). When a newer version is found, the tray
+  menu and the notification offer it; nothing is downloaded until you click and confirm. The update
+  is downloaded from GitHub, checked against the maintainer's signature and its checksum (a file that
+  fails is deleted, never run), and installed: a copy installed by Setup runs the new Setup silently
+  and is started again, and a portable or self-installed copy replaces its own program file. An
+  all-users copy gets Windows' administrator prompt and is updated from a folder only administrators
+  can open, so no file you could change is trusted by the elevated part. Your history and settings are untouched.
+  `pasteroll update --yes` does the same from the command line.
+- Releases now carry `update-manifest.txt` and its signature, and a bare `pasteroll-<version>-windows-x64.exe`
+  for portable updates. `PRIVACY.md` and `SECURITY.md` describe exactly what is downloaded and how it
+  is trusted.
+
 ## 0.1.0-beta.8 (Windows only)
 
 - Fix the Settings window not showing your answer to the one-time update question. If the question

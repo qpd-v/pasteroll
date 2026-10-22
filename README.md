@@ -4,19 +4,19 @@ A clipboard history you can scroll with the mouse wheel. Copy as usual; when you
 clip, press **Ctrl+Shift+middle-click**, scroll through your history right where you are working,
 and paste the whole clip, or select just a part of it and paste only that.
 
-**Status: public beta.** Windows is at `0.1.0-beta.8`; Linux is still at `0.1.0-beta.4` and
+**Status: public beta.** Windows is at `0.1.0-beta.9`; Linux is still at `0.1.0-beta.4` and
 catches up in a later release. It works and is tested, but it is young. Expect rough edges and
 please [report them](https://github.com/qpd-v/pasteroll/issues).
 
 | | Windows 10 / 11 | Linux (X11) |
 |---|---|---|
-| Download | [Setup EXE](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.8/pasteroll-0.1.0-beta.8-windows-x64-setup.exe) · [Portable ZIP](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.8/pasteroll-0.1.0-beta.8-windows-x64-portable.zip) | [Static archive](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/pasteroll-0.1.0-beta.4-linux-x86_64.tar.gz) · [Debian/Ubuntu .deb](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/pasteroll_0.1.0-beta.4_amd64.deb) |
+| Download | [Setup EXE](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.9/pasteroll-0.1.0-beta.9-windows-x64-setup.exe) · [Portable ZIP](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.9/pasteroll-0.1.0-beta.9-windows-x64-portable.zip) | [Static archive](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/pasteroll-0.1.0-beta.4-linux-x86_64.tar.gz) · [Debian/Ubuntu .deb](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/pasteroll_0.1.0-beta.4_amd64.deb) |
 | Tray icon | yes | StatusNotifier (KDE, GNOME with AppIndicator, Ubuntu) or XEmbed |
 | Wayland | n/a | experimental GNOME 46; separate packages and setup below |
 | macOS | not available | |
 
-Windows: [release notes and testing status](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.8) ·
-[SHA256SUMS](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.8/SHA256SUMS)
+Windows: [release notes and testing status](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.9) ·
+[SHA256SUMS](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.9/SHA256SUMS)
 Linux: [release notes and testing status](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.4) ·
 [SHA256SUMS](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/SHA256SUMS)
 
@@ -82,8 +82,11 @@ the experimental packages; it does not indicate broader Wayland compatibility.
 - **Private by design**: stored encrypted on your computer; your clipboard is never sent anywhere
   (see [PRIVACY.md](PRIVACY.md)).
 - **Update check (Windows, optional)**: off until you say yes. Once a day it asks GitHub whether a
-  newer version exists and tells you; it never downloads or installs anything. Turn it on or off
-  in Settings, or check by hand from the tray menu.
+  newer version exists and tells you. Turn it on or off in Settings, or check by hand from the tray
+  menu. Nothing is downloaded until you click **Download and install** and confirm; then the update
+  is checked against the maintainer's signature before it runs, and your history and settings are
+  kept (Setup installs, all-users installs with Windows' administrator prompt, and portable copies
+  all update this way).
 - **Skips password managers** that mark their copies as sensitive, and programs you exclude.
 - **Terminal safe**: asks for a second Enter before pasting several lines into a terminal.
 - **Adjustable size**: 50 % to 200 % in Settings.
@@ -93,13 +96,13 @@ the experimental packages; it does not indicate broader Wayland compatibility.
 
 ### Windows
 
-1. Download `pasteroll-0.1.0-beta.8-windows-x64-setup.exe` and `SHA256SUMS` from the
-   [beta.8 release](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.8) and
+1. Download `pasteroll-0.1.0-beta.9-windows-x64-setup.exe` and `SHA256SUMS` from the
+   [beta.9 release](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.9) and
    [verify the checksum](#verify-your-download).
 2. Run the setup wizard. **Only for me** is the default and needs no administrator rights;
    **For all users** needs UAC. Start menu is on by default; desktop shortcut and autostart are off.
 
-For portable use, extract `pasteroll-0.1.0-beta.8-windows-x64-portable.zip` and run `pasteroll.exe`.
+For portable use, extract `pasteroll-0.1.0-beta.9-windows-x64-portable.zip` and run `pasteroll.exe`.
 Its included `portable.txt` keeps application data in the adjacent `data` folder.
 
 > **"Windows protected your PC"**: the beta is **not code-signed yet**, so SmartScreen shows
@@ -248,7 +251,7 @@ Each release has a `SHA256SUMS` file.
 
 ```powershell
 # Windows
-Get-FileHash .\pasteroll-0.1.0-beta.8-windows-x64-setup.exe -Algorithm SHA256
+Get-FileHash .\pasteroll-0.1.0-beta.9-windows-x64-setup.exe -Algorithm SHA256
 ```
 ```sh
 # Linux
@@ -287,7 +290,8 @@ platform (`pasteroll-win`, `pasteroll-linux`).
 - Linux: X11 only. Wayland has no global input grabs for ordinary programs.
 - Pasting into a program running as administrator (Windows) is blocked by Windows.
 - The carousel is not excluded from screen capture (Windows Recall, screen sharing can see it).
-- Not signed yet (Windows), no auto-update: download new versions yourself.
+- Not Authenticode-signed (Windows). Updates can be installed from the tray menu (optional update
+  check, then **Download and install**; see PRIVACY.md and SECURITY.md), or by downloading Setup yourself.
 - No macOS build.
 
 ## License

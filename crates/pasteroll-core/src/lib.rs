@@ -34,6 +34,7 @@ pub mod session;
 pub mod source;
 pub mod store;
 pub mod update;
+pub mod update_manifest;
 pub mod vault;
 pub mod wheel;
 
