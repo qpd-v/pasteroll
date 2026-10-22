@@ -1,0 +1,7 @@
+pasteroll-update-latest 1
+version 0.1.0-beta.10
+note Settings has a Check for updates now button and shows when Pasteroll last checked.
+note The install window shows what is new in the version, and has a Skip this version button.
+note If an update's installer fails, your previous Pasteroll is started again and tells you so.
+note Which version is the newest is now signed with the Pasteroll release key, not read from GitHub's list.
+note After an update, Pasteroll says which version you now have.
