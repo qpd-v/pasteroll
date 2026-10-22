@@ -19,6 +19,10 @@ pub enum Event {
     Say(String),
     /// It stopped; nothing was changed. The text is for a person.
     Failed(String),
+    /// Something to tell the person that is neither a step nor a failure.
+    Notice(String),
+    /// An update finished and this is the new version.
+    Info(String),
     /// Setup was started; it will close this program and start the new version.
     SetupStarted,
     /// The program file was replaced; restart into it.
@@ -47,6 +51,11 @@ pub fn report(window: isize, text: String) {
     post(window, Event::Failed(text));
 }
 
+/// "Pasteroll updated to ...", at the first start after an update.
+pub fn updated(window: isize, text: String) {
+    post(window, Event::Info(text));
+}
+
 /// How this copy updates; it does not change while the program runs.
 pub fn mode() -> &'static Mode {
     static MODE: OnceLock<Mode> = OnceLock::new();
@@ -62,8 +71,9 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// The words of the confirmation, for this kind of copy.
-pub fn confirmation_text(mode: &Mode, current: &Version, found: &Version) -> String {
+/// The words of the confirmation, for this kind of copy. `notes` are the plain lines the signed note
+/// for `found` carried (they are shown as they are; nothing else from the network is).
+pub fn confirmation_text(mode: &Mode, current: &Version, found: &Version, notes: &[String]) -> String {
     let what = match mode {
         Mode::Setup { all_users: false } => String::new(),
         Mode::Setup { all_users: true } => "\n\nThis copy is installed for all users, so Windows will ask for administrator permission.".to_owned(),
@@ -73,8 +83,13 @@ pub fn confirmation_text(mode: &Mode, current: &Version, found: &Version) -> Str
         ),
         Mode::NotifyOnly(_) => String::new(),
     };
+    let news = if notes.is_empty() {
+        String::new()
+    } else {
+        format!("\n\nWhat's new:\n{}", notes.iter().map(|n| format!("\u{2022} {n}")).collect::<Vec<_>>().join("\n"))
+    };
     format!(
-        "You have Pasteroll {current}. Pasteroll {found} is available.\n\nPasteroll will download it from GitHub, check that it is signed with the Pasteroll release key, and install it. Your history and settings are kept. Pasteroll closes and starts again by itself.{what}"
+        "You have Pasteroll {current}. Pasteroll {found} is available.{news}\n\nPasteroll will download it from GitHub, check that it is signed with the Pasteroll release key, and install it. Your history and settings are kept. Pasteroll closes and starts again by itself.{what}"
     )
 }
 
@@ -82,6 +97,7 @@ pub fn confirmation_text(mode: &Mode, current: &Version, found: &Version) -> Str
 enum Answer {
     Install,
     Notes,
+    Skip,
     NotNow,
 }
 
@@ -89,14 +105,16 @@ fn ask(text: &str, found: &Version) -> Answer {
     use windows::Win32::UI::Controls::*;
     const INSTALL: i32 = 101;
     const NOTES: i32 = 102;
+    const SKIP: i32 = 103;
     let title = wide("Pasteroll update");
     let heading = wide(&format!("Install Pasteroll {found} now?"));
     let body = wide(text);
     // buttons with no keyboard shortcuts, and "Not now" as the default: a stray key cannot install
-    let (install_text, notes_text) = (wide("Download and install"), wide("Release notes"));
+    let (install_text, notes_text, skip_text) = (wide("Download and install"), wide("Release notes"), wide("Skip this version"));
     let buttons = [
         TASKDIALOG_BUTTON { nButtonID: INSTALL, pszButtonText: PCWSTR(install_text.as_ptr()) },
         TASKDIALOG_BUTTON { nButtonID: NOTES, pszButtonText: PCWSTR(notes_text.as_ptr()) },
+        TASKDIALOG_BUTTON { nButtonID: SKIP, pszButtonText: PCWSTR(skip_text.as_ptr()) },
     ];
     let config = TASKDIALOGCONFIG {
         cbSize: size_of::<TASKDIALOGCONFIG>() as u32,
@@ -115,6 +133,7 @@ fn ask(text: &str, found: &Version) -> Answer {
         Ok(()) => match pressed {
             INSTALL => Answer::Install,
             NOTES => Answer::Notes,
+            SKIP => Answer::Skip,
             _ => Answer::NotNow,
         },
         Err(_) => Answer::NotNow,
@@ -135,10 +154,18 @@ pub fn offer(window: isize, db: PathBuf, found: Version) {
             BUSY.store(false, Ordering::Release);
             return;
         }
-        match ask(&confirmation_text(&mode, &current, &found), &found) {
+        // the plain lines come from the signed note, fetched and verified now (none if that is not possible)
+        let notes = crate::update::verified_notes(&found);
+        match ask(&confirmation_text(&mode, &current, &found, &notes), &found) {
             Answer::Install => {}
             Answer::Notes => {
                 open_page(&found);
+                BUSY.store(false, Ordering::Release);
+                return;
+            }
+            Answer::Skip => {
+                crate::update::skip(&db, &found);
+                post(window, Event::Notice(format!("Pasteroll will not mention {found} again. A newer version, or Check for updates now, will bring it back.")));
                 BUSY.store(false, Ordering::Release);
                 return;
             }
@@ -188,7 +215,8 @@ pub fn offer(window: isize, db: PathBuf, found: Version) {
 #[cfg(feature = "e2e-test-server")]
 pub fn preview_confirmation() -> i32 {
     let (cur, found) = (Version::current(), Version::parse("99.0.0-beta.1").expect("version"));
-    let answer = ask(&confirmation_text(mode(), &cur, &found), &found);
+    let notes = vec!["A short line about what changed.".to_owned(), "Another short line.".to_owned()];
+    let answer = ask(&confirmation_text(mode(), &cur, &found, &notes), &found);
     println!("{answer:?}");
     0
 }
@@ -211,13 +239,25 @@ mod tests {
     #[test]
     fn the_confirmation_says_what_will_happen_to_this_kind_of_copy() {
         let (cur, new) = (Version::parse("0.1.0-beta.8").unwrap(), Version::parse("0.1.0-beta.9").unwrap());
-        let setup = confirmation_text(&Mode::Setup { all_users: false }, &cur, &new);
+        let setup = confirmation_text(&Mode::Setup { all_users: false }, &cur, &new, &[]);
         assert!(setup.contains("0.1.0-beta.8") && setup.contains("0.1.0-beta.9") && setup.contains("signed"));
         assert!(setup.contains("history and settings are kept"));
         assert!(!setup.contains("administrator"));
-        let machine = confirmation_text(&Mode::Setup { all_users: true }, &cur, &new);
+        let machine = confirmation_text(&Mode::Setup { all_users: true }, &cur, &new, &[]);
         assert!(machine.contains("administrator permission"));
-        let portable = confirmation_text(&Mode::Replace { exe: PathBuf::from(r"D:\tools\pasteroll.exe") }, &cur, &new);
+        let portable = confirmation_text(&Mode::Replace { exe: PathBuf::from(r"D:\tools\pasteroll.exe") }, &cur, &new, &[]);
         assert!(portable.contains(r"D:\tools\pasteroll.exe") && portable.contains("replace its own program file"));
+    }
+
+    #[test]
+    fn the_signed_notes_are_shown_as_a_list_before_the_explanation() {
+        let (cur, new) = (Version::parse("0.1.0-beta.9").unwrap(), Version::parse("0.1.0-beta.10").unwrap());
+        let none = confirmation_text(&Mode::Setup { all_users: false }, &cur, &new, &[]);
+        assert!(!none.contains("What's new"), "no notes, no heading");
+        let notes = vec!["Check now in Settings.".to_owned(), "Skip a version.".to_owned()];
+        let text = confirmation_text(&Mode::Setup { all_users: false }, &cur, &new, &notes);
+        let (news, how) = (text.find("What's new:").unwrap(), text.find("Pasteroll will download").unwrap());
+        assert!(news < how, "the news comes before the explanation");
+        assert!(text.contains("\u{2022} Check now in Settings.\n\u{2022} Skip a version."), "{text}");
     }
 }

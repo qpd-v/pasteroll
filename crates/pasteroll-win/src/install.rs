@@ -159,8 +159,14 @@ pub fn mode() -> Mode {
 /// point it at a local server with a key of its own.
 pub struct Trust {
     pub keys: Vec<[u8; 64]>,
+    /// The hosts a release file may come from (and be redirected to).
     pub hosts: Vec<String>,
+    /// The address of a file of a given release.
     pub url: Box<dyn Fn(&Version, &str) -> String + Send + Sync>,
+    /// The hosts the signed "newest version" file may come from.
+    pub latest_hosts: Vec<String>,
+    /// The address of the signed "newest version" file or of its signature.
+    pub latest_url: Box<dyn Fn(&str) -> String + Send + Sync>,
 }
 
 impl Trust {
@@ -173,6 +179,8 @@ impl Trust {
             keys: um::configured_keys(),
             hosts: fetch::GITHUB_HOSTS.iter().map(|h| (*h).to_owned()).collect(),
             url: Box::new(|v, name| um::asset_url(v, name)),
+            latest_hosts: um::LATEST_HOSTS.iter().map(|h| (*h).to_owned()).collect(),
+            latest_url: Box::new(um::latest_url),
         }
     }
 
@@ -183,7 +191,14 @@ impl Trust {
     fn from_environment() -> Option<Trust> {
         let base = std::env::var("PASTEROLL_UPDATE_BASE").ok()?;
         let key = pasteroll_core::update_manifest::decode_signature(&std::env::var("PASTEROLL_UPDATE_TEST_KEY").ok()?)?;
-        Some(Trust { keys: vec![key], hosts: vec!["127.0.0.1".to_owned()], url: Box::new(move |v, name| format!("{base}/v{v}/{name}")) })
+        let latest_base = base.clone();
+        Some(Trust {
+            keys: vec![key],
+            hosts: vec!["127.0.0.1".to_owned()],
+            url: Box::new(move |v, name| format!("{base}/v{v}/{name}")),
+            latest_hosts: vec!["127.0.0.1".to_owned()],
+            latest_url: Box::new(move |name| format!("{latest_base}/{name}")),
+        })
     }
 }
 
@@ -382,23 +397,61 @@ pub fn setup_args(all_users: bool) -> Vec<String> {
 /// Starts the verified Setup silently for a copy installed for this account only. It asks the running
 /// Pasteroll to quit, keeps your data, and (with `/RELAUNCH=1`) starts the new version. (Copies
 /// installed for all users go through `elevated`, which never trusts a file this account can change.)
-pub fn run_setup(v: &Verified, log: &Path) -> Result<(), String> {
+///
+/// Setup is run through the system's `cmd.exe`, which waits for it: if Setup does not succeed after it
+/// has closed this program, `program` (this very program, as it was) is started again, and says at its
+/// start that the update did not finish. (Without that, a failed Setup would leave nothing running.)
+pub fn run_setup(v: &Verified, log: &Path, program: &Path) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
     let mut args = setup_args(false);
     args.push(format!("/LOG={}", quoted(log)));
-    let mut command = std::process::Command::new(&v.path);
-    for a in args.drain(..) {
-        // the log path is already quoted: pass it through exactly as written
-        command.raw_arg(a);
+    let started = match (setup_line(&v.path, &args, program), crate::winsys::system_dir()) {
+        (Some(line), Some(system)) => std::process::Command::new(system.join("cmd.exe"))
+            // /d: no AutoRun; /e:on /v:off: the same command-processor behaviour whatever the account's settings say
+            .raw_arg("/d /e:on /v:off /s /c")
+            .raw_arg(line)
+            .current_dir(&system)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .creation_flags(0x0800_0000 | 0x0000_0200) // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
+            .spawn(),
+        // a name the command interpreter could misread: Setup alone, without the restart on failure
+        _ => {
+            let mut command = std::process::Command::new(&v.path);
+            for a in &args {
+                // the log path is already quoted: pass it through exactly as written
+                command.raw_arg(a);
+            }
+            command
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .creation_flags(0x0000_0008 | 0x0000_0200) // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+                .spawn()
+        }
+    };
+    started.map(|_| ()).map_err(|e| format!("Setup could not be started ({e})"))
+}
+
+/// The `cmd.exe` command line that runs Setup, waits for it and, if it did not succeed, starts
+/// `program` again. `None` when a path has a character the command interpreter treats specially.
+pub(crate) fn setup_line(setup: &Path, args: &[String], program: &Path) -> Option<String> {
+    let log_path = args.iter().find_map(|a| a.strip_prefix("/LOG=\"")).and_then(|a| a.strip_suffix('"'));
+    let plain_paths = [Some(setup), Some(program), log_path.map(Path::new)];
+    if plain_paths.iter().flatten().any(|p| !crate::elevated::plain(p)) {
+        return None;
     }
-    command
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .creation_flags(0x0000_0008 | 0x0000_0200) // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| format!("Setup could not be started ({e})"))
+    // `start /wait` because cmd does not otherwise wait for a program that has windows. `if errorlevel 1`
+    // is "the exit code is 1 or more", so a Setup that crashed or was killed (a negative code such as
+    // 0xC0000005) needs `if not errorlevel 0` as well. Neither fires after a success, and the first
+    // one's `start` leaves the code alone for the second only when it did not fire.
+    Some(format!(
+        "\"start \"\" /wait \"{}\" {} & (if errorlevel 1 (if exist \"{p}\" start \"\" \"{p}\")) & (if not errorlevel 0 (if exist \"{p}\" start \"\" \"{p}\"))\"",
+        setup.display(),
+        args.join(" "),
+        p = program.display()
+    ))
 }
 
 /// Replaces the program file `exe` with the verified one. Windows lets a running program be
@@ -469,10 +522,19 @@ fn mark_pending(dir: &Path, target: &Version) {
     let _ = std::fs::write(dir.join(PENDING), target.to_string());
 }
 
-/// At start-up: if an update was started earlier, say whether it happened. `Some(text)` is a message
-/// for a person (the update was started but this is still the old version: Setup failed or was
-/// stopped); `None` when there was nothing pending or it worked. Reported once.
-pub fn startup_report(data_dir: &Path) -> Option<String> {
+/// What an update that was started earlier came to, found at start-up.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Startup {
+    /// It worked: this is the new version.
+    Updated(Version),
+    /// It was started but this is still the old version (Setup failed or was stopped). The text is for
+    /// a person.
+    DidNotFinish(String),
+}
+
+/// At start-up: if an update was started earlier, say whether it happened. `None` when there was
+/// nothing pending. Reported once.
+pub fn startup_report(data_dir: &Path) -> Option<Startup> {
     let dir = data_dir.join(UPDATE_DIR);
     let marker = dir.join(PENDING);
     let target = Version::parse(std::fs::read_to_string(&marker).ok()?.trim())?;
@@ -483,11 +545,11 @@ pub fn startup_report(data_dir: &Path) -> Option<String> {
         if dir.join(FOLDER_MARKER).is_file() {
             let _ = std::fs::remove_dir_all(&dir);
         }
-        return None;
+        return Some(Startup::Updated(current));
     }
-    Some(format!(
-        "An update to {target} was started but this is still {current}, so it did not finish. Nothing of yours was changed. You can try again from the tray menu. (For a copy installed for one account, an update-setup.log in the data folder says what Setup did; a copy installed for all users keeps no log.)"
-    ))
+    Some(Startup::DidNotFinish(format!(
+        "Pasteroll {target} could not be installed, so you are still on {current}. Nothing of yours was changed. You can try again from the tray menu, or install {target} by hand from its release page. (For a copy installed for one account, an update-setup.log in the data folder says what Setup did; a copy installed for all users keeps no log.)"
+    )))
 }
 
 /// What happened, for the person.
@@ -534,7 +596,8 @@ pub fn run_update(
             let v = prepare(trust, announced, current, Want::Setup, &dir, say, progress)?;
             mark_pending(&dir, announced);
             say("Starting the installer...");
-            match run_setup(&v, &data_dir.join("update-setup.log")) {
+            let program = std::env::current_exe().map_err(|e| format!("the program's own location is unknown ({e})"))?;
+            match run_setup(&v, &data_dir.join("update-setup.log"), &program) {
                 Ok(()) => {
                     // Setup re-reads its own file after it has started: keep it locked until we exit
                     v.hold_until_exit();
@@ -551,9 +614,14 @@ pub fn run_update(
         Mode::Replace { exe } => {
             let v = prepare(trust, announced, current, Want::Exe, &dir, say, progress)?;
             say("Replacing the program...");
+            // the restarted program says "updated" (and tidies the download folder) at its start
+            mark_pending(&dir, announced);
             let result = replace_program(&v, exe);
             drop(v.locked);
             let _ = std::fs::remove_file(&v.path);
+            if result.is_err() {
+                let _ = std::fs::remove_file(dir.join(PENDING));
+            }
             result.map(|()| Done::Replaced(exe.clone()))
         }
     }
@@ -563,10 +631,7 @@ pub fn run_update(
 mod tests {
     use super::*;
     use crate::sigcheck::TestSigner;
-    use std::io::Write;
-    use std::net::TcpListener;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
+    use crate::testsupport::{b64, Server};
 
     fn facts<'a>(exe: &'a Path) -> Facts<'a> {
         Facts {
@@ -610,60 +675,6 @@ mod tests {
         exe: Vec<u8>,
     }
 
-    struct Server {
-        base: String,
-        stop: Arc<AtomicBool>,
-        thread: Option<std::thread::JoinHandle<Vec<String>>>,
-    }
-
-    impl Server {
-        fn start(files: Vec<(String, Vec<u8>)>) -> Server {
-            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-            listener.set_nonblocking(true).unwrap();
-            let port = listener.local_addr().unwrap().port();
-            let stop = Arc::new(AtomicBool::new(false));
-            let flag = stop.clone();
-            let thread = std::thread::spawn(move || {
-                let mut asked = Vec::new();
-                while !flag.load(Ordering::Relaxed) {
-                    let Ok((mut s, _)) = listener.accept() else {
-                        std::thread::sleep(std::time::Duration::from_millis(5));
-                        continue;
-                    };
-                    s.set_nonblocking(false).unwrap();
-                    let mut req = Vec::new();
-                    let mut buf = [0u8; 1024];
-                    while !req.windows(4).any(|w| w == b"\r\n\r\n") {
-                        match s.read(&mut buf) {
-                            Ok(0) | Err(_) => break,
-                            Ok(n) => req.extend_from_slice(&buf[..n]),
-                        }
-                    }
-                    let first = String::from_utf8_lossy(&req).lines().next().unwrap_or("").to_owned();
-                    let path = first.split(' ').nth(1).unwrap_or("").to_owned();
-                    asked.push(path.clone());
-                    match files.iter().find(|(p, _)| *p == path) {
-                        Some((_, body)) => {
-                            let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
-                            let _ = s.write_all(head.as_bytes());
-                            let _ = s.write_all(body);
-                        }
-                        None => {
-                            let _ = s.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-                        }
-                    }
-                }
-                asked
-            });
-            Server { base: format!("http://127.0.0.1:{port}"), stop, thread: Some(thread) }
-        }
-
-        fn finish(mut self) -> Vec<String> {
-            self.stop.store(true, Ordering::Relaxed);
-            self.thread.take().unwrap().join().unwrap()
-        }
-    }
-
     fn manifest_for(r: &Release) -> String {
         format!(
             "pasteroll-update-manifest 1\nversion {}\nsetup {} {} {}\nexe {} {} {}\n",
@@ -675,19 +686,6 @@ mod tests {
             r.exe.len(),
             um::hex(&um::sha256(&r.exe))
         )
-    }
-
-    fn b64(sig: &[u8; 64]) -> String {
-        const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let mut s = String::new();
-        for c in sig.chunks(3) {
-            let n = (u32::from(c[0]) << 16) | (u32::from(*c.get(1).unwrap_or(&0)) << 8) | u32::from(*c.get(2).unwrap_or(&0));
-            s.push(T[(n >> 18) as usize & 63] as char);
-            s.push(T[(n >> 12) as usize & 63] as char);
-            s.push(if c.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
-            s.push(if c.len() > 2 { T[n as usize & 63] as char } else { '=' });
-        }
-        s
     }
 
     /// The files of a release, signed by `signer`, as the server will hand them out.
@@ -705,7 +703,14 @@ mod tests {
 
     fn trust(base: &str, key: [u8; 64]) -> Trust {
         let base = base.to_owned();
-        Trust { keys: vec![key], hosts: vec!["127.0.0.1".into()], url: Box::new(move |v, name| format!("{base}/v{v}/{name}")) }
+        let latest_base = base.clone();
+        Trust {
+            keys: vec![key],
+            hosts: vec!["127.0.0.1".into()],
+            url: Box::new(move |v, name| format!("{base}/v{v}/{name}")),
+            latest_hosts: vec!["127.0.0.1".into()],
+            latest_url: Box::new(move |name| format!("{latest_base}/{name}")),
+        }
     }
 
     fn release() -> Release {
@@ -847,8 +852,9 @@ mod tests {
         assert_eq!(done, Done::Replaced(exe.clone()));
         assert_eq!(std::fs::read(&exe).unwrap(), r.exe, "the new program is in place");
         assert_eq!(std::fs::read(old_name(&exe)).unwrap(), b"the old program", "the old one waits to be removed");
-        let left: Vec<_> = std::fs::read_dir(dir.join(UPDATE_DIR)).unwrap().filter_map(|e| e.ok()).filter(|e| e.file_name() != FOLDER_MARKER).collect();
+        let left: Vec<_> = std::fs::read_dir(dir.join(UPDATE_DIR)).unwrap().filter_map(|e| e.ok()).filter(|e| e.file_name() != FOLDER_MARKER && e.file_name() != PENDING).collect();
         assert!(left.is_empty(), "the download is removed");
+        assert_eq!(std::fs::read_to_string(dir.join(UPDATE_DIR).join(PENDING)).unwrap(), r.version.to_string(), "the restarted program will say it updated");
         assert!(!new_name(&exe).exists(), "no half-made new program is left");
         // a file that is not a verified download is never copied over the program
         let v = Verified { path: dir.join("nope.exe"), locked: File::open(&exe).unwrap(), asset: Asset { name: "x".into(), size: 1, sha256: [0; 32] } };
@@ -867,6 +873,31 @@ mod tests {
         assert!(err.contains("because"));
         assert!(!dir.join(UPDATE_DIR).exists());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_setup_command_for_one_account_restarts_the_old_program_only_if_setup_fails() {
+        let setup = Path::new(r"C:\Users\me\AppData\Local\Pasteroll\pasteroll-update\update-0123456789abcdef.exe");
+        let program = Path::new(r"C:\Users\me\AppData\Local\Programs\Pasteroll\pasteroll.exe");
+        let log = Path::new(r"C:\Users\me\AppData\Local\Pasteroll\update-setup.log");
+        let mut args = setup_args(false);
+        args.push(format!("/LOG={}", quoted(log)));
+        let line = setup_line(setup, &args, program).unwrap();
+        assert!(line.starts_with("\"start \"\" /wait \"C:\\Users\\me\\AppData\\Local\\Pasteroll\\pasteroll-update\\update-"), "{line}");
+        assert!(line.contains("/VERYSILENT") && line.contains("/RELAUNCH=1") && line.contains("/CURRENTUSER") && !line.contains("/ALLUSERS"), "{line}");
+        assert!(line.contains("/LOG=\"C:\\Users\\me\\AppData\\Local\\Pasteroll\\update-setup.log\""), "{line}");
+        // after Setup: a failure (a non-zero exit code) starts the old program again, success does nothing more
+        let start = "if exist \"C:\\Users\\me\\AppData\\Local\\Programs\\Pasteroll\\pasteroll.exe\" start \"\" \"C:\\Users\\me\\AppData\\Local\\Programs\\Pasteroll\\pasteroll.exe\"";
+        assert!(line.ends_with(&format!(" & (if errorlevel 1 ({start})) & (if not errorlevel 0 ({start}))\"")), "{line}");
+        assert!(!line.contains("&&"), "{line}");
+        // a name the command interpreter could misread means no command line at all (Setup is started alone)
+        for odd in [r"C:\a&b\x.exe", r"C:\a%PATH%\x.exe", r"C:\a^b\x.exe", r"C:\a(b)\x.exe", "C:\\a\nb\\x.exe"] {
+            assert!(setup_line(Path::new(odd), &args, program).is_none(), "{odd:?}");
+            assert!(setup_line(setup, &args, Path::new(odd)).is_none(), "{odd:?}");
+            let mut odd_log = setup_args(false);
+            odd_log.push(format!("/LOG={}", quoted(Path::new(odd))));
+            assert!(setup_line(setup, &odd_log, program).is_none(), "{odd:?}");
+        }
     }
 
     #[test]
@@ -952,13 +983,14 @@ mod tests {
         assert_eq!(startup_report(&data), None);
         // started for a newer version, and this is still the old one: say so, once
         mark_pending(&dir, &Version::parse("99.0.0-beta.1").unwrap());
-        let said = startup_report(&data).unwrap();
-        assert!(said.contains("99.0.0-beta.1") && said.contains("did not finish"), "{said}");
+        let Some(Startup::DidNotFinish(said)) = startup_report(&data) else { panic!("it did not finish") };
+        assert!(said.contains("99.0.0-beta.1") && said.contains("could not be installed"), "{said}");
         assert_eq!(startup_report(&data), None, "reported once");
         // started for a version that is now running: it worked, and the download is cleaned up
         std::fs::write(dir.join("update-1.exe"), b"x").unwrap();
         mark_pending(&dir, &Version::current());
-        assert_eq!(startup_report(&data), None);
+        assert_eq!(startup_report(&data), Some(Startup::Updated(Version::current())));
+        assert_eq!(startup_report(&data), None, "said once");
         assert!(!dir.exists(), "the installer is not kept after a successful update");
         let _ = std::fs::remove_dir_all(data);
     }

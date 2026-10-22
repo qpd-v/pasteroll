@@ -114,14 +114,49 @@ switch ($Command) {
     'sign' {
         foreach ($required in 'KeyFile', 'InFile', 'OutFile') { if (-not (Get-Variable $required -ValueOnly)) { throw "-$required is required." } }
         if (-not $PubFile) { $PubFile = $KeyFile -replace '\.key\.enc$', '.pub' }
-        # show what is about to be signed, and sign only a manifest in the exact expected form
-        $text = [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($InFile))
-        $shape = '^pasteroll-update-manifest 1\nversion (\S+)\nsetup (\S+) (\d+) ([0-9a-f]{64})\nexe (\S+) (\d+) ([0-9a-f]{64})\n$'
-        $m = [regex]::Match($text, $shape)
-        if (-not $m.Success) { throw 'That file is not a Pasteroll update manifest (see scripts/make-update-manifest.py). Nothing was signed.' }
-        Write-Host "About to sign a release of Pasteroll $($m.Groups[1].Value):"
-        Write-Host "  installer  $($m.Groups[2].Value)  $($m.Groups[3].Value) bytes  sha256 $($m.Groups[4].Value.Substring(0, 16))..."
-        Write-Host "  program    $($m.Groups[5].Value)  $($m.Groups[6].Value) bytes  sha256 $($m.Groups[7].Value.Substring(0, 16))..."
+        # one manifest and one "newest version" note, one passphrase: -InFile a,b -OutFile a.sig,b.sig
+        $ins = @($InFile -split ',' | Where-Object { $_ })
+        $outs = @($OutFile -split ',' | Where-Object { $_ })
+        if ($ins.Count -lt 1 -or $ins.Count -ne $outs.Count) { throw '-InFile and -OutFile must list the same number of files.' }
+        # Each file is read ONCE. The bytes that are checked and shown are the very bytes that are signed
+        # later, however long the confirmation and the passphrase take.
+        $contents = @()
+        foreach ($file in $ins) { $contents += , [IO.File]::ReadAllBytes($file) }
+        # show what is about to be signed, and sign only files in the exact expected forms
+        $manifestShape = '^pasteroll-update-manifest 1\nversion ([!-~]+)\nsetup ([!-~]+) ([0-9]+) ([0-9a-f]{64})\nexe ([!-~]+) ([0-9]+) ([0-9a-f]{64})\n\z'
+        $latestShape = '^pasteroll-update-latest 1\nversion ([!-~]+)\n((?:note [!-~](?:[ -~]{0,158}[!-~])?\n){0,5})\z'
+        $versions = @()
+        $kinds = @()
+        for ($i = 0; $i -lt $ins.Count; $i++) {
+            $text = [Text.Encoding]::UTF8.GetString($contents[$i])
+            $m = [regex]::Match($text, $manifestShape)
+            $l = [regex]::Match($text, $latestShape)
+            if ($m.Success) {
+                $kinds += 'manifest'
+                $versions += $m.Groups[1].Value
+                Write-Host "About to sign the update manifest of Pasteroll $($m.Groups[1].Value):"
+                # the installer and the program named in the manifest must be the files beside it, byte for byte
+                $folder = Split-Path -Parent (Resolve-Path -LiteralPath $ins[$i])
+                foreach ($entry in @(@('installer', $m.Groups[2].Value, $m.Groups[3].Value, $m.Groups[4].Value), @('program  ', $m.Groups[5].Value, $m.Groups[6].Value, $m.Groups[7].Value))) {
+                    $path = Join-Path $folder $entry[1]
+                    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "$($entry[1]) is not beside the manifest. Nothing was signed." }
+                    $bytes = [IO.File]::ReadAllBytes($path)
+                    $actual = -join ([Security.Cryptography.SHA256]::HashData($bytes) | ForEach-Object { $_.ToString('x2') })
+                    if ($bytes.Length -ne [int64]$entry[2] -or $actual -ne $entry[3]) { throw "$($entry[1]) does not match the manifest (size or hash). Nothing was signed." }
+                    Write-Host "  $($entry[0])  $($entry[1])  $($entry[2]) bytes  sha256 $($entry[3])  (matches the file)"
+                }
+            } elseif ($l.Success) {
+                $kinds += 'latest'
+                $versions += $l.Groups[1].Value
+                Write-Host "About to sign the note that says the newest version is $($l.Groups[1].Value). People will see these lines before they install it:"
+                foreach ($note in ($l.Groups[2].Value -split "`n" | Where-Object { $_ })) { Write-Host "  $($note.Substring(5))" }
+            } else {
+                throw "$($ins[$i]) is not a Pasteroll update manifest or newest-version note (see scripts/make-update-manifest.py). Nothing was signed."
+            }
+        }
+        if (($versions | Select-Object -Unique).Count -ne 1) { throw 'The files name different versions. Nothing was signed.' }
+        # a note without the release it names would announce a version that has nothing to download
+        if ($kinds.Count -ne 2 -or $kinds -notcontains 'manifest' -or $kinds -notcontains 'latest') { throw 'Sign exactly one update manifest and one newest-version note together. Nothing was signed.' }
         if (-not $Test -and -not $Yes) {
             if ((Read-Host 'Type yes to sign it') -ne 'yes') { throw 'Not signed.' }
         }
@@ -129,10 +164,12 @@ switch ($Command) {
         $key = Load-Key $KeyFile $passphrase
         $pub = [Convert]::FromBase64String((Get-Content -Raw -LiteralPath $PubFile).Trim())
         if (-not [Linq.Enumerable]::SequenceEqual([byte[]](Public-Bytes $key), [byte[]]$pub)) { throw 'The key does not match its .pub file.' }
-        $data = [IO.File]::ReadAllBytes($InFile)
-        $sig = $key.SignData($data, $sha256, $p1363)
-        if (-not $key.VerifyData($data, $sig, $sha256, $p1363)) { throw 'The new signature does not verify.' }
-        Set-Content -LiteralPath $OutFile -Value ([Convert]::ToBase64String($sig)) -Encoding ascii
-        Write-Host "Signed $InFile -> $OutFile (key $(Fingerprint $pub))"
+        for ($i = 0; $i -lt $ins.Count; $i++) {
+            $data = [byte[]]$contents[$i]
+            $sig = $key.SignData($data, $sha256, $p1363)
+            if (-not $key.VerifyData($data, $sig, $sha256, $p1363)) { throw 'The new signature does not verify.' }
+            Set-Content -LiteralPath $outs[$i] -Value ([Convert]::ToBase64String($sig)) -Encoding ascii
+            Write-Host "Signed $($ins[$i]) -> $($outs[$i]) (key $(Fingerprint $pub))"
+        }
     }
 }

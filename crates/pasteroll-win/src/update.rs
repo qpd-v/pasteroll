@@ -2,13 +2,19 @@
 //! it does nothing unless the person has said yes (`[updates] check_for_updates = true`) or asks for
 //! a check themselves (the tray menu, or `pasteroll update-check`).
 //!
-//! One HTTPS request to `api.github.com`, using Windows' own client (WinHTTP: system certificates
-//! and proxy settings, no extra library). GitHub sees the IP address and the program name and
-//! version, which is what any download shows. Nothing is downloaded or installed: the person is told
-//! that a newer version exists and the release page is opened in their browser when they ask.
+//! Two small HTTPS requests to `raw.githubusercontent.com` (the signed "newest version" file and its
+//! signature), using Windows' own client (WinHTTP: system certificates and proxy settings, no extra
+//! library). GitHub sees the IP address and the program name and version, which is what any download
+//! shows. The file is believed only if it is signed with the Pasteroll release key. Nothing is
+//! downloaded or installed by a check: the person is told that a newer version exists, and installs
+//! it (see `install`) or opens the release page only when they ask.
 
 use pasteroll_core::config::{self, UpdateCheck};
-use pasteroll_core::update::{newest_release, UpdateState, Version, CHECK_EVERY_SECS, MAX_REPLY_BYTES};
+use crate::fetch;
+use crate::install::Trust;
+use crate::sigcheck::CngVerifier;
+use pasteroll_core::update::{UpdateState, Version, CHECK_EVERY_SECS};
+use pasteroll_core::update_manifest as um;
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,21 +28,26 @@ use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 /// Tells the tray window that a check finished (the result waits in [`DELIVERIES`]).
 pub const WM_UPDATE_RESULT: u32 = WM_APP + 241;
 
-/// How long a whole check may take, whatever the server does (a server that trickles bytes cannot
-/// keep resetting the per-operation timeouts).
-pub(crate) const DEADLINE: Duration = Duration::from_secs(45);
 /// After a failed check, the next automatic one waits this long. Any two automatic checks are at
 /// least this far apart in one run, whatever happens to the state file.
 const RETRY_AFTER: Duration = Duration::from_secs(6 * 3600);
+
+/// A newer version, as the signed note describes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Found {
+    pub version: Version,
+    /// Plain lines about it, shown before the person chooses to install it.
+    pub notes: Vec<String>,
+}
 
 /// What a check found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     /// A newer version exists.
-    Newer(Version),
+    Newer(Found),
     /// This is the newest (the version named is the newest release found).
     UpToDate(Version),
-    /// It could not be checked (offline, a proxy, GitHub's rate limit...). The text is for a person.
+    /// It could not be checked (offline, a proxy, a note that is not genuine...). The text is for a person.
     Failed(String),
 }
 
@@ -49,7 +60,10 @@ pub struct Delivery {
 
 static DELIVERIES: Mutex<Vec<Delivery>> = Mutex::new(Vec::new());
 /// The newer version found by a check (or remembered from an earlier run), for the menu entry.
-static NEWER: Mutex<Option<Version>> = Mutex::new(None);
+static NEWER: Mutex<Option<Found>> = Mutex::new(None);
+/// Held while the state file is read, changed and written, so that a check finishing and a skip
+/// cannot lose each other's change.
+static STATE_LOCK: Mutex<()> = Mutex::new(());
 /// A check is running: a second one is not started on top of it.
 static CHECKING: AtomicBool = AtomicBool::new(false);
 
@@ -58,12 +72,28 @@ pub fn take_deliveries() -> Vec<Delivery> {
 }
 
 pub fn newer() -> Option<Version> {
-    NEWER.lock().ok().and_then(|g| g.clone())
+    NEWER.lock().ok().and_then(|g| g.as_ref().map(|f| f.version.clone()))
 }
 
-pub fn set_newer(v: Version) {
+/// The plain lines of the signed note for `found`, fetched and verified now (only a note that names
+/// exactly that version counts). Nothing shown to a person comes from a file on their own disk, so
+/// there are none when the note cannot be verified. Blocks: call it from a worker thread.
+pub fn verified_notes(found: &Version) -> Vec<String> {
+    match read_latest(&Trust::github()) {
+        Ok(latest) if latest.version == *found => latest.notes,
+        _ => Vec::new(),
+    }
+}
+
+pub fn set_newer(found: Found) {
     if let Ok(mut n) = NEWER.lock() {
-        *n = Some(v);
+        *n = Some(found);
+    }
+}
+
+pub fn clear_newer() {
+    if let Ok(mut n) = NEWER.lock() {
+        *n = None;
     }
 }
 
@@ -84,17 +114,6 @@ pub(crate) struct Endpoint {
     pub(crate) path: String,
     /// The request headers after the user agent (each ends without a line break).
     pub(crate) headers: &'static str,
-}
-
-/// Headers for GitHub's API.
-pub(crate) const API_HEADERS: &str = "Accept: application/vnd.github+json\r\nX-GitHub-Api-Version: 2022-11-28";
-
-impl Endpoint {
-    fn github() -> Endpoint {
-        // by the repository's number, so renaming or moving the repository does not break the
-        // check in programs that are already installed (redirects are refused)
-        Endpoint { host: "api.github.com".into(), port: 443, secure: true, path: "/repositories/1422347446/releases?per_page=10".into(), headers: API_HEADERS }
-    }
 }
 
 /// Closes a WinHTTP handle when it goes out of scope.
@@ -256,47 +275,54 @@ pub(crate) fn status_message(status: u32) -> String {
     }
 }
 
-/// One GET of a small answer: the status must be 200, the body is capped and the total time limited.
-fn get(ep: &Endpoint, agent: &str) -> Result<String, String> {
-    let started = Instant::now();
-    let response = send(ep, agent)?;
-    if response.status != 200 {
-        return Err(status_message(response.status));
+/// Reads the signed "newest version" note: both files are fetched (small, capped, from the
+/// repository's own host) and the note is believed only if its signature verifies under one of
+/// `trust`'s keys. A note and a signature fetched either side of a new release can disagree for a
+/// moment, so a note that does not verify is fetched once more before giving up.
+fn read_latest(trust: &Trust) -> Result<um::Latest, String> {
+    let hosts: Vec<&str> = trust.latest_hosts.iter().map(String::as_str).collect();
+    let mut last = String::new();
+    for attempt in 0..2 {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_millis(if cfg!(test) { 20 } else { 2_000 }));
+        }
+        let get = |name: &str| fetch::download_small(&(trust.latest_url)(name), &hosts, um::MAX_SMALL_FILE_BYTES);
+        let missing = |e: String| if e.contains("404") { "no newest-version note is published yet".to_owned() } else { e };
+        let (file, signature) = (get(um::LATEST_NAME).map_err(missing)?, get(um::LATEST_SIGNATURE_NAME).map_err(missing)?);
+        match um::verify_latest(&file, &signature, &trust.keys, &CngVerifier) {
+            Ok(latest) => return Ok(latest),
+            Err(e) => last = e,
+        }
+        // (a note and its signature fetched either side of a new release can disagree for a few minutes)
+        last = format!("{last}; if a release was just published, try again in a few minutes");
     }
-    let mut body: Vec<u8> = Vec::new();
-    let mut chunk = vec![0u8; 16 * 1024];
-    loop {
-        if started.elapsed() > DEADLINE {
-            return Err("the server answered too slowly".to_owned());
-        }
-        let n = response.read(&mut chunk)?;
-        if n == 0 {
-            break;
-        }
-        body.extend_from_slice(&chunk[..n]);
-        if body.len() > MAX_REPLY_BYTES {
-            return Err("the answer was unexpectedly large".to_owned());
-        }
-    }
-    String::from_utf8(body).map_err(|_| "the answer was not text".to_owned())
+    Err(last)
 }
 
-fn check_at(ep: &Endpoint) -> Outcome {
-    let agent = format!("Pasteroll/{}", env!("CARGO_PKG_VERSION"));
-    let current = Version::current();
-    match get(ep, &agent) {
-        Err(e) => Outcome::Failed(e),
-        Ok(reply) => match newest_release(&reply, current.is_pre()) {
-            None => Outcome::Failed("no release was found in the answer".to_owned()),
-            Some(newest) if newest > current => Outcome::Newer(newest),
-            Some(newest) => Outcome::UpToDate(newest),
-        },
+fn check_with(trust: &Trust, current: &Version, state: &UpdateState) -> Outcome {
+    let latest = match read_latest(trust) {
+        Ok(l) => l,
+        Err(e) => return Outcome::Failed(e),
+    };
+    // an old genuine note served again must not move anyone back
+    if state.is_replay(&latest.version) {
+        return Outcome::Failed("the newest-version note is older than one seen before, so it was ignored".to_owned());
+    }
+    if !current.is_pre() && latest.version.is_pre() {
+        // a stable build is not told about betas
+        return Outcome::UpToDate(current.clone());
+    }
+    if latest.version > *current {
+        Outcome::Newer(Found { version: latest.version, notes: latest.notes })
+    } else {
+        Outcome::UpToDate(latest.version)
     }
 }
 
-/// Asks GitHub now. Blocks for up to a minute: call it from a worker thread.
-pub fn check() -> Outcome {
-    check_at(&Endpoint::github())
+/// Asks GitHub now. Blocks for up to a few minutes: call it from a worker thread. `state` is what was
+/// remembered by earlier checks (it makes a replayed old note fail).
+pub fn check(state: &UpdateState) -> Outcome {
+    check_with(&Trust::github(), &Version::current(), state)
 }
 
 fn state_path(db: &Path) -> Option<PathBuf> {
@@ -307,20 +333,71 @@ fn now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
-/// Remembers a finished check: when it ran and which newer version the person has now been told about.
-fn remember(db: &Path, outcome: &Outcome) {
-    let Some(path) = state_path(db) else { return };
-    let mut state = UpdateState::load(&path);
+/// The state with a finished check applied: when it ran, which newer version the person has now been
+/// told about, and the newest version any signed note has named.
+fn apply(mut state: UpdateState, outcome: &Outcome, at: i64) -> UpdateState {
+    let raise = |state: &mut UpdateState, v: &Version| {
+        if state.highest.as_ref().is_none_or(|h| v > h) {
+            state.highest = Some(v.clone());
+        }
+    };
     match outcome {
         // not again at once, and not only tomorrow
-        Outcome::Failed(_) => state.last_check = now() - (CHECK_EVERY_SECS - RETRY_AFTER.as_secs() as i64),
-        Outcome::UpToDate(_) => state.last_check = now(),
-        Outcome::Newer(v) => {
-            state.last_check = now();
-            state.announced = Some(v.clone());
+        Outcome::Failed(_) => state.last_check = at - (CHECK_EVERY_SECS - RETRY_AFTER.as_secs() as i64),
+        Outcome::UpToDate(v) => {
+            state.last_check = at;
+            state.last_ok = at;
+            raise(&mut state, v);
+        }
+        Outcome::Newer(found) => {
+            state.last_check = at;
+            state.last_ok = at;
+            state.announced = Some(found.version.clone());
+            raise(&mut state, &found.version);
         }
     }
+    state
+}
+
+/// Remembers a finished check.
+fn remember(db: &Path, outcome: &Outcome) {
+    let Some(path) = state_path(db) else { return };
+    let _guard = STATE_LOCK.lock();
+    let _ = apply(UpdateState::load(&path), outcome, now()).save(&path);
+}
+
+/// What the person chose not to hear about: the version stays out of announcements and the menu.
+/// (A check they ask for still reports it, and any newer version is announced as usual.)
+pub fn skip(db: &Path, version: &Version) {
+    clear_newer();
+    let Some(path) = state_path(db) else { return };
+    let _guard = STATE_LOCK.lock();
+    let mut state = UpdateState::load(&path);
+    state.skipped = Some(version.clone());
     let _ = state.save(&path);
+}
+
+/// When the last check that got an answer was made, in seconds since 1970 (0 for never).
+pub fn last_checked(db: &Path) -> i64 {
+    state_path(db).map(|p| UpdateState::load(&p).last_ok).unwrap_or(0)
+}
+
+/// "Last checked 3 hours ago", for the Settings window.
+pub fn last_checked_text(last_ok: i64, now: i64) -> String {
+    if last_ok <= 0 {
+        return "Not checked yet".to_owned();
+    }
+    let ago = now - last_ok;
+    if ago < 0 {
+        return "Last checked a moment ago".to_owned();
+    }
+    let (n, unit) = match ago {
+        0..=89 => return "Last checked just now".to_owned(),
+        90..=3_569 => ((ago + 30) / 60, "minute"),
+        3_570..=84_599 => ((ago + 1_800) / 3_600, "hour"),
+        _ => ((ago + 43_200) / 86_400, "day"),
+    };
+    format!("Last checked {n} {unit}{} ago", if n == 1 { "" } else { "s" })
 }
 
 /// What the settings file says about the check right now.
@@ -341,12 +418,17 @@ fn setting(db: &Path) -> Setting {
     }
 }
 
+/// Whether a check is running right now.
+pub fn checking() -> bool {
+    CHECKING.load(Ordering::Acquire)
+}
+
 /// Runs one check unless one is already running. `None` when one was.
-fn check_guarded() -> Option<Outcome> {
+fn check_guarded(state: &UpdateState) -> Option<Outcome> {
     if CHECKING.swap(true, Ordering::AcqRel) {
         return None;
     }
-    let outcome = check();
+    let outcome = check(state);
     CHECKING.store(false, Ordering::Release);
     Some(outcome)
 }
@@ -367,15 +449,15 @@ pub fn start_daily(window: isize, db: PathBuf) {
                 Setting::On => {
                     let state = state_path(&db).map(|p| UpdateState::load(&p)).unwrap_or_default();
                     if Instant::now() >= not_before && state.due(now()) {
-                        if let Some(outcome) = check_guarded() {
+                        if let Some(outcome) = check_guarded(&state) {
                             remember(&db, &outcome);
                             not_before = Instant::now()
                                 + match outcome {
                                     Outcome::Failed(_) => RETRY_AFTER,
                                     _ => Duration::from_secs(CHECK_EVERY_SECS as u64),
                                 };
-                            if let Outcome::Newer(v) = &outcome {
-                                if state.should_announce(v, &Version::current()) {
+                            if let Outcome::Newer(found) = &outcome {
+                                if state.should_announce(&found.version, &Version::current()) {
                                     deliver(window, outcome, false);
                                 }
                             }
@@ -401,8 +483,10 @@ pub fn begin(window: isize, db: &Path, choice: UpdateCheck, may_ask: bool) {
             // the menu entry for a version found in an earlier run, in case its notification was missed
             if let Some(path) = state_path(db) {
                 let current = Version::current();
-                if let Some(v) = UpdateState::load(&path).announced.filter(|v| *v > current) {
-                    set_newer(v);
+                let state = UpdateState::load(&path);
+                if let Some(v) = state.announced.clone().filter(|v| *v > current && state.skipped.as_ref() != Some(v)) {
+                    // (no notes: nothing shown to a person comes from a file on their own disk)
+                    set_newer(Found { version: v, notes: Vec::new() });
                 }
             }
             start_daily(window, db.to_path_buf());
@@ -497,7 +581,8 @@ fn ask_in_background(window: isize, db: PathBuf) {
 /// does nothing.
 pub fn check_now(window: isize, db: Option<PathBuf>) {
     let spawned = std::thread::Builder::new().name("pasteroll-update-now".into()).spawn(move || {
-        let Some(outcome) = check_guarded() else { return };
+        let state = db.as_ref().and_then(|d| state_path(d)).map(|p| UpdateState::load(&p)).unwrap_or_default();
+        let Some(outcome) = check_guarded(&state) else { return };
         if let Some(db) = &db {
             remember(db, &outcome);
         }
@@ -511,13 +596,16 @@ pub fn check_now(window: isize, db: Option<PathBuf>) {
 /// `pasteroll update-check`: one check from the command line, printed. Exit code 0 when it could
 /// be checked (whatever the answer), 1 when it could not.
 pub fn command() -> i32 {
-    match check() {
-        Outcome::Newer(v) => {
-            println!("Pasteroll {v} is available (this is {}).\n{}", env!("CARGO_PKG_VERSION"), v.release_page());
+    match check(&UpdateState::default()) {
+        Outcome::Newer(found) => {
+            println!("Pasteroll {} is available (this is {}).\n{}", found.version, env!("CARGO_PKG_VERSION"), found.version.release_page());
+            for note in &found.notes {
+                println!("  - {note}");
+            }
             0
         }
-        Outcome::UpToDate(_) => {
-            println!("Pasteroll {} is the newest version.", env!("CARGO_PKG_VERSION"));
+        Outcome::UpToDate(newest) => {
+            println!("Pasteroll {} is the newest version (the signed note names {newest}).", env!("CARGO_PKG_VERSION"));
             0
         }
         Outcome::Failed(e) => {
@@ -532,13 +620,16 @@ pub fn command() -> i32 {
 /// the confirmation). Exit code 0 when it worked or there was nothing to do, 1 when it did not.
 pub fn install_command(db: &Path, yes: bool) -> i32 {
     use crate::install::{self, Done, Trust};
+    let state = state_path(db).map(|p| UpdateState::load(&p)).unwrap_or_default();
     #[cfg(feature = "e2e-test-server")]
     let announced = match std::env::var("PASTEROLL_UPDATE_ANNOUNCE").ok().and_then(|v| Version::parse(&v)) {
-        Some(v) => Outcome::Newer(v), // the end-to-end test build names the release itself
-        None => check(),
+        // the end-to-end test build names the release itself
+        Some(v) => Outcome::Newer(Found { version: v, notes: Vec::new() }),
+        None => check(&state),
     };
     #[cfg(not(feature = "e2e-test-server"))]
-    let announced = check();
+    let announced = check(&state);
+    remember(db, &announced);
     match announced {
         Outcome::Failed(e) => {
             eprintln!("pasteroll: could not check for updates: {e}");
@@ -548,8 +639,11 @@ pub fn install_command(db: &Path, yes: bool) -> i32 {
             println!("Pasteroll {} is the newest version.", env!("CARGO_PKG_VERSION"));
             0
         }
-        Outcome::Newer(v) => {
+        Outcome::Newer(Found { version: v, notes }) => {
             println!("Pasteroll {v} is available (this is {}).\n{}", env!("CARGO_PKG_VERSION"), v.release_page());
+            for note in &notes {
+                println!("  - {note}");
+            }
             if !yes {
                 println!("Run `pasteroll update --yes` to download, verify and install it.");
                 return 0;
@@ -580,22 +674,42 @@ pub fn install_command(db: &Path, yes: bool) -> i32 {
 /// `pasteroll update-verify MANIFEST SIGNATURE`: checks a release's manifest against the keys built
 /// into this program, the way the updater will. Used by the release process to prove that the real
 /// signature works with the real keys before anything is published.
-pub fn verify_command(manifest: &Path, signature: &Path) -> i32 {
-    use pasteroll_core::update_manifest::{configured_keys, verify_manifest};
+pub fn verify_command(manifest: &Path, signature: &Path, note: Option<(&Path, &Path)>) -> i32 {
+    use pasteroll_core::update_manifest::{configured_keys, verify_latest, verify_manifest};
     let (Ok(m), Ok(s)) = (std::fs::read(manifest), std::fs::read(signature)) else {
         eprintln!("pasteroll: could not read the manifest or the signature");
         return 1;
     };
-    match verify_manifest(&m, &s, &configured_keys(), &crate::sigcheck::CngVerifier) {
-        Ok(parsed) => {
-            println!("PASS: signed by a Pasteroll release key; version {}, installer {}, program {}", parsed.version, parsed.setup.name, parsed.exe.name);
-            0
-        }
+    let keys = configured_keys();
+    let parsed = match verify_manifest(&m, &s, &keys, &crate::sigcheck::CngVerifier) {
+        Ok(parsed) => parsed,
         Err(e) => {
             eprintln!("FAIL: {e}");
-            1
+            return 1;
+        }
+    };
+    println!("PASS: signed by a Pasteroll release key; version {}, installer {}, program {}", parsed.version, parsed.setup.name, parsed.exe.name);
+    // the "newest version" note of the same release, when given
+    if let Some((note, note_signature)) = note {
+        let (Ok(n), Ok(ns)) = (std::fs::read(note), std::fs::read(note_signature)) else {
+            eprintln!("pasteroll: could not read the newest-version note or its signature");
+            return 1;
+        };
+        match verify_latest(&n, &ns, &keys, &crate::sigcheck::CngVerifier) {
+            Ok(latest) if latest.version == parsed.version => {
+                println!("PASS: the newest-version note is signed by a Pasteroll release key and names {} ({} plain lines)", latest.version, latest.notes.len());
+            }
+            Ok(latest) => {
+                eprintln!("FAIL: the note names {} but the manifest is for {}", latest.version, parsed.version);
+                return 1;
+            }
+            Err(e) => {
+                eprintln!("FAIL: {e}");
+                return 1;
+            }
         }
     }
+    0
 }
 
 /// The wording of the one-time question.
@@ -609,146 +723,184 @@ Settings, or check by hand from the tray menu.";
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
-    use std::net::{TcpListener, TcpStream};
+    use crate::sigcheck::TestSigner;
+    use crate::testsupport::{b64, Server};
 
-    /// A one-shot local server: reads the request, answers `status` and `body`, hands back the request.
-    fn serve(status: &str, body: String) -> (Endpoint, std::thread::JoinHandle<String>) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let status = status.to_owned();
-        let handle = std::thread::spawn(move || {
-            let (mut s, _): (TcpStream, _) = listener.accept().unwrap();
-            let mut req = Vec::new();
-            let mut buf = [0u8; 1024];
-            while !req.windows(4).any(|w| w == b"\r\n\r\n") {
-                let n = s.read(&mut buf).unwrap();
-                if n == 0 {
-                    break;
-                }
-                req.extend_from_slice(&buf[..n]);
-            }
-            let head = format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
-            let _ = s.write_all(head.as_bytes());
-            let _ = s.write_all(body.as_bytes());
-            String::from_utf8_lossy(&req).into_owned()
-        });
-        (Endpoint { host: "127.0.0.1".into(), port, secure: false, path: "/repos/x/releases".into(), headers: API_HEADERS }, handle)
+    fn v(s: &str) -> Version {
+        Version::parse(s).unwrap()
     }
 
-    fn list(newest: &str) -> String {
-        format!(r#"[{{"tag_name":"{newest}","prerelease":true}},{{"tag_name":"v0.0.1"}}]"#)
+    fn note_text(version: &str, notes: &[&str]) -> String {
+        let mut t = format!("pasteroll-update-latest 1\nversion {version}\n");
+        for n in notes {
+            t.push_str(&format!("note {n}\n"));
+        }
+        t
+    }
+
+    /// The two files of the newest-version note, signed by `signer`, as a server hands them out.
+    fn note_files(text: &str, signer: &TestSigner) -> Vec<(String, Vec<u8>)> {
+        vec![
+            ("/latest.txt".to_owned(), text.as_bytes().to_vec()),
+            ("/latest.txt.sig".to_owned(), b64(&signer.sign(text.as_bytes())).into_bytes()),
+        ]
+    }
+
+    fn trust(base: &str, key: [u8; 64]) -> Trust {
+        let release_base = base.to_owned();
+        let note_base = base.to_owned();
+        Trust {
+            keys: vec![key],
+            hosts: vec!["127.0.0.1".into()],
+            url: Box::new(move |v, name| format!("{release_base}/v{v}/{name}")),
+            latest_hosts: vec!["127.0.0.1".into()],
+            latest_url: Box::new(move |name| format!("{note_base}/{name}")),
+        }
+    }
+
+    /// One check against a local server serving `files`; returns what it found and the paths asked for.
+    fn check_files(files: Vec<(String, Vec<u8>)>, key: [u8; 64], current: &str, state: &UpdateState) -> (Outcome, Vec<String>) {
+        let server = Server::start(files);
+        let outcome = check_with(&trust(&server.base, key), &v(current), state);
+        (outcome, server.finish())
     }
 
     #[test]
-    fn a_newer_release_is_reported_and_the_request_says_what_it_is() {
-        let (ep, server) = serve("200 OK", list("v99.0.0"));
-        let out = check_at(&ep);
-        assert_eq!(out, Outcome::Newer(Version::parse("99.0.0").unwrap()));
-        let req = server.join().unwrap();
-        assert!(req.starts_with("GET /repos/x/releases HTTP/1.1"), "{req}");
-        assert!(req.contains(&format!("User-Agent: Pasteroll/{}", env!("CARGO_PKG_VERSION"))), "{req}");
-        assert!(!req.to_ascii_lowercase().contains("cookie") && !req.to_ascii_lowercase().contains("authorization"), "{req}");
+    fn a_newer_signed_release_is_reported_with_its_notes() {
+        let signer = TestSigner::new();
+        let text = note_text("99.0.0-beta.1", &["First thing.", "Second thing."]);
+        let (out, asked) = check_files(note_files(&text, &signer), signer.public(), "0.1.0-beta.9", &UpdateState::default());
+        assert_eq!(out, Outcome::Newer(Found { version: v("99.0.0-beta.1"), notes: vec!["First thing.".into(), "Second thing.".into()] }));
+        assert_eq!(asked, vec!["/latest.txt".to_owned(), "/latest.txt.sig".to_owned()]);
     }
 
     #[test]
     fn the_same_or_an_older_version_is_up_to_date() {
-        let (ep, server) = serve("200 OK", list(&format!("v{}", env!("CARGO_PKG_VERSION"))));
-        assert!(matches!(check_at(&ep), Outcome::UpToDate(_)));
-        server.join().unwrap();
-        let (ep, server) = serve("200 OK", list("v0.0.2"));
-        assert!(matches!(check_at(&ep), Outcome::UpToDate(_)));
-        server.join().unwrap();
-    }
-
-    #[test]
-    fn errors_are_reported_not_hidden() {
-        let (ep, server) = serve("403 Forbidden", r#"{"message":"rate limit"}"#.into());
-        match check_at(&ep) {
-            Outcome::Failed(e) => assert!(e.contains("limiting"), "{e}"),
-            other => panic!("{other:?}"),
+        let signer = TestSigner::new();
+        for newest in ["0.1.0-beta.9", "0.1.0-beta.8"] {
+            let text = note_text(newest, &[]);
+            let (out, _) = check_files(note_files(&text, &signer), signer.public(), "0.1.0-beta.9", &UpdateState::default());
+            assert_eq!(out, Outcome::UpToDate(v(newest)));
         }
-        server.join().unwrap();
-        let (ep, server) = serve("500 Internal Server Error", String::new());
-        assert!(matches!(check_at(&ep), Outcome::Failed(e) if e.contains("500")));
-        server.join().unwrap();
-        let (ep, server) = serve("200 OK", "[]".into());
-        assert!(matches!(check_at(&ep), Outcome::Failed(e) if e.contains("no release")));
-        server.join().unwrap();
-        let (ep, server) = serve("200 OK", "not json at all".into());
-        assert!(matches!(check_at(&ep), Outcome::Failed(_)));
-        server.join().unwrap();
     }
 
     #[test]
-    fn a_proxy_that_wants_a_sign_in_fails_closed_without_signing_in() {
-        // the 407 asks for Windows (NTLM/Negotiate) credentials; the request must not carry any
-        let (ep, server) = serve("407 Proxy Authentication Required", String::new());
-        assert!(matches!(check_at(&ep), Outcome::Failed(e) if e.contains("proxy")));
-        let req = server.join().unwrap().to_ascii_lowercase();
-        assert!(!req.contains("authorization"), "{req}");
+    fn a_stable_build_is_not_told_about_a_beta() {
+        let signer = TestSigner::new();
+        let text = note_text("0.2.0-beta.1", &[]);
+        let server = Server::start(note_files(&text, &signer));
+        let out = check_with(&trust(&server.base, signer.public()), &v("0.1.0"), &UpdateState::default());
+        server.finish();
+        assert_eq!(out, Outcome::UpToDate(v("0.1.0")));
     }
 
     #[test]
-    fn a_redirect_is_not_followed() {
-        // the server answers a redirect; nothing at the other address is ever contacted
-        let (ep, server) = serve("302 Found", String::new());
-        assert!(matches!(check_at(&ep), Outcome::Failed(e) if e.contains("302")));
-        server.join().unwrap();
+    fn a_note_that_is_not_signed_by_the_release_key_is_refused() {
+        let signer = TestSigner::new();
+        let impostor = TestSigner::new();
+        let text = note_text("99.0.0-beta.1", &["Install this."]);
+        // signed by someone else
+        let (out, _) = check_files(note_files(&text, &impostor), signer.public(), "0.1.0-beta.9", &UpdateState::default());
+        assert!(matches!(&out, Outcome::Failed(e) if e.contains("not signed")), "{out:?}");
+        // changed after it was signed
+        let mut files = note_files(&text, &signer);
+        files[0].1 = note_text("99.0.0-beta.2", &["Install this."]).into_bytes();
+        let (out, _) = check_files(files, signer.public(), "0.1.0-beta.9", &UpdateState::default());
+        assert!(matches!(&out, Outcome::Failed(e) if e.contains("not signed")), "{out:?}");
+        // no signature at all
+        let mut files = note_files(&text, &signer);
+        files.pop();
+        let (out, _) = check_files(files, signer.public(), "0.1.0-beta.9", &UpdateState::default());
+        assert!(matches!(&out, Outcome::Failed(e) if e.contains("no newest-version note")), "{out:?}");
+        // garbage where the signature should be
+        let mut files = note_files(&text, &signer);
+        files[1].1 = b"not a signature".to_vec();
+        let (out, _) = check_files(files, signer.public(), "0.1.0-beta.9", &UpdateState::default());
+        assert!(matches!(&out, Outcome::Failed(_)), "{out:?}");
     }
 
     #[test]
-    fn a_huge_answer_is_refused() {
-        let big = format!("[{}]", "0,".repeat(MAX_REPLY_BYTES));
-        let (ep, server) = serve("200 OK", big);
-        assert!(matches!(check_at(&ep), Outcome::Failed(e) if e.contains("large") || e.contains("cut off")));
-        let _ = server.join();
+    fn a_genuine_note_that_is_older_than_one_already_seen_is_ignored() {
+        let signer = TestSigner::new();
+        let text = note_text("99.0.0-beta.1", &[]);
+        let seen = UpdateState { highest: Some(v("99.0.0-beta.5")), ..Default::default() };
+        let (out, _) = check_files(note_files(&text, &signer), signer.public(), "0.1.0-beta.9", &seen);
+        assert!(matches!(&out, Outcome::Failed(e) if e.contains("older")), "{out:?}");
+        // the same version again is fine
+        let same = UpdateState { highest: Some(v("99.0.0-beta.1")), ..Default::default() };
+        let (out, _) = check_files(note_files(&text, &signer), signer.public(), "0.1.0-beta.9", &same);
+        assert!(matches!(out, Outcome::Newer(_)));
     }
 
     #[test]
-    fn nothing_is_listening() {
-        // a closed port: a plain error, no hang
+    fn no_note_published_or_nobody_listening_is_a_plain_failure() {
+        let signer = TestSigner::new();
+        let (out, _) = check_files(Vec::new(), signer.public(), "0.1.0-beta.9", &UpdateState::default());
+        assert!(matches!(&out, Outcome::Failed(e) if e.contains("no newest-version note is published yet")), "{out:?}");
         let port = {
-            let l = TcpListener::bind("127.0.0.1:0").unwrap();
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             l.local_addr().unwrap().port()
         };
-        let ep = Endpoint { host: "127.0.0.1".into(), port, secure: false, path: "/".into(), headers: API_HEADERS };
-        assert!(matches!(check_at(&ep), Outcome::Failed(_)));
+        let out = check_with(&trust(&format!("http://127.0.0.1:{port}"), signer.public()), &v("0.1.0-beta.9"), &UpdateState::default());
+        assert!(matches!(out, Outcome::Failed(_)));
     }
 
     #[test]
-    fn the_real_endpoint_is_github_over_https() {
-        let e = Endpoint::github();
-        assert_eq!((e.host.as_str(), e.port, e.secure), ("api.github.com", 443, true));
-        assert!(e.path.starts_with("/repositories/") && e.path.contains("/releases?per_page=10"), "{}", e.path);
+    fn the_real_note_is_read_from_the_repository_over_https_with_the_release_keys() {
+        let t = Trust::github();
+        assert_eq!(t.latest_hosts, vec!["raw.githubusercontent.com".to_owned()]);
+        assert_eq!((t.latest_url)("latest.txt"), "https://raw.githubusercontent.com/qpd-v/pasteroll/main/updates/latest.txt");
+        assert_eq!((t.latest_url)("latest.txt.sig"), "https://raw.githubusercontent.com/qpd-v/pasteroll/main/updates/latest.txt.sig");
+        assert_eq!(t.keys, um::configured_keys());
     }
 
     #[test]
-    fn a_secure_request_to_a_server_that_does_not_speak_tls_fails_cleanly() {
-        // the TLS options are accepted (the request is attempted) and a server that answers plain
-        // HTTP on the HTTPS port is an error, not a hang or an accepted reply
-        let (mut ep, server) = serve("200 OK", list("v99.0.0"));
-        ep.secure = true;
-        assert!(matches!(check_at(&ep), Outcome::Failed(_)));
-        let _ = server.join();
+    fn a_finished_check_is_remembered_and_a_failed_one_is_retried_sooner() {
+        let at = 1_800_000_000;
+        let failed = apply(UpdateState::default(), &Outcome::Failed("x".into()), at);
+        assert!(!failed.due(at + 3_600), "not within the hour");
+        assert!(failed.due(at + RETRY_AFTER.as_secs() as i64 + 5), "but after the retry wait");
+        assert_eq!(failed.last_ok, 0, "a failure is not a check that worked");
+        let newer = Found { version: v("99.0.0"), notes: vec!["A note.".into()] };
+        let found = apply(failed, &Outcome::Newer(newer.clone()), at + 10);
+        assert_eq!((found.announced.clone(), found.highest.clone()), (Some(v("99.0.0")), Some(v("99.0.0"))));
+        assert_eq!(found.last_ok, at + 10);
+        assert!(!found.due(at + 60));
+        // the highest note ever seen only goes up
+        let again = apply(found, &Outcome::UpToDate(v("98.0.0")), at + 20);
+        assert_eq!(again.highest, Some(v("99.0.0")));
     }
 
     #[test]
-    fn a_failed_check_is_retried_later_and_news_is_remembered() {
+    fn a_check_is_written_to_the_state_file() {
         let dir = std::env::temp_dir().join(format!("pasteroll-update-win-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let db = dir.join("history.db");
-        remember(&db, &Outcome::Failed("x".into()));
+        remember(&db, &Outcome::Newer(Found { version: v("99.0.0"), notes: vec!["Hi.".into()] }));
         let s = UpdateState::load(&dir.join("update-check.txt"));
-        assert!(!s.due(now() + 3_600), "not within the hour");
-        assert!(s.due(now() + RETRY_AFTER.as_secs() as i64 + 5), "but after the retry wait");
-        let newer = Version::parse("99.0.0").unwrap();
-        remember(&db, &Outcome::Newer(newer.clone()));
+        assert_eq!(s.announced, Some(v("99.0.0")));
+        assert!(last_checked(&db) > 0);
+        skip(&db, &v("99.0.0"));
         let s = UpdateState::load(&dir.join("update-check.txt"));
-        assert_eq!(s.announced, Some(newer));
-        assert!(!s.due(now() + 60));
+        assert_eq!(s.skipped, Some(v("99.0.0")));
+        assert!(!s.should_announce(&v("99.0.0"), &v("0.1.0")));
+        assert!(s.should_announce(&v("99.0.1"), &v("0.1.0")));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_last_check_is_described_in_plain_words() {
+        let now = 1_800_000_000;
+        assert_eq!(last_checked_text(0, now), "Not checked yet");
+        assert_eq!(last_checked_text(now - 10, now), "Last checked just now");
+        assert_eq!(last_checked_text(now - 600, now), "Last checked 10 minutes ago");
+        assert_eq!(last_checked_text(now - 100, now), "Last checked 2 minutes ago");
+        assert_eq!(last_checked_text(now - 3_600, now), "Last checked 1 hour ago");
+        assert_eq!(last_checked_text(now - 3 * 3_600, now), "Last checked 3 hours ago");
+        assert_eq!(last_checked_text(now - 86_400, now), "Last checked 1 day ago");
+        assert_eq!(last_checked_text(now - 5 * 86_400, now), "Last checked 5 days ago");
+        assert_eq!(last_checked_text(now + 100, now), "Last checked a moment ago", "a clock that went backwards");
     }
 
     #[test]
@@ -772,7 +924,7 @@ mod tests {
     #[test]
     fn only_one_check_runs_at_a_time() {
         CHECKING.store(true, Ordering::SeqCst);
-        assert!(check_guarded().is_none(), "a second one is not started");
+        assert!(check_guarded(&UpdateState::default()).is_none(), "a second one is not started");
         CHECKING.store(false, Ordering::SeqCst);
     }
 }

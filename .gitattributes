@@ -3,3 +3,6 @@
 *.ps1 text eol=crlf
 *.png binary
 *.ico binary
+
+# signed byte for byte: line-ending conversion would break the signature
+updates/* -text

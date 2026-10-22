@@ -32,6 +32,8 @@ const ID_AUTOSTART: i32 = 122;
 const ID_MOD: [i32; 3] = [123, 124, 125];
 const ID_MODE: [i32; 2] = [126, 127];
 const ID_UPDATES: i32 = 128;
+const ID_CHECK_NOW: i32 = 129;
+const ID_LAST_CHECK: i32 = 134;
 const ID_EX_LIST: i32 = 130;
 const ID_EX_EDIT: i32 = 131;
 const ID_EX_ADD: i32 = 132;
@@ -65,6 +67,8 @@ struct State {
     modifier: [HWND; 3],
     mode: [HWND; 2],
     updates: HWND,
+    check_now: HWND,
+    last_check: HWND,
     ex_list: HWND,
     ex_edit: HWND,
     fl_list: HWND,
@@ -75,7 +79,7 @@ struct State {
 
 /// Height of the mode choice and the update check at the top of the window; everything below it is
 /// pushed down.
-const MODE_H: i32 = 84;
+const MODE_H: i32 = 120;
 
 /// A settings window is open (the one-time update question waits for it to close).
 static OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -255,8 +259,8 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
             0,
             w!("Segoe UI"),
         );
-        // client area 520 x (724 + the mode choice) at 96 dpi
-        let (cw, ch) = (s(520), s(724 + MODE_H));
+        // client area 520 x (688 + the mode choice) at 96 dpi
+        let (cw, ch) = (s(520), s(688 + MODE_H));
         let mut r = RECT { left: 0, top: 0, right: cw, bottom: ch };
         let _ = AdjustWindowRectEx(&mut r, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, false, WINDOW_EX_STYLE(0));
         let (ww, wh) = (r.right - r.left, r.bottom - r.top);
@@ -300,6 +304,8 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
             font,
         );
         SendMessageW(updates, BM_SETCHECK, Some(WPARAM(usize::from(cfg.updates == UpdateCheck::On))), Some(LPARAM(0)));
+        let check_now = child(hwnd, w!("BUTTON"), "Check for updates now", BS_PUSHBUTTON as u32 | WS_TABSTOP.0, 0, (16, 90, 170, 26), ID_CHECK_NOW, dpi, font);
+        let last_check = child(hwnd, w!("STATIC"), "", 0, 0, (198, 95, 306, 20), ID_LAST_CHECK, dpi, font);
         TOP.set(MODE_H);
 
         child(hwnd, w!("STATIC"), "How much history to keep", 0, 0, (16, 12, 480, 20), 0, dpi, font);
@@ -452,12 +458,12 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
             dpi,
             font,
         );
-        let fl_list = child(hwnd, w!("LISTBOX"), "", lb, WS_EX_CLIENTEDGE.0, (16, 588, 300, 84), ID_FL_LIST, dpi, font);
+        let fl_list = child(hwnd, w!("LISTBOX"), "", lb, WS_EX_CLIENTEDGE.0, (16, 588, 300, 48), ID_FL_LIST, dpi, font);
         child(hwnd, w!("BUTTON"), "Remove", BS_PUSHBUTTON as u32 | WS_TABSTOP.0, 0, (330, 588, 84, 26), ID_FL_REMOVE, dpi, font);
 
-        let status_h = child(hwnd, w!("STATIC"), "", 0, 0, (16, 672, 300, 40), ID_STATUS, dpi, font);
-        child(hwnd, w!("BUTTON"), "Save", BS_DEFPUSHBUTTON as u32 | WS_TABSTOP.0, 0, (330, 680, 84, 30), ID_SAVE, dpi, font);
-        child(hwnd, w!("BUTTON"), "Cancel", BS_PUSHBUTTON as u32 | WS_TABSTOP.0, 0, (420, 680, 84, 30), ID_CANCEL, dpi, font);
+        let status_h = child(hwnd, w!("STATIC"), "", 0, 0, (16, 636, 300, 40), ID_STATUS, dpi, font);
+        child(hwnd, w!("BUTTON"), "Save", BS_DEFPUSHBUTTON as u32 | WS_TABSTOP.0, 0, (330, 644, 84, 30), ID_SAVE, dpi, font);
+        child(hwnd, w!("BUTTON"), "Cancel", BS_PUSHBUTTON as u32 | WS_TABSTOP.0, 0, (420, 644, 84, 30), ID_CANCEL, dpi, font);
 
         let exclude = cfg.exclude_apps.clone();
         let filters: Vec<String> = cfg.custom_filters.iter().map(|f| f.name.clone()).collect();
@@ -485,6 +491,8 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
             modifier,
             mode,
             updates,
+            check_now,
+            last_check,
             ex_list,
             ex_edit,
             fl_list,
@@ -496,6 +504,7 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
         OPEN.store(true, std::sync::atomic::Ordering::Relaxed);
         SetTimer(Some(hwnd), TIMER_SYNC, 1000, None);
         update_values();
+        refresh_last_check();
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = SetForegroundWindow(hwnd);
     }
@@ -547,6 +556,36 @@ fn sync_update_choice() {
             }
         }
     });
+}
+
+/// Shows when the update check last got an answer, and keeps the button off while one is running.
+fn refresh_last_check() {
+    ST.with(|c| {
+        let Ok(g) = c.try_borrow() else { return };
+        let Some(s) = g.as_ref() else { return };
+        let checking = crate::update::checking();
+        let text = if checking {
+            "Checking...".to_owned()
+        } else {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+            crate::update::last_checked_text(crate::update::last_checked(&s.db), now)
+        };
+        if get_text(s.last_check) != text {
+            set_text(s.last_check, &text);
+        }
+        unsafe {
+            let _ = windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow(s.check_now, !checking);
+        }
+    });
+}
+
+/// "Check for updates now": the result is shown by the notification icon, like the menu entry's.
+fn check_now() {
+    let db = ST.with(|c| c.try_borrow().ok().and_then(|g| g.as_ref().map(|s| s.db.clone())));
+    if let (Some(db), Some(window)) = (db, app::tray_window()) {
+        crate::update::check_now(window, Some(db));
+    }
+    refresh_last_check();
 }
 
 /// Whether the update box is ticked right now (self-test).
@@ -771,6 +810,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
         match msg {
             WM_TIMER if wparam.0 == TIMER_SYNC => {
                 sync_update_choice();
+                refresh_last_check();
                 LRESULT(0)
             }
             WM_HSCROLL => {
@@ -782,6 +822,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 match id {
                     ID_SAVE => save(),
                     ID_CANCEL => close(),
+                    ID_CHECK_NOW => check_now(),
                     ID_EX_ADD => {
                         let added = ST.with(|c| {
                             let Ok(mut g) = c.try_borrow_mut() else { return None };

@@ -216,21 +216,94 @@ pub fn verify_manifest(
     keys: &[[u8; 64]],
     verifier: &dyn SignatureVerifier,
 ) -> Result<Manifest, String> {
+    let text = verified_text(manifest, signature_file, keys, verifier)?;
+    parse(text)
+}
+
+/// The text of a small signed file, after its signature has been checked against `keys`.
+fn verified_text<'a>(
+    file: &'a [u8],
+    signature_file: &[u8],
+    keys: &[[u8; 64]],
+    verifier: &dyn SignatureVerifier,
+) -> Result<&'a str, String> {
     if keys.is_empty() {
         return Err("this build has no update key, so updates cannot be verified".to_owned());
     }
-    if manifest.len() > MAX_SMALL_FILE_BYTES || signature_file.len() > MAX_SMALL_FILE_BYTES {
+    if file.len() > MAX_SMALL_FILE_BYTES || signature_file.len() > MAX_SMALL_FILE_BYTES {
         return Err("the update information is unexpectedly large".to_owned());
     }
     let signature = std::str::from_utf8(signature_file)
         .ok()
         .and_then(decode_signature)
         .ok_or_else(|| "the update signature is not in the expected form".to_owned())?;
-    if !keys.iter().any(|k| verifier.verify(k, manifest, &signature)) {
+    if !keys.iter().any(|k| verifier.verify(k, file, &signature)) {
         return Err("the update is not signed by the Pasteroll release key".to_owned());
     }
-    let text = std::str::from_utf8(manifest).map_err(|_| "the manifest is not text".to_owned())?;
-    parse(text)
+    std::str::from_utf8(file).map_err(|_| "the update information is not text".to_owned())
+}
+
+pub const LATEST_NAME: &str = "latest.txt";
+pub const LATEST_SIGNATURE_NAME: &str = "latest.txt.sig";
+/// The most notes, and the longest note, a "newest version" file may carry.
+pub const MAX_NOTES: usize = 5;
+pub const MAX_NOTE_CHARS: usize = 160;
+/// The only host the "newest version" file is fetched from (the repository's own files).
+pub const LATEST_HOSTS: [&str; 1] = ["raw.githubusercontent.com"];
+
+/// Where the signed "newest version" file and its signature are published: the repository's
+/// `updates` folder, updated after each release is public.
+pub fn latest_url(name: &str) -> String {
+    format!("https://raw.githubusercontent.com/{REPO}/main/updates/{name}")
+}
+
+/// What the signed "newest version" file says: the newest release, and a few plain lines about it
+/// that the person is shown before they choose to install it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Latest {
+    pub version: Version,
+    pub notes: Vec<String>,
+}
+
+/// Reads a "newest version" file: the first line `pasteroll-update-latest 1`, then `version X`, then
+/// up to [`MAX_NOTES`] lines `note TEXT` (plain printable ASCII, at most [`MAX_NOTE_CHARS`] long, no
+/// space at either end), each line ending in a newline. Nothing else.
+pub fn parse_latest(text: &str) -> Result<Latest, String> {
+    let bad = || "the newest-version note is not in the expected form".to_owned();
+    if text.len() > MAX_SMALL_FILE_BYTES || text.contains('\r') || !text.ends_with('\n') {
+        return Err(bad());
+    }
+    let lines: Vec<&str> = text[..text.len() - 1].split('\n').collect();
+    if lines.len() < 2 || lines.len() > 2 + MAX_NOTES || lines[0] != "pasteroll-update-latest 1" {
+        return Err(bad());
+    }
+    let version = lines[1].strip_prefix("version ").and_then(Version::from_release_number).ok_or_else(bad)?;
+    let mut notes = Vec::new();
+    for line in &lines[2..] {
+        let note = line.strip_prefix("note ").filter(|n| is_valid_note(n)).ok_or_else(bad)?;
+        notes.push(note.to_owned());
+    }
+    Ok(Latest { version, notes })
+}
+
+/// Whether `note` is acceptable text for a line of the newest-version file: printable ASCII, not
+/// empty, not too long, no space at either end.
+pub fn is_valid_note(note: &str) -> bool {
+    !note.is_empty()
+        && note.len() <= MAX_NOTE_CHARS
+        && note.bytes().all(|b| (0x20..=0x7e).contains(&b))
+        && !note.starts_with(' ')
+        && !note.ends_with(' ')
+}
+
+/// Verifies the signature on a "newest version" file and reads it (the signature first, as for a manifest).
+pub fn verify_latest(
+    file: &[u8],
+    signature_file: &[u8],
+    keys: &[[u8; 64]],
+    verifier: &dyn SignatureVerifier,
+) -> Result<Latest, String> {
+    parse_latest(verified_text(file, signature_file, keys, verifier)?)
 }
 
 /// Whether an update to `m` may be installed over `current`, when the update check found
@@ -414,13 +487,93 @@ mod tests {
 
     #[test]
     fn an_older_signed_release_that_is_still_newer_than_this_one_is_accepted() {
-        // Known and documented limit (SECURITY.md): the announced version comes from the release list,
-        // which is not signed, so whoever controls that list can announce an older genuine release.
-        // The signature still proves the release is genuine, and it is never older than the running copy.
+        // The manifest only proves a release is genuine and newer than the running copy. Which release
+        // is the newest comes from the signed "newest version" file, not from this check.
         let m = parse(&manifest_text("0.1.0-beta.9")).unwrap();
         let v = |s: &str| Version::parse(s).unwrap();
         assert!(check_installable(&m, &v("0.1.0-beta.9"), &v("0.1.0-beta.8")).is_ok());
         assert!(check_installable(&m, &v("0.1.0-beta.9"), &v("0.1.0-beta.9")).is_err());
+    }
+
+    fn latest_text(version: &str, notes: &[&str]) -> String {
+        let mut t = format!("pasteroll-update-latest 1\nversion {version}\n");
+        for n in notes {
+            t.push_str(&format!("note {n}\n"));
+        }
+        t
+    }
+
+    #[test]
+    fn a_well_formed_newest_version_file_is_read() {
+        let l = parse_latest(&latest_text("0.1.0-beta.10", &["Check now in Settings.", "Skip a version."])).unwrap();
+        assert_eq!(l.version, Version::parse("0.1.0-beta.10").unwrap());
+        assert_eq!(l.notes, vec!["Check now in Settings.".to_owned(), "Skip a version.".to_owned()]);
+        assert_eq!(parse_latest(&latest_text("0.1.0-beta.10", &[])).unwrap().notes, Vec::<String>::new(), "notes are optional");
+        let five = ["a"; MAX_NOTES];
+        assert_eq!(parse_latest(&latest_text("0.1.0", &five)).unwrap().notes.len(), MAX_NOTES);
+    }
+
+    #[test]
+    fn anything_unexpected_in_a_newest_version_file_is_refused() {
+        let good = latest_text("0.1.0-beta.10", &["Fine."]);
+        assert!(parse_latest(&good).is_ok());
+        let long = "x".repeat(MAX_NOTE_CHARS + 1);
+        let ok_long = "x".repeat(MAX_NOTE_CHARS);
+        assert!(parse_latest(&latest_text("0.1.0-beta.10", &[&ok_long])).is_ok());
+        let bad = [
+            good.replace('\n', "\r\n"),
+            good.trim_end().to_owned(),
+            good.replace("latest 1", "latest 2"),
+            good.replace("version 0.1.0-beta.10", "version vv0.1.0"),
+            good.replace("version 0.1.0-beta.10", "version latest"),
+            good.replace("note Fine.", "notes Fine."),
+            good.replace("note Fine.", "note "),
+            good.replace("note Fine.", "note  Fine."),
+            good.replace("note Fine.", "note Fine. "),
+            good.replace("note Fine.", "note caf\u{e9}"),
+            good.replace("note Fine.", "note tab\there"),
+            good.replace("note Fine.", "note one\u{7}bell"),
+            latest_text("0.1.0-beta.10", &[&long]),
+            latest_text("0.1.0-beta.10", &["a"; MAX_NOTES + 1]),
+            format!("{good}\n"),
+            format!("{good}extra line\n"),
+            "pasteroll-update-latest 1\n".to_owned(),
+            String::new(),
+            "x".repeat(MAX_SMALL_FILE_BYTES + 1),
+            manifest_text("0.1.0-beta.10"),
+        ];
+        for (i, b) in bad.iter().enumerate() {
+            assert!(parse_latest(b).is_err(), "case {i}: {b:?}");
+        }
+    }
+
+    #[test]
+    fn only_a_signed_newest_version_file_is_accepted() {
+        let text = latest_text("0.1.0-beta.10", &["Hello."]);
+        let (f, s) = signed(&text, &KEY);
+        let keys = [KEY, OTHER];
+        assert_eq!(verify_latest(&f, &s, &keys, &Fake).unwrap().version, Version::parse("0.1.0-beta.10").unwrap());
+        let (f2, s2) = signed(&text, &OTHER);
+        assert!(verify_latest(&f2, &s2, &keys, &Fake).is_ok(), "the backup key works too");
+        let (f3, s3) = signed(&text, &[1; 64]);
+        assert!(verify_latest(&f3, &s3, &keys, &Fake).is_err(), "an unknown key does not");
+        let edited = text.replace("beta.10", "beta.11");
+        assert!(verify_latest(edited.as_bytes(), &s, &keys, &Fake).is_err(), "a changed file does not match its signature");
+        assert!(verify_latest(&f, &s, &[], &Fake).unwrap_err().contains("no update key"));
+        // a signed manifest is not a signed newest-version file, and the other way round
+        let (mf, ms) = signed(&manifest_text("0.1.0-beta.10"), &KEY);
+        assert!(verify_latest(&mf, &ms, &keys, &Fake).is_err());
+        assert!(verify_manifest(&f, &s, &keys, &Fake).is_err());
+    }
+
+    #[test]
+    fn the_newest_version_file_comes_from_the_repository() {
+        assert_eq!(
+            latest_url(LATEST_NAME),
+            "https://raw.githubusercontent.com/qpd-v/pasteroll/main/updates/latest.txt"
+        );
+        assert_eq!(latest_url(LATEST_SIGNATURE_NAME), "https://raw.githubusercontent.com/qpd-v/pasteroll/main/updates/latest.txt.sig");
+        assert_eq!(LATEST_HOSTS, ["raw.githubusercontent.com"]);
     }
 
     #[test]

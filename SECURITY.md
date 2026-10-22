@@ -45,16 +45,17 @@ Pasteroll encrypts the history at rest. It is **not** a defence against malware 
   restored), unless it is deleted permanently. Permanent deletion overwrites it as before.
 - **Network**: none, except the optional update check on Windows (off until the person says yes) and,
   only when the person chooses "Download and install", the download described under
-  "Installing updates". The check makes one HTTPS GET to `api.github.com` with the system's certificate checks and proxy
-  settings (WinHTTP). TLS 1.2 or newer is required, and so is refusing redirects and Windows'
-  automatic sign-in to proxies and servers: if one of those settings cannot be applied the request
-  is not made. The whole check has a 45-second limit and the reply a 1 MB cap. Certificate
+  "Installing updates". The check makes two small HTTPS GETs to `raw.githubusercontent.com` (the signed
+  "newest version" note and its signature; see below) with the system's certificate checks and proxy
+  settings (WinHTTP). TLS 1.2 or newer is required, and so is Windows' refusal to sign in to proxies
+  and servers on its own: if one of those settings cannot be applied the request is not made. Each
+  file has a 4 KB cap and a limit of 45 seconds for the body (a server that trickles bytes cannot keep
+  it open; the connection steps have their own shorter time-outs). Certificate
   revocation is not checked and nothing is pinned, so someone who controls a trusted certificate
-  authority on the network could read the request or give a false answer; the worst that does is a
-  wrong "update available" message. Only `"tag_name"` strings that are exactly this project's
-  release tags (`v0.1.0-beta.7`) are read, and the page that is opened is built from that parsed version, never
-  copied from the reply. The check downloads and runs nothing, so a hostile reply can at worst show a wrong
-  "update available" message; installing is a separate, signed step (see below). See [PRIVACY.md](PRIVACY.md).
+  authority on the network could read the request or stall it; they cannot forge the answer, because
+  the note is believed only if it carries a valid signature. The page that is opened is built from the
+  parsed version, never copied from the reply. The check downloads and runs nothing; installing is a
+  separate, signed step (see below). See [PRIVACY.md](PRIVACY.md).
 
 ## Installing updates (Windows)
 
@@ -72,6 +73,12 @@ maintainer did not sign. The limits of that are listed below; please read them.
   are not in this repository and not in the program; each is kept encrypted with a passphrase, the
   backup on separate offline media. Key fingerprints (the first eight bytes of the SHA-256 of the
   64-byte public key): release `4c78c3487cccaa16`, backup `cf5f92f51d2512ed`.
+- **Which release is the newest is signed too.** The update check does not use GitHub's release list.
+  It reads `updates/latest.txt` and `updates/latest.txt.sig` from this repository (the version number
+  and up to five plain lines about it, signed with the same keys; a release publishes them after it
+  is public). A note that does not verify is ignored, and the lines shown in the install window are
+  only ever signed lines, fetched and verified when the window is opened (none are kept on disk). Pasteroll also remembers the newest version any note has named, and
+  ignores a genuine but older note served again.
 - **What is installed.** Only the release the update check announced, only if it is newer than the
   running version, only the file the manifest names, only if its size and SHA-256 match. A downloaded
   file that fails any check is deleted. The updater uses no file that the signed manifest does not name.
@@ -95,8 +102,9 @@ maintainer did not sign. The limits of that are listed below; please read them.
   open (under Windows' `Temp`, random name, created with that access in one step, and refused if its
   owner is anyone else). Setup's own temporary files are pointed there too. It accepts exactly what the
   normal check accepts, so running it by hand can at most install a genuine, newer, signed release. The
-  system's `cmd.exe`, started by full path with a fixed `PATH`, waits for Setup, starts the new program
-  (by full path, through `explorer.exe`) and removes the folder; folders left by an update that did not
+  system's `cmd.exe`, started by full path with a fixed `PATH`, waits for Setup, starts the program
+  again (by full path, through `explorer.exe`: the new version, or the old one if Setup failed, so that
+  it can say so) and removes the folder; folders left by an update that did not
   finish are removed at the next update. The helper stops itself after ten minutes.
 - **Other copies: the downloaded file is held.** It is hashed again through a handle that nobody else
   may write to, rename or delete, and Pasteroll keeps that handle until it exits. The download folder
@@ -109,18 +117,29 @@ maintainer did not sign. The limits of that are listed below; please read them.
   feature will accept. The keys are kept offline and passphrase-protected for that reason. There is no
   key revocation: if a key leaks, a new version is released and signed with the backup key, and copies
   must be updated by hand. A compromise of the GitHub account alone cannot produce a valid update.
-- **Rollback and freezing.** Which release is announced comes from GitHub's release list, which is not
-  signed. Someone who controls that list or the network can announce an older genuine release that is
-  still newer than the running copy, or hide a newer one. They cannot make Pasteroll install anything
-  that is not genuinely signed. A signed "latest version" pointer would close this; it is not built.
+- **Freezing, and the first sight of a note.** The "newest version" note is signed, so no one can
+  announce a version the maintainer did not name, and an older genuine note served again is ignored
+  once a newer one has been seen. What is not covered: someone who controls the network (or this
+  repository without a key) can keep serving an old genuine note, or block the request, so that a
+  copy is never told about a newer version (it simply stays where it is), and a copy that has never seen
+  a newer note can be pointed at an older genuine release that is still newer than itself. The note has
+  no expiry, because that would mean signing it again every few days. It names one version, so a
+  stable-release copy would only hear about a stable release that is also the newest (there are only
+  betas so far; a second note will be needed before the first stable release). To withdraw a bad release,
+  publish a higher version. Copies before 0.1.0-beta.10 read GitHub's unsigned release list instead
+  and have the weaker limit that someone who controls that list or the network can announce an older
+  genuine release that is still newer than the running copy, or hide a newer one; they cannot make
+  Pasteroll install anything that is not genuinely signed.
 - **All-users copies and who "you" are.** Windows' administrator prompt is not a security boundary
   against a program already running as you: such a program can open the same prompt, and if you accept
   it, the helper still only installs a genuine, newer, signed release. The elevated account can be a
   different one from yours (an administrator's credentials typed over your shoulder), in which case
   Setup's per-account steps (registering the install, start at sign-in) apply to that account, as they
   do for any all-users Setup. The new program is started again through `explorer.exe` so that it runs as
-  you, which depends on Windows Explorer running as you in the normal way; it is not started if Setup
-  fails, if the install folder's name has unusual characters, or when the sign-in is not a normal one.
+  you, which depends on Windows Explorer running as you in the normal way; it is not started if the
+  program file is gone, if the install folder's name has unusual characters, or when the sign-in is not
+  a normal one. A copy installed for one account is started again after a failed Setup the same way,
+  by the system's `cmd.exe` that waited for Setup (and not at all if a path has unusual characters).
   A copy installed for all users outside Program Files is not updated by Pasteroll (it only says that a
   newer version exists). Whether Setup worked is reported at the next start (an all-users Setup keeps no
   log, because a log would sit in a folder you control).

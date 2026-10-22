@@ -14,6 +14,7 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
+import importlib.util
 import scan_binary
 from release_artifacts import artifact_names, verify_checksums, write_checksums
 
@@ -162,6 +163,45 @@ class ReleaseTools(unittest.TestCase):
         (self.temp / "SHA256SUMS").write_text(original + original.splitlines()[0] + "\n")
         with self.assertRaises(ValueError):
             verify_checksums(self.temp, names)
+
+
+class NewestVersionNoteTests(unittest.TestCase):
+    """The "newest version" note is built from the release notes' "In short" section."""
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("make_update_manifest", ROOT / "scripts" / "make-update-manifest.py")
+        cls.tool = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.tool)
+
+    def notes(self, body):
+        folder = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(folder, ignore_errors=True))
+        (folder / "packaging").mkdir()
+        (folder / "packaging" / "release-notes-9.9.9.md").write_text(body, encoding="utf-8")
+        return patch.object(self.tool, "ROOT", folder)
+
+    def test_the_bullets_become_signed_plain_lines(self):
+        body = "# Notes\n\n## In short\n\n- First line.\n- Second line.\n\n## New\n\n- Not this one.\n"
+        with self.notes(body):
+            self.assertEqual(self.tool.latest_text("9.9.9"),
+                             "pasteroll-update-latest 1\nversion 9.9.9\nnote First line.\nnote Second line.\n")
+
+    def test_missing_empty_long_or_formatted_lines_stop_the_release(self):
+        bad = {
+            "no section": "# Notes\n\n## New\n\n- x\n",
+            "no bullets": "## In short\n\nJust a paragraph.\n",
+            "too many": "## In short\n" + "".join(f"- line {i}\n" for i in range(6)),
+            "too long": "## In short\n- " + "x" * 161 + "\n",
+            "not ascii": "## In short\n- café\n",
+            "bold": "## In short\n- **Bold** text\n",
+            "code": "## In short\n- `code` text\n",
+        }
+        for label, body in bad.items():
+            with self.subTest(label), self.notes(body), self.assertRaises(SystemExit):
+                self.tool.latest_text("9.9.9")
+        with self.assertRaises(SystemExit):  # no notes file for that version at all
+            self.tool.latest_text("0.0.0-none")
 
 
 if __name__ == "__main__":

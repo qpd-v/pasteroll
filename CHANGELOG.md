@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.0-beta.10 (Windows only)
+
+- Which version is the newest is now **signed** (Windows). The update check no longer trusts GitHub's
+  list of releases: it reads a short note from this repository that is signed with the same release
+  key as the update itself, and ignores a genuine but older note served again. The note also carries a
+  few plain lines about the new version, which the install window shows.
+- Settings has a **Check for updates now** button and says how long ago the last check was. The
+  install window has **Skip this version** (that version is not mentioned again; a newer one, or a
+  check you ask for, brings it back).
+- If an update's installer fails, the previous Pasteroll is started again and says so, instead of
+  nothing running. After a successful update Pasteroll says which version you now have.
+- More tests of the downloader: a server that trickles bytes, an endless chunked answer, a partial
+  (206), sign-in (401/407) or compressed answer. Removed unused code.
+
 ## 0.1.0-beta.9 (Windows only)
 
 - Add **Download and install** to the update check (Windows). When a newer version is found, the tray

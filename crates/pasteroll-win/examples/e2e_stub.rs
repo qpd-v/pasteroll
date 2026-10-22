@@ -18,6 +18,10 @@ fn main() {
                 }
             }
         }
+        // used as a Setup that fails: the test serves this file as the installer to see what happens
+        // when Setup does not succeed
+        // (exit code 1, or what PASTEROLL_E2E_SETUP_EXIT says: -1 stands for a crashed or killed Setup)
+        Some("/VERYSILENT") => std::process::exit(std::env::var("PASTEROLL_E2E_SETUP_EXIT").ok().and_then(|v| v.parse().ok()).unwrap_or(1)),
         // `stop --if-exe FILE` and anything else: nothing is running, so nothing to do
         _ => {}
     }

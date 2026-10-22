@@ -45,6 +45,8 @@ mod selftest;
 mod settings;
 mod setup;
 mod sigcheck;
+#[cfg(test)]
+mod testsupport;
 mod tray;
 mod update;
 mod winsys;
@@ -544,6 +546,15 @@ fn run_app(db: PathBuf, args: &[String]) -> i32 {
 }
 
 fn main() {
+    // The end-to-end test build, started again after a failed Setup: leave a note and stop, so that
+    // the test never runs a second real tray program.
+    #[cfg(feature = "e2e-test-server")]
+    if let Ok(note) = std::env::var("PASTEROLL_E2E_RESTART_NOTE") {
+        if std::env::args().nth(1).is_none() {
+            let _ = std::fs::write(note, "restarted");
+            return;
+        }
+    }
     // started from the Start menu or Explorer, the app would sit behind an empty console window:
     // let go of a console that is ours alone (a terminal's console is shared, so it stays)
     if matches!(std::env::args().nth(1).as_deref(), None | Some("run"))
@@ -581,9 +592,10 @@ fn main() {
         "update-dialog-preview" => installui::preview_confirmation(),
         // the administrator half of an update for a copy in Program Files (see elevated.rs)
         "apply-update" => elevated::apply_update(args.get(1).map(String::as_str), args.get(2..).unwrap_or(&[])),
-        "update-verify" => match (args.get(1), args.get(2)) {
-            (Some(m), Some(s)) => update::verify_command(Path::new(m), Path::new(s)),
-            _ => fail("usage: update-verify MANIFEST SIGNATURE"),
+        "update-verify" => match (args.get(1), args.get(2), args.get(3), args.get(4)) {
+            (Some(m), Some(s), None, None) => update::verify_command(Path::new(m), Path::new(s), None),
+            (Some(m), Some(s), Some(n), Some(ns)) => update::verify_command(Path::new(m), Path::new(s), Some((Path::new(n), Path::new(ns)))),
+            _ => fail("usage: update-verify MANIFEST SIGNATURE [NOTE NOTE_SIGNATURE]"),
         },
         // debug aid: a picture of the settings window
         "settings-snapshot" => {

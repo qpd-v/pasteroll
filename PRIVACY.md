@@ -35,17 +35,25 @@ data folder lets `pasteroll stop` request a graceful exit; it does not use the n
 
 Until you have answered, Pasteroll asks whether it may check for updates (once you answer it does
 not ask again); "Never check" is the default button and closing the window decides nothing. If you say yes (or tick **Check for updates** in Settings), then about
-once a day it makes one HTTPS request to `api.github.com` for the list of releases of this project
-and compares the newest version number with its own. GitHub, like any website, sees your IP address
+once a day it makes two small HTTPS requests to `raw.githubusercontent.com` (GitHub's host for the
+files in this project's repository): one for the "newest version" note (a few lines of text: the
+newest version number and up to five plain lines about it) and one for its signature. The note is
+believed only if it is signed with the Pasteroll release key (see SECURITY.md); Pasteroll compares
+its version number with its own. GitHub, like any website, sees your IP address
 and the program name and version (`Pasteroll/<version>`), plus the usual request headers
-(`Accept`, `X-GitHub-Api-Version`); nothing else is sent: no clipboard content, no history, no
+(`Accept`); nothing else is sent: no clipboard content, no history, no
 settings, no identifier. Windows is told not to sign in to a proxy or server on its own. Your
 network may do its own name lookups and proxy discovery for any program. If a newer version exists you get a notification
-and a menu entry that opens its release page in your browser. **The check itself downloads nothing
-and installs nothing** (installing is a separate step you must choose, described below). You can also check by hand from the tray menu (*Check for updates now*) or with
-`pasteroll update-check`; that one request is made only when you ask. Choose No (or untick the box)
-and Pasteroll makes no network request at all. The date of the last check and the newest version
-you were told about are kept in `update-check.txt` in the data folder. The setting is
+and a menu entry that opens its release page in your browser or lets you install it; the plain lines from the signed
+note are shown in the install window. **The check itself downloads nothing
+and installs nothing** (installing is a separate step you must choose, described below). You can also check by hand from the tray menu or from
+Settings (*Check for updates now*), or with
+`pasteroll update-check`; those two requests are made only when you ask. Choose No (or untick the box)
+and Pasteroll makes no network request unless you ask for one (a check by hand, or installing an update). The date of the last check, the newest version
+you were told about, the newest version any note has named (so that an old note served again is
+ignored), and a version you chose to skip are kept in `update-check.txt` in the data folder (Settings
+shows how long ago the last check was). The plain lines of the note are not kept: the install window
+fetches the note again when you open it. The setting is
 `[updates] check_for_updates` in `config.toml`.
 
 ### Download and install (Windows, only when you ask)

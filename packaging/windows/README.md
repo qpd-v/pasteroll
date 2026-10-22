@@ -7,8 +7,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-windows-inst
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-windows-packaging.ps1
 ```
 
-The first command builds both `dist/pasteroll-0.1.0-beta.9-windows-x64-setup.exe` and
-`dist/pasteroll-0.1.0-beta.9-windows-x64-portable.zip`. It reads version, publisher, website and
+The first command builds both `dist/pasteroll-0.1.0-beta.10-windows-x64-setup.exe` and
+`dist/pasteroll-0.1.0-beta.10-windows-x64-portable.zip`. It reads version, publisher, website and
 license from Cargo metadata, remaps build paths, and builds offline with the lockfile. Rust's
 dependencies must already be available locally. The script checks for ISCC and does not install it.
 Use `-Iscc PATH` for a nonstandard Inno Setup 6 location.
@@ -38,8 +38,8 @@ wizard mode is omitted: the ZIP provides extraction without installation or elev
 - Both license texts appear in the license page and are installed as separate files.
 
 ```powershell
-.\pasteroll-0.1.0-beta.9-windows-x64-setup.exe /VERYSILENT /CURRENTUSER /NORESTART
-.\pasteroll-0.1.0-beta.9-windows-x64-setup.exe /VERYSILENT /ALLUSERS /NORESTART
+.\pasteroll-0.1.0-beta.10-windows-x64-setup.exe /VERYSILENT /CURRENTUSER /NORESTART
+.\pasteroll-0.1.0-beta.10-windows-x64-setup.exe /VERYSILENT /ALLUSERS /NORESTART
 ```
 
 `/CURRENTUSER` needs no administrator rights. `/ALLUSERS` requires UAC approval, or an already

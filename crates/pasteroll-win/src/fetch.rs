@@ -4,15 +4,18 @@
 //! is capped by size and by time, and hashed as it arrives.
 
 use crate::update::{send, status_message, Endpoint};
-use pasteroll_core::update_manifest::{Hasher, MAX_ASSET_BYTES};
+use pasteroll_core::update_manifest::Hasher;
 use std::io::Write;
 use std::time::{Duration, Instant};
 
 /// GitHub's own hosts: the release page, and the two names its file storage has used.
 pub const GITHUB_HOSTS: [&str; 3] = ["github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"];
 
-/// A release file may take this long to arrive, in all.
+/// A release file may take this long to arrive, in all. (A server that trickles bytes cannot keep
+/// resetting the per-operation timeouts: the whole download has this one limit.)
 const DOWNLOAD_TIME: Duration = Duration::from_secs(300);
+/// A small file (the newest-version note, a manifest or a signature) may take this long.
+const SMALL_TIME: Duration = Duration::from_secs(45);
 const MAX_HOPS: usize = 3;
 
 const FILE_HEADERS: &str = "Accept: application/octet-stream";
@@ -21,7 +24,7 @@ const FILE_HEADERS: &str = "Accept: application/octet-stream";
 pub enum Dest<'a> {
     /// Into memory, at most this many bytes (small files: the manifest and its signature).
     Memory(&'a mut Vec<u8>, usize),
-    /// Into a file, at most [`MAX_ASSET_BYTES`].
+    /// Into a file, at most the caller's limit (releases are held to `MAX_ASSET_BYTES`).
     File(&'a mut std::fs::File),
 }
 
@@ -87,6 +90,18 @@ pub fn download(
     dest: Dest,
     progress: &mut dyn FnMut(u64, Option<u64>),
 ) -> Result<Got, String> {
+    download_within(DOWNLOAD_TIME, url, hosts, max, dest, progress)
+}
+
+/// [`download`] with its own limit on the whole transfer.
+fn download_within(
+    time: Duration,
+    url: &str,
+    hosts: &[&str],
+    max: u64,
+    dest: Dest,
+    progress: &mut dyn FnMut(u64, Option<u64>),
+) -> Result<Got, String> {
     let started = Instant::now();
     let mut dest = dest;
     let mut current = url.to_owned();
@@ -107,7 +122,7 @@ pub fn download(
                 let mut size = 0u64;
                 let mut buf = vec![0u8; 64 * 1024];
                 loop {
-                    if started.elapsed() > DOWNLOAD_TIME {
+                    if started.elapsed() > time {
                         return Err("the download took too long".to_owned());
                     }
                     let n = response.read(&mut buf)?;
@@ -154,13 +169,8 @@ pub fn download(
 /// A small file (the manifest or its signature) into memory.
 pub fn download_small(url: &str, hosts: &[&str], max: usize) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
-    download(url, hosts, max as u64, Dest::Memory(&mut out, max), &mut |_, _| {})?;
+    download_within(SMALL_TIME, url, hosts, max as u64, Dest::Memory(&mut out, max), &mut |_, _| {})?;
     Ok(out)
-}
-
-/// A release file from GitHub into `file`, at most [`MAX_ASSET_BYTES`].
-pub fn download_asset(url: &str, file: &mut std::fs::File, progress: &mut dyn FnMut(u64, Option<u64>)) -> Result<Got, String> {
-    download(url, &GITHUB_HOSTS, MAX_ASSET_BYTES, Dest::File(file), progress)
 }
 
 #[cfg(test)]
@@ -239,14 +249,9 @@ mod tests {
 
     #[test]
     fn a_redirect_to_an_allowed_host_is_followed() {
-        let listener_port = {
-            // the second hop is the same server, reached by a second connection
-            let l = TcpListener::bind("127.0.0.1:0").unwrap();
-            l.local_addr().unwrap().port()
-        };
-        let _ = listener_port;
         let (port, server) = {
-            // learn our own port first so the Location can name it
+            // the second hop is the same server, reached by a second connection; learn its port
+            // first so the Location can name it
             let probe = TcpListener::bind("127.0.0.1:0").unwrap();
             let port = probe.local_addr().unwrap().port();
             drop(probe);
@@ -348,6 +353,123 @@ mod tests {
         let _ = server.join();
     }
 
+    /// A server that answers one connection by running `reply` on it; joins to the request it got.
+    fn serve_with(reply: impl FnOnce(&mut TcpStream) + Send + 'static) -> (u16, std::thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            let (mut s, _): (TcpStream, _) = listener.accept().unwrap();
+            let mut req = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = s.read(&mut buf).unwrap();
+                if n == 0 {
+                    break;
+                }
+                req.extend_from_slice(&buf[..n]);
+            }
+            reply(&mut s);
+            String::from_utf8_lossy(&req).into_owned()
+        });
+        (port, handle)
+    }
+
+    #[test]
+    fn a_server_that_trickles_bytes_is_stopped_by_the_time_limit() {
+        // one byte every 100 ms would take hours; every per-operation timeout is satisfied, so only the
+        // limit on the whole download can stop it
+        let (port, server) = serve_with(|s| {
+            let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100000\r\nConnection: close\r\n\r\n");
+            for _ in 0..100_000 {
+                if s.write_all(b"x").is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        });
+        let started = Instant::now();
+        let mut mem = Vec::new();
+        let url = local(port, "/slow");
+        let err = download_within(Duration::from_millis(700), &url, &LOCAL, 1 << 20, Dest::Memory(&mut mem, 1 << 20), &mut |_, _| {}).unwrap_err();
+        assert!(err.contains("too long"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(10), "it gave up at the limit, not when the server finished");
+        assert!(mem.len() < 100, "only the few bytes that arrived");
+        let _ = server.join();
+    }
+
+    #[test]
+    fn an_endless_chunked_answer_is_cut_off_at_the_limit() {
+        // no Content-Length to check against: the size is counted as the data arrives
+        let (port, server) = serve_with(|s| {
+            let _ = s.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n");
+            for _ in 0..200 {
+                let mut chunk = b"3e8\r\n".to_vec();
+                chunk.extend(vec![b'a'; 1000]);
+                chunk.extend(b"\r\n");
+                if s.write_all(&chunk).is_err() {
+                    return;
+                }
+            }
+            let _ = s.write_all(b"0\r\n\r\n");
+        });
+        let mut mem = Vec::new();
+        let err = download(&local(port, "/c"), &LOCAL, 3_000, Dest::Memory(&mut mem, 3_000), &mut |_, _| {}).unwrap_err();
+        assert!(err.contains("larger"), "{err}");
+        assert!(mem.len() <= 3_000, "nothing past the limit is kept");
+        let _ = server.join();
+    }
+
+    #[test]
+    fn only_a_whole_file_is_accepted_and_no_one_is_signed_in_to() {
+        for (status, headers, wants) in [
+            ("206 Partial Content", "Content-Range: bytes 0-4/10\r\n", "206"),
+            ("401 Unauthorized", "WWW-Authenticate: Negotiate\r\nWWW-Authenticate: NTLM\r\nWWW-Authenticate: Basic realm=\"x\"\r\n", "401"),
+            ("407 Proxy Authentication Required", "Proxy-Authenticate: NTLM\r\nProxy-Authenticate: Negotiate\r\n", "proxy"),
+            ("416 Range Not Satisfiable", "", "416"),
+            ("500 Internal Server Error", "", "500"),
+        ] {
+            let (port, server) = serve(vec![(status, headers.to_owned(), b"hello".to_vec(), None)]);
+            let err = get_small(&local(port, "/a"), 100).unwrap_err();
+            assert!(err.contains(wants), "{status}: {err}");
+            let request = server.join().unwrap().concat().to_ascii_lowercase();
+            assert!(!request.contains("authorization"), "{status}: Windows must not sign in on its own: {request}");
+            assert!(!request.contains("range:"), "{status}: whole files are asked for: {request}");
+        }
+    }
+
+    fn crc32(data: &[u8]) -> u32 {
+        let mut crc = !0u32;
+        for b in data {
+            crc ^= u32::from(*b);
+            for _ in 0..8 {
+                crc = if crc & 1 == 1 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+            }
+        }
+        !crc
+    }
+
+    /// A valid gzip file holding `data` (one stored block).
+    fn gzip(data: &[u8]) -> Vec<u8> {
+        let mut out = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff, 1];
+        out.extend((data.len() as u16).to_le_bytes());
+        out.extend((!(data.len() as u16)).to_le_bytes());
+        out.extend(data);
+        out.extend(crc32(data).to_le_bytes());
+        out.extend((data.len() as u32).to_le_bytes());
+        out
+    }
+
+    #[test]
+    fn a_compressed_answer_is_taken_as_the_bytes_that_were_sent() {
+        // Pasteroll never asks for compression and never turns decompression on, so a server that
+        // compresses anyway (a compression bomb, say) is counted, capped and hashed as it arrived on the wire
+        let body = gzip(b"hello hello hello hello hello hello");
+        let (port, server) = serve(vec![("200 OK", "Content-Encoding: gzip\r\n".to_owned(), body.clone(), None)]);
+        assert_eq!(get_small(&local(port, "/z"), 1_000).unwrap(), body);
+        let request = server.join().unwrap().concat().to_ascii_lowercase();
+        assert!(!request.contains("accept-encoding"), "{request}");
+    }
+
     #[test]
     fn a_long_download_link_with_signed_query_text_is_acceptable() {
         // GitHub's file hosts answer with a long address carrying an encoded signature
@@ -390,6 +512,16 @@ mod tests {
         let body = download_small(url, &GITHUB_HOSTS, 4096).expect("download through GitHub's redirect");
         let text = String::from_utf8(body).unwrap();
         assert!(text.contains("pasteroll-0.1.0-beta.8-windows-x64-setup.exe"), "{text}");
+    }
+
+    /// Needs the internet: `cargo test -p pasteroll-win -- --ignored real_github`. Reads a file of the
+    /// repository from `raw.githubusercontent.com`, the host the signed newest-version note comes from.
+    #[test]
+    #[ignore]
+    fn real_github_raw_host_serves_repository_files() {
+        let url = pasteroll_core::update_manifest::latest_url("../LICENSE-MIT").replace("/updates/../", "/");
+        let body = download_small(&url, &pasteroll_core::update_manifest::LATEST_HOSTS, 4096).expect("a repository file from the raw host");
+        assert!(String::from_utf8(body).unwrap().contains("MIT License"));
     }
 
     #[test]

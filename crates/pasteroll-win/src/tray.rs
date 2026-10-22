@@ -244,6 +244,14 @@ unsafe fn show_install_events(hwnd: HWND) {
                 BALLOON_OPENS_RELEASE.store(false, Ordering::Relaxed);
                 balloon(hwnd, "Pasteroll update", &text);
             }
+            installui::Event::Notice(text) => {
+                BALLOON_OPENS_RELEASE.store(false, Ordering::Relaxed);
+                balloon(hwnd, "Pasteroll update", &text);
+            }
+            installui::Event::Info(text) => {
+                BALLOON_OPENS_RELEASE.store(false, Ordering::Relaxed);
+                balloon(hwnd, "Pasteroll updated", &text);
+            }
         }
     }
 }
@@ -253,7 +261,8 @@ unsafe fn show_update_results(hwnd: HWND) {
     let current = Version::current();
     for d in update::take_deliveries() {
         match d.outcome {
-            update::Outcome::Newer(v) => {
+            update::Outcome::Newer(found) => {
+                let v = &found.version;
                 balloon(
                     hwnd,
                     "Pasteroll update available",
@@ -264,7 +273,7 @@ unsafe fn show_update_results(hwnd: HWND) {
                     },
                 );
                 BALLOON_OPENS_RELEASE.store(true, Ordering::Relaxed);
-                update::set_newer(v);
+                update::set_newer(found);
             }
             update::Outcome::UpToDate(_) if d.manual => {
                 BALLOON_OPENS_RELEASE.store(false, Ordering::Relaxed);

@@ -125,8 +125,14 @@ def main():
         setup_bytes, stub_bytes = new_setup.read_bytes(), stub_exe.read_bytes()
         manifest = scratch / "update-manifest.txt"
         manifest.write_bytes(base.manifest_text(setup_name, setup_bytes, exe_name, stub_bytes).encode("ascii"))
+        # the signing script checks the installer and the program named in the manifest, beside it
+        (scratch / setup_name).write_bytes(setup_bytes)
+        (scratch / exe_name).write_bytes(stub_bytes)
+        note = scratch / "update-latest.txt"
+        note.write_bytes(base.latest_text().encode("ascii"))
         signature = scratch / "good.sig"
-        base.sign(key_file, manifest, signature)
+        note_signature = scratch / "note.sig"
+        base.sign(key_file, [manifest, note], [signature, note_signature])
 
         release = base.Release(scratch / "serve")
         program = program_files / name
@@ -152,6 +158,7 @@ def main():
             release.publish("update-manifest.txt.sig", signature.read_bytes())
             release.publish(setup_name, setup_bytes)
             release.publish(exe_name, stub_bytes)
+            release.publish_note(note.read_bytes(), note_signature.read_bytes())
 
             print("\n>>> Windows will ask for administrator permission again. Choose Yes. (2 of 3)\n", flush=True)
             result = run(exe, "update", "--yes", "--db", db, env=base.update_env(release, public), timeout=600)

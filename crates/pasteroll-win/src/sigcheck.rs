@@ -11,6 +11,7 @@ const P256_PUBLIC_MAGIC: u32 = 0x3153_4345;
 pub struct CngVerifier;
 
 /// Whether `key` is a point that Windows accepts as a P-256 public key.
+#[cfg(test)]
 pub fn is_valid_public_key(key: &[u8; 64]) -> bool {
     let mut blob = Vec::with_capacity(72);
     blob.extend_from_slice(&P256_PUBLIC_MAGIC.to_le_bytes());

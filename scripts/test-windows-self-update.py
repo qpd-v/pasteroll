@@ -9,6 +9,11 @@ a local server instead of GitHub and trusts a key made for this run. Then, on sc
   2. a portable copy replaces its own program file, keeping the old one beside it
   3. an update signed by the wrong key, a tampered installer and a tampered manifest are refused, and
      nothing is installed or left behind
+  4. the update check reads the signed "newest version" note (version and plain lines), and refuses a
+     note signed by the wrong key, a missing note, a note changed after signing and an old note replayed
+  5. a Setup that fails does not leave nothing running: the old program is started again, the
+     installed files are unchanged, and the pending marker is left for the old program to report
+  6. the signing script signs the manifest and the note in one run, and refuses files for different versions
 
 No clipboard capture, no input injection, no elevation, nothing from the real installation is touched.
 NOT covered: the administrator prompt of an all-users install, and the real GitHub redirect hosts.
@@ -81,10 +86,17 @@ def make_key(folder, name):
     return Path(folder) / f"{name}.key.enc", (Path(folder) / f"{name}.pub").read_text().strip()
 
 
-def sign(key_file, manifest, out):
+def sign(key_file, manifests, outs, ok=(0,)):
+    """Signs one file, or several in one run (one passphrase), with the release-keys script."""
     env = dict(os.environ, PASTEROLL_KEYS_TEST_PASSPHRASE=PASSPHRASE)
-    run("pwsh", "-NoProfile", "-File", ROOT / "scripts/release-keys.ps1", "sign", "-KeyFile", key_file,
-        "-InFile", manifest, "-OutFile", out, "-Test", env=env)
+    ins = manifests if isinstance(manifests, (list, tuple)) else [manifests]
+    outl = outs if isinstance(outs, (list, tuple)) else [outs]
+    return run("pwsh", "-NoProfile", "-File", ROOT / "scripts/release-keys.ps1", "sign", "-KeyFile", key_file,
+               "-InFile", ",".join(str(i) for i in ins), "-OutFile", ",".join(str(o) for o in outl), "-Test", env=env, ok=ok)
+
+
+def latest_text(version=None, notes=("A first plain line.", "A second plain line.")):
+    return (f"pasteroll-update-latest 1\nversion {version or NEW_VERSION}\n" + "".join(f"note {n}\n" for n in notes))
 
 
 def manifest_text(setup_name, setup_bytes, exe_name, exe_bytes):
@@ -110,13 +122,20 @@ class Release:
     def publish(self, name, data):
         (self.folder / f"v{NEW_VERSION}" / name).write_bytes(data)
 
+    def publish_note(self, note, signature):
+        """The signed "newest version" note sits at the root of the server."""
+        (self.folder / "latest.txt").write_bytes(note)
+        (self.folder / "latest.txt.sig").write_bytes(signature)
+
     def stop(self):
         self.server.shutdown()
 
 
-def update_env(release, public_key):
-    return dict(os.environ, PASTEROLL_UPDATE_BASE=release.base, PASTEROLL_UPDATE_TEST_KEY=public_key,
-                PASTEROLL_UPDATE_ANNOUNCE=NEW_VERSION)
+def update_env(release, public_key, announce=True):
+    env = dict(os.environ, PASTEROLL_UPDATE_BASE=release.base, PASTEROLL_UPDATE_TEST_KEY=public_key)
+    if announce:
+        env["PASTEROLL_UPDATE_ANNOUNCE"] = NEW_VERSION
+    return env
 
 
 def installed_version(key_path):
@@ -190,10 +209,37 @@ def main():
         setup_bytes, stub_bytes = new_setup.read_bytes(), stub_exe.read_bytes()
         manifest = scratch / "update-manifest.txt"
         manifest.write_bytes(manifest_text(setup_name, setup_bytes, exe_name, stub_bytes).encode("ascii"))
+        # the signing script checks the installer and the program named in the manifest, beside it
+        (scratch / setup_name).write_bytes(setup_bytes)
+        (scratch / exe_name).write_bytes(stub_bytes)
+        note = scratch / "update-latest.txt"
+        note.write_bytes(latest_text().encode("ascii"))
         good_sig = scratch / "good.sig"
-        sign(key_file, manifest, good_sig)
+        note_sig = scratch / "note.sig"
+        # both files in one run, as a release does
+        sign(key_file, [manifest, note], [good_sig, note_sig])
+        check("the signing script signs the manifest and the note in one run", good_sig.is_file() and note_sig.is_file()
+              and good_sig.read_text() != note_sig.read_text())
         bad_sig = scratch / "impostor.sig"
-        sign(impostor_file, manifest, bad_sig)
+        bad_note_sig = scratch / "impostor-note.sig"
+        sign(impostor_file, [manifest, note], [bad_sig, bad_note_sig])
+        # files for different versions, the same kind twice, and something that is neither are refused
+        other = scratch / "other-latest.txt"
+        other.write_bytes(latest_text("99.0.0-beta.2").encode("ascii"))
+        junk = scratch / "junk.txt"
+        junk.write_bytes(b"not a pasteroll file\n")
+        # a manifest whose installer is not the file beside it
+        wrong = scratch / "wrong"
+        wrong.mkdir()
+        (wrong / setup_name).write_bytes(setup_bytes + b"x")
+        (wrong / exe_name).write_bytes(stub_bytes)
+        (wrong / "update-manifest.txt").write_bytes(manifest.read_bytes())
+        for label, ins in (("files for different versions", [manifest, other]), ("the same kind twice", [note, note]),
+                           ("a file that is neither", [junk]), ("a manifest alone", [manifest]), ("a note alone", [note]),
+                           ("a manifest whose installer is not the file beside it", [wrong / "update-manifest.txt", note])):
+            refused_out = scratch / "refused.sig"
+            sign(key_file, ins, [refused_out] * len(ins), ok=(1,))
+            check(f"the signing script refuses {label}", not refused_out.exists())
 
         release = Release(scratch / "serve")
         program = scratch / "program"
@@ -213,6 +259,7 @@ def main():
             release.publish("update-manifest.txt.sig", good_sig.read_bytes())
             release.publish(setup_name, setup_bytes)
             release.publish(exe_name, stub_bytes)
+            release.publish_note(note.read_bytes(), note_sig.read_bytes())
             result = run(exe, "update", "--yes", "--db", db, env=update_env(release, public), timeout=300)
             check("the update command reports the installer was started", "installer was started" in result.stdout, result.stdout)
             wait_for(lambda: installed_version(reg_key) == NEW_VERSION and (program / "relaunched.txt").exists(), 120,
@@ -231,7 +278,11 @@ def main():
             check("a portable copy replaces its own program file", "Replaced" in result.stdout and (portable / "pasteroll.exe").read_bytes() == stub_bytes, result.stdout)
             check("the old program is kept beside it until the next start", (portable / "pasteroll.exe.old").read_bytes() == old_bytes)
             check("portable.txt is left alone", (portable / "portable.txt").is_file())
-            check("the downloaded file is not left behind", not [p for p in (portable / "data" / "pasteroll-update").glob("*") if p.name != ".pasteroll-update-folder"] if (portable / "data" / "pasteroll-update").exists() else True)
+            update_folder = portable / "data" / "pasteroll-update"
+            check("the downloaded file is not left behind",
+                  not [p for p in update_folder.glob("*") if p.name not in (".pasteroll-update-folder", "pending.txt")] if update_folder.exists() else True)
+            check("the restarted program is left a marker to say it updated",
+                  (update_folder / "pending.txt").read_text() == NEW_VERSION)
 
             # ---- 3. refusals
             def refused(label, sig, setup_payload=None, manifest_bytes=None, expect=None):
@@ -260,6 +311,84 @@ def main():
                     setup_payload=b"M" * len(stub_bytes), expect="checksum")
             tampered = manifest.read_bytes().replace(b"setup ", b"setup ", 1).replace(b"1", b"2", 1)
             refused("a manifest changed after signing is refused", good_sig, manifest_bytes=tampered, expect="not signed")
+
+            # ---- 4. the update check reads the signed note
+            checker = scratch / "checker"
+            checker.mkdir()
+            shutil.copyfile(e2e_exe, checker / "pasteroll.exe")
+            (checker / "portable.txt").write_bytes(b"")
+            result = run(checker / "pasteroll.exe", "update-check", env=update_env(release, public, announce=False), timeout=120)
+            check("the update check finds the version named by the signed note and shows its plain lines",
+                  NEW_VERSION in result.stdout and "A first plain line." in result.stdout and "A second plain line." in result.stdout, result.stdout)
+
+            def check_refused(label, note_bytes, signature, expect):
+                rel = Release(scratch / ("serve-note-" + str(len(checks))))
+                try:
+                    if note_bytes is not None:
+                        rel.publish_note(note_bytes, signature)
+                    result = run(checker / "pasteroll.exe", "update-check", env=update_env(rel, public, announce=False), timeout=120, ok=(1,))
+                finally:
+                    rel.stop()
+                check(label, expect in result.stderr, result.stderr)
+
+            check_refused("a note signed by the wrong key is refused", note.read_bytes(), bad_note_sig.read_bytes(), "not signed")
+            check_refused("a note changed after it was signed is refused",
+                          latest_text("99.0.0-beta.9").encode("ascii"), note_sig.read_bytes(), "not signed")
+            check_refused("a missing note is a plain failure", None, b"", "no newest-version note")
+            check_refused("a manifest is not accepted as a note", manifest.read_bytes(), good_sig.read_bytes(), "expected form")
+            # an old genuine note served again, after a newer one has been seen: ignored
+            (checker / "data").mkdir(exist_ok=True)
+            (checker / "data" / "update-check.txt").write_text("last_check=1\nhighest=100.0.0\n")
+            rel = Release(scratch / "serve-replay")
+            try:
+                rel.publish_note(note.read_bytes(), note_sig.read_bytes())
+                result = run(checker / "pasteroll.exe", "update", env=update_env(rel, public, announce=False), timeout=120, ok=(1,))
+            finally:
+                rel.stop()
+            check("an old genuine note, served after a newer one was seen, is ignored", "older than one seen before" in result.stderr, result.stderr)
+
+            # ---- 5. a Setup that fails: the old program is started again and nothing is changed
+            run(old_setup, *args)
+            check("the old version is installed again", installed_version(reg_key) == VERSION and exe.read_bytes() == e2e_exe.read_bytes())
+            failing = scratch / "serve-failing-setup"
+            fail_release = Release(failing)
+            fail_setup = stub_bytes  # the stand-in exits 1 when run as a Setup
+            fail_sig = scratch / "failing.sig"
+            # (the same release in a folder of its own, with the failing installer beside its manifest)
+            failing_dir = scratch / "failing-files"
+            failing_dir.mkdir()
+            (failing_dir / setup_name).write_bytes(fail_setup)
+            (failing_dir / exe_name).write_bytes(stub_bytes)
+            fail_manifest = failing_dir / "update-manifest.txt"
+            fail_manifest.write_bytes(manifest_text(setup_name, fail_setup, exe_name, stub_bytes).encode("ascii"))
+            (failing_dir / "update-latest.txt").write_bytes(note.read_bytes())
+            sign(key_file, [fail_manifest, failing_dir / "update-latest.txt"], [fail_sig, failing_dir / "note.sig"])
+            restart_note = scratch / "restarted.txt"
+            try:
+                fail_release.publish("update-manifest.txt", fail_manifest.read_bytes())
+                fail_release.publish("update-manifest.txt.sig", fail_sig.read_bytes())
+                fail_release.publish(setup_name, fail_setup)
+                fail_release.publish(exe_name, stub_bytes)
+                before = exe.read_bytes()
+                (program / "relaunched.txt").unlink(missing_ok=True)
+                # 1 is what Inno Setup's own failures look like; -1 is a Setup that crashed or was killed
+                # (cmd's `if errorlevel 1` alone does not see a negative code)
+                for code, what in (("1", "failed"), ("-1", "crashed")):
+                    restart_note.unlink(missing_ok=True)
+                    env = update_env(fail_release, public)
+                    env["PASTEROLL_E2E_RESTART_NOTE"] = str(restart_note)
+                    env["PASTEROLL_E2E_SETUP_EXIT"] = code
+                    result = run(exe, "update", "--yes", "--db", db, env=env, timeout=300)
+                    check(f"[{what}] the update command hands over to Setup", "installer was started" in result.stdout, result.stdout)
+                    wait_for(restart_note.exists, 60, f"the old program to be started again after Setup {what}")
+                    check(f"a Setup that {what} leaves the old program running again", restart_note.read_text() == "restarted")
+                    check(f"[{what}] the installed files and the recorded version are unchanged",
+                          exe.read_bytes() == before == e2e_exe.read_bytes() and installed_version(reg_key) == VERSION)
+                    check(f"[{what}] the marker for the old program's message is left",
+                          (data / "pasteroll-update" / "pending.txt").read_text() == NEW_VERSION)
+                    check(f"[{what}] the new program was not started", not (program / "relaunched.txt").exists())
+            finally:
+                fail_release.stop()
 
             check("the real installation, its processes and files were not touched",
                   (pasteroll_processes(), sha256(live_exe) if live_exe.is_file() else None) == live_before)

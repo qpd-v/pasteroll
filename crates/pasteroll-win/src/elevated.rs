@@ -232,22 +232,28 @@ fn sweep(base: &Path, age: Duration) {
 
 /// Characters a path may have for the command line below; nothing the command interpreter treats
 /// specially. Windows' own folders and our random names always pass.
-fn plain(path: &Path) -> bool {
+pub(crate) fn plain(path: &Path) -> bool {
     let s = path.to_string_lossy();
     !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '_' | '-' | '.' | ':' | '\\'))
 }
 
-/// The command that runs Setup, waits for it, starts the new program as the person, then removes the
+/// The command that runs Setup, waits for it, starts the program as the person, then removes the
 /// folder. Setup replaces `pasteroll.exe`, and the helper is that very program, so something else has
-/// to wait: the system's own `cmd.exe`. `program` is started only if Setup succeeded, through
-/// `explorer.exe`, which starts it the way the person would (without administrator rights, with their
-/// own environment); it is left out if its name is not a plain one.
+/// to wait: the system's own `cmd.exe`. `program` is started whether Setup worked or not (the new
+/// version, or the old one again so that it can say the update did not finish), as long as the file
+/// is there, through `explorer.exe`, which starts it the way the person would (without administrator
+/// rights, with their own environment); it is left out if its name is not a plain one.
 pub(crate) fn setup_command(setup: &Path, dir: &Path, program: &Path, explorer: &Path) -> Result<String, String> {
     if !plain(setup) || !plain(dir) {
         return Err("the update folder has an unexpected name".to_owned());
     }
     // by full path: nothing is looked up through PATH
-    let relaunch = if plain(program) && plain(explorer) { format!(" && \"{}\" \"{}\"", explorer.display(), program.display()) } else { String::new() };
+    // (the brackets keep the folder's removal from becoming part of the `if`)
+    let relaunch = if plain(program) && plain(explorer) {
+        format!(" & (if exist \"{p}\" \"{}\" \"{p}\")", explorer.display(), p = program.display())
+    } else {
+        String::new()
+    };
     // `start /wait` because cmd does not otherwise wait for a program that has windows
     Ok(format!("\"start \"\" /wait \"{}\" {}{relaunch} & rd /s /q \"{}\"\"", setup.display(), install::setup_args(true).join(" "), dir.display()))
 }
@@ -255,7 +261,8 @@ pub(crate) fn setup_command(setup: &Path, dir: &Path, program: &Path, explorer: 
 fn start_setup(dir: &Path, setup: &Path) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
     let system = crate::winsys::system_dir().ok_or("Windows' system folder could not be found")?;
-    let program = std::env::current_exe().map_err(|e| format!("the program's own location is unknown ({e})"))?;
+    // the real path that was checked to be in Program Files, not a link someone could retarget
+    let program = real_exe().ok_or("the program's own location is unknown")?;
     let windows = crate::winsys::windows_dir().ok_or("Windows' folder could not be found")?;
     let line = setup_command(setup, dir, &program, &windows.join("explorer.exe"))?;
     // Setup's own temporary files (it copies itself and unpacks into %TEMP%) go in the protected
@@ -294,7 +301,11 @@ mod tests {
         assert!(line.starts_with("\"start \"\" /wait \"C:\\WINDOWS\\Temp\\pasteroll-update-"), "{line}");
         assert!(line.contains("/VERYSILENT") && line.contains("/ALLUSERS") && !line.contains("/CURRENTUSER"), "{line}");
         assert!(!line.contains("/RELAUNCH"), "an elevated Setup must not start the program itself: {line}");
-        assert!(line.contains(" && \"C:\\WINDOWS\\explorer.exe\" \"C:\\Program Files\\Pasteroll\\pasteroll.exe\" & rd /s /q \"C:\\WINDOWS\\Temp\\pasteroll-update-"), "{line}");
+        assert!(
+            line.contains(" & (if exist \"C:\\Program Files\\Pasteroll\\pasteroll.exe\" \"C:\\WINDOWS\\explorer.exe\" \"C:\\Program Files\\Pasteroll\\pasteroll.exe\") & rd /s /q \"C:\\WINDOWS\\Temp\\pasteroll-update-"),
+            "the program is started again whether or not Setup worked, and the folder is removed either way: {line}"
+        );
+        assert!(!line.contains("&&"), "{line}");
         assert!(line.ends_with("\"\""), "{line}");
         // an odd program name only means no restart; an odd folder name means nothing is run
         let odd = setup_command(&setup, &dir, Path::new(r"C:\a&b\pasteroll.exe"), &explorer).unwrap();

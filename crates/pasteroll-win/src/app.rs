@@ -290,8 +290,12 @@ pub fn create(opts: &Options) -> Result<HWND> {
                     // the update check runs only when the setting is on; "not decided" asks once
                     crate::update::begin(tray_window, &opts.db, cfg.updates, opts.notice && opts.hooks);
                     // an update that was started earlier and did not finish is worth saying
-                    if let Some(text) = opts.db.parent().and_then(crate::install::startup_report) {
-                        crate::installui::report(tray_window, text);
+                    match opts.db.parent().and_then(crate::install::startup_report) {
+                        Some(crate::install::Startup::DidNotFinish(text)) => crate::installui::report(tray_window, text),
+                        Some(crate::install::Startup::Updated(v)) => {
+                            crate::installui::updated(tray_window, format!("Pasteroll is now {v}. Your history and settings were kept."));
+                        }
+                        None => {}
                     }
                 }
                 Err(e) => eprintln!("[pasteroll] no notification icon: {e}"),
@@ -325,6 +329,11 @@ pub fn is_paused() -> bool {
 
 pub fn db_path() -> Option<PathBuf> {
     with_runtime(|rt| rt.db.clone())
+}
+
+/// The notification icon's window (results of update checks are delivered to it).
+pub fn tray_window() -> Option<isize> {
+    with_runtime(|rt| rt.tray.as_ref().map(|t| t.window().0 as isize)).flatten()
 }
 
 /// Pauses or resumes recording and remembers the choice in config.toml.
