@@ -64,8 +64,12 @@ The real-window self-test (real hooks and clicks, including a real Windows Termi
 the 9 overlay focus checks that are already known to fail in that mode failed again (the other
 checks passed).
 
-NOT TESTED: an update downloaded from the real GitHub (beta.9 to beta.10 uses the old check; the first
-real use of the signed note is beta.10 looking for a later version), an update with a different
+After publishing, the maintainer reported updating a real beta.9 copy to beta.10 from the real GitHub:
+the update check found it, and Download and install downloaded and installed it. beta.9 uses the old
+check, so this did not use the signed note.
+
+NOT TESTED: an update that uses the signed note (the first will be beta.10 looking for a later
+version), an update with a different
 administrator's credentials, Windows Defender or Controlled Folder Access during an update, a
 clean-machine all-users (UAC) install, start-at-sign-in across a real login, the interactive uninstall
 data-deletion prompt, and a restart after a failed update for a Windows user name with unusual
