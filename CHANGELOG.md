@@ -18,7 +18,6 @@
 - Complete and No Bloat on Linux: a choice in the tray menu, `pasteroll config set mode no-bloat`, and the
   matching window size (checked on X11; the GNOME Wayland size is untested).
 - The Desktop folder is found from `$XDG_CONFIG_HOME/user-dirs.dirs`, not only `~/.config`.
-- `docs/FLATPAK_NOTES.md` lists what a sandbox would need and what is still missing.
 
 ## 0.1.0-beta.10 (Windows only)
 
