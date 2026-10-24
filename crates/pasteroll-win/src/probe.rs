@@ -191,7 +191,7 @@ fn probe() -> Result<Vec<Check>> {
     unsafe {
         let _ = GetCursorPos(&mut cursor);
     }
-    let result = probe_inner(&mut out).and_then(|()| probe_typing(&mut out)).and_then(|()| probe_no_bloat(&mut out)).and_then(|()| probe_editor_anywhere(&mut out)).and_then(|()| probe_editor_holding_ctrl(&mut out)).and_then(|()| probe_editor_in_terminal(&mut out));
+    let result = probe_inner(&mut out).and_then(|()| probe_typing(&mut out)).and_then(|()| probe_no_bloat(&mut out)).and_then(|()| probe_multi_select(&mut out)).and_then(|()| probe_editor_anywhere(&mut out)).and_then(|()| probe_editor_holding_ctrl(&mut out)).and_then(|()| probe_editor_in_terminal(&mut out));
     // restore the user's pointer whatever happened
     input::move_to(cursor);
     result?;
@@ -592,7 +592,7 @@ fn probe_typing(out: &mut Vec<Check>) -> Result<()> {
     check!("escape_closes_only_the_dropdown", !dropdown_open() && still_open, "");
 
     // Ctrl+letter must be swallowed and ignored, not turned into text or sent to the target
-    input::send_chord(&[VK_CONTROL], VIRTUAL_KEY(b'C' as u16));
+    input::send_chord(&[VK_CONTROL], VIRTUAL_KEY(b'Q' as u16));
     pump(80);
     let q = query_now();
     let leaked = edit_text(edit);
@@ -752,6 +752,160 @@ mode = \"no-bloat\"
     Ok(())
 }
 
+/// The centre, on screen, of the part of the carousel that `pick` finds in its layout.
+fn carousel_point(pick: impl Fn(&pasteroll_render::Geometry) -> Option<pasteroll_render::Rect>) -> Option<POINT> {
+    let (x, y) = app::with_runtime(|rt| {
+        let vm = rt.controller.view_model();
+        let info = rt.controller.overlay_info();
+        let size = (info.size_px.0 as f32 / info.scale, info.size_px.1 as f32 / info.scale);
+        let g = pasteroll_render::geometry(&vm, size, info.scale);
+        let r = pick(&g)?;
+        Some(((r.x + r.w / 2.0) * info.scale, (r.y + r.h / 2.0) * info.scale))
+    })
+    .flatten()?;
+    screen_point((x, y))
+}
+
+/// Choosing several clips with the real hooks, real clicks and real keys: Ctrl+click two rows, click
+/// the target window, and both clips arrive in its text box, one per line. Then Ctrl+C and the
+/// right-click menu copy without pasting, and a real Ctrl+V shows what was copied. The system
+/// clipboard IS used (it holds the last copy afterwards).
+fn probe_multi_select(out: &mut Vec<Check>) -> Result<()> {
+    macro_rules! check {
+        ($name:expr, $ok:expr, $($detail:tt)*) => {
+            out.push(Check { name: $name, ok: $ok, detail: format!($($detail)*) })
+        };
+    }
+    let dir = std::env::temp_dir().join(format!("pasteroll-probe-multi-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let db = dir.join("history.db");
+    {
+        let mut store = crate::keystore::open_store(&db).map_err(|e| windows::core::Error::new(E_FAIL, e))?;
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+        store.add_text("multi one", now).ok();
+        store.add_text("multi two", now + 1).ok();
+        store.add_text("multi three", now + 2).ok();
+    }
+    let opts = app::Options { db: db.clone(), capture: false, accept_injected: true, max_seconds: None, hooks: true, tray: false, notice: false };
+    let _msg_window = app::create(&opts)?;
+    app::with_runtime(|rt| rt.platform.allow_own_process = true);
+    let (target, edit) = make_target()?;
+    let fg_ok = make_foreground(target);
+    check!("multi_target_is_foreground", fg_ok, "precondition");
+    if !fg_ok {
+        unsafe {
+            let _ = DestroyWindow(target);
+        }
+        app::destroy();
+        let _ = std::fs::remove_dir_all(&dir);
+        return Ok(());
+    }
+    unsafe {
+        let _ = SetFocus(Some(edit));
+    }
+    let session_open = || app::with_runtime(|rt| rt.controller.is_open()).unwrap_or(false);
+    let picked = || {
+        app::with_runtime(|rt| rt.controller.view_model().picked.iter().filter(|p| **p).count()).unwrap_or(0)
+    };
+    let row_point = |i: usize| carousel_point(move |g| g.rows.get(i).copied().flatten());
+    let clear_edit = || unsafe {
+        let _ = SetWindowTextW(edit, w!(""));
+        let _ = SetFocus(Some(edit));
+    };
+    // rows: 0 is "multi three" (shown), 1 is "multi two", 2 is "multi one"
+    let choose_two = || {
+        for i in [1usize, 2] {
+            if let Some(pt) = row_point(i) {
+                ctrl_click(pt);
+                pump(60);
+                ctrl_key(true);
+                pump(100);
+            }
+        }
+    };
+    let joined = "multi two\r\nmulti one";
+
+    // --- Ctrl+click two rows, then click the window: both arrive, one per line
+    check!("multi_session_opens", open_carousel_in_corner(), "");
+    let spot = clear_spot(target);
+    choose_two();
+    check!("multi_ctrl_click_chooses_two_rows", picked() == 2, "{} chosen", picked());
+    check!("multi_choosing_types_nothing", edit_text(edit).is_empty(), "target text {:?}", edit_text(edit));
+    if let Some(spot) = spot {
+        input::move_to(spot);
+        pump(40);
+        input::left_down();
+        input::left_up();
+        let closed = wait_until(3_000, || !session_open());
+        pump(300);
+        let text = edit_text(edit);
+        check!("multi_click_pastes_both_clips_one_per_line", closed && text == joined, "closed {closed}, target text {text:?}");
+    } else {
+        check!("multi_click_spot_is_clear", false, "");
+        input::send_chord(&[], VK_ESCAPE);
+        pump(300);
+    }
+    ctrl_key(true);
+    pump(400);
+
+    // --- Ctrl+C copies without pasting; Ctrl+V afterwards proves what was copied
+    clear_edit();
+    if open_carousel_in_corner() {
+        choose_two();
+        let chosen = picked();
+        input::send_chord(&[VK_CONTROL], VIRTUAL_KEY(b'C' as u16));
+        let closed = wait_until(2_000, || !session_open());
+        check!("multi_ctrl_c_closes_and_pastes_nothing", closed && edit_text(edit).is_empty(), "closed {closed}, {chosen} chosen, target text {:?}", edit_text(edit));
+        pump(2_000); // the "Copied" note goes away, the hook is released
+        clear_edit();
+        let fg = unsafe { root(GetForegroundWindow()) };
+        input::send_chord(&[VK_CONTROL], VIRTUAL_KEY(b'V' as u16));
+        pump(300);
+        let text = edit_text(edit);
+        check!("multi_ctrl_c_copied_both_clips", text == joined, "after Ctrl+V: {text:?}, foreground is target {}", fg == target);
+    } else {
+        check!("multi_ctrl_c_session_opens", false, "");
+    }
+
+    // --- the right-click menu: a right click chooses the clip and opens Copy
+    clear_edit();
+    if open_carousel_in_corner() {
+        if let Some(pt) = row_point(1) {
+            input::move_to(pt);
+            pump(60);
+            input::right_down();
+            input::right_up();
+            pump(200);
+        }
+        let menu = app::with_runtime(|rt| rt.controller.view_model().menu.is_some()).unwrap_or(false);
+        check!("multi_right_click_opens_the_menu", menu && picked() == 1, "menu {menu}, {} chosen", picked());
+        if let Some(pt) = carousel_point(|g| g.menu_items.first().copied()) {
+            input::move_to(pt);
+            pump(60);
+            input::left_down();
+            input::left_up();
+        }
+        let closed = wait_until(2_000, || !session_open());
+        check!("multi_menu_copy_closes_and_pastes_nothing", closed && edit_text(edit).is_empty(), "closed {closed}, target text {:?}", edit_text(edit));
+        pump(2_000);
+        clear_edit();
+        input::send_chord(&[VK_CONTROL], VIRTUAL_KEY(b'V' as u16));
+        pump(300);
+        let text = edit_text(edit);
+        check!("multi_menu_copy_copied_the_clip", text == "multi two", "after Ctrl+V: {text:?}");
+    } else {
+        check!("multi_menu_session_opens", false, "");
+    }
+
+    ctrl_key(true);
+    unsafe {
+        let _ = DestroyWindow(target);
+    }
+    app::destroy();
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
 /// Presses (`up` false) or releases the Ctrl key.
 fn ctrl_key(up: bool) {
     let ev = INPUT {
@@ -842,7 +996,7 @@ fn probe_editor_anywhere(out: &mut Vec<Check>) -> Result<()> {
         store.add_image_png(&encode_png(&Rgba { width: 100, height: 60, pixels: px }).unwrap(), now).ok();
     }
     // the editor saves into this folder (it remembers it between uses)
-    let presets = pasteroll_core::imgedit::Presets { items: vec![], folder: Some(pictures.to_string_lossy().into_owned()) };
+    let presets = pasteroll_core::imgedit::Presets { items: vec![], folder_base: String::new(), folder: Some(pictures.to_string_lossy().into_owned()) };
     let _ = std::fs::write(dir.join("image-presets.txt"), presets.to_text());
     let opts = app::Options { db: db.clone(), capture: false, accept_injected: true, max_seconds: None, hooks: true, tray: false, notice: false };
     let _msg_window = app::create(&opts)?;
@@ -993,7 +1147,7 @@ fn editor_probe_start(out: &mut Vec<Check>, tag: &str) -> Result<Option<EditorPr
         let img = Rgba { width: 100, height: 60, pixels: [60u8, 160, 200, 255].repeat(100 * 60) };
         store.add_image_png(&encode_png(&img).unwrap(), now).ok();
     }
-    let presets = pasteroll_core::imgedit::Presets { items: vec![], folder: Some(dir.join("Pictures").to_string_lossy().into_owned()) };
+    let presets = pasteroll_core::imgedit::Presets { items: vec![], folder_base: String::new(), folder: Some(dir.join("Pictures").to_string_lossy().into_owned()) };
     let _ = std::fs::write(dir.join("image-presets.txt"), presets.to_text());
     let opts = app::Options { db, capture: false, accept_injected: true, max_seconds: None, hooks: true, tray: false, notice: false };
     let _msg_window = app::create(&opts)?;
@@ -1154,7 +1308,7 @@ fn probe_editor_in_terminal(out: &mut Vec<Check>) -> Result<()> {
         let img = Rgba { width: 100, height: 60, pixels: [200u8, 120, 60, 255].repeat(100 * 60) };
         store.add_image_png(&encode_png(&img).unwrap(), now).ok();
     }
-    let presets = pasteroll_core::imgedit::Presets { items: vec![], folder: Some(dir.join("Pictures").to_string_lossy().into_owned()) };
+    let presets = pasteroll_core::imgedit::Presets { items: vec![], folder_base: String::new(), folder: Some(dir.join("Pictures").to_string_lossy().into_owned()) };
     let _ = std::fs::write(dir.join("image-presets.txt"), presets.to_text());
     // a new terminal window with a quiet shell in it
     let started = std::process::Command::new("wt.exe")

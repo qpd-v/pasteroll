@@ -264,6 +264,8 @@ pub(crate) struct Editor {
     crop_aspect: Option<(f32, f32)>,
     name: String,
     folder: String,
+    /// The image folder chosen in Settings ("" = the Desktop): what an empty `folder` means.
+    default_folder: String,
     presets: Presets,
     toast: Option<(String, u64)>,
     saving: bool,
@@ -1030,9 +1032,10 @@ impl Editor {
             Some(f) => FieldView { text: f.text.clone(), focused: true, sel_all: f.sel_all, ..FieldView::default() },
             None => FieldView { text: self.name.clone(), placeholder: "File name".into(), ..FieldView::default() },
         };
+        let default_name = if self.default_folder.is_empty() { "Desktop".to_owned() } else { self.default_folder.clone() };
         let folder = match self.focus.as_ref().filter(|f| f.field == Field::Folder) {
-            Some(f) => FieldView { text: f.text.clone(), focused: true, sel_all: f.sel_all, placeholder: "Desktop".into(), ..FieldView::default() },
-            None => FieldView { text: self.folder.clone(), placeholder: "Desktop".into(), ..FieldView::default() },
+            Some(f) => FieldView { text: f.text.clone(), focused: true, sel_all: f.sel_all, placeholder: default_name, ..FieldView::default() },
+            None => FieldView { text: self.folder.clone(), placeholder: default_name, ..FieldView::default() },
         };
         let note = match (&too_large, crop_mode) {
             (Some(why), _) => why.clone(),
@@ -1173,7 +1176,12 @@ impl Controller {
         };
         let home = home_rect(&self.overlay);
         let presets = Presets::parse(&p.load_presets());
-        let folder = presets.folder.clone().filter(|f| Path::new(f).is_dir()).unwrap_or_default();
+        let default_folder = self.image_folder.trim().to_owned();
+        let folder = presets
+            .remembered_folder(&default_folder)
+            .filter(|f| Path::new(f).is_dir())
+            .map(str::to_owned)
+            .unwrap_or_default();
         let name = format!("Pasteroll image {}", p.local_timestamp());
         let thumb = self.cached_thumb(id);
 
@@ -1239,6 +1247,7 @@ impl Controller {
             crop_aspect: None,
             name,
             folder,
+            default_folder,
             presets,
             toast: None,
             saving: false,
@@ -1482,14 +1491,32 @@ impl Controller {
 
     // ------------------------------------------------------------------ saving
 
-    fn effective_folder(&self, p: &dyn Platform) -> Option<PathBuf> {
-        let e = self.editor.as_ref()?;
+    /// The folder to save into: the one typed (or chosen) in the editor, else the one chosen in
+    /// Settings (made when it is missing), else the Desktop. `Err` says, in words for the person,
+    /// why the Settings folder cannot be used; the picture is then not saved somewhere unexpected.
+    fn effective_folder(&self, p: &dyn Platform) -> Result<Option<PathBuf>, String> {
+        let Some(e) = self.editor.as_ref() else { return Ok(None) };
         let typed = e.folder.trim();
-        if typed.is_empty() {
-            p.desktop_folder()
-        } else {
-            Some(PathBuf::from(typed))
+        if !typed.is_empty() {
+            return Ok(Some(PathBuf::from(typed)));
         }
+        let set = e.default_folder.trim();
+        if set.is_empty() {
+            return Ok(p.desktop_folder());
+        }
+        let dir = PathBuf::from(set);
+        if !dir.is_absolute() {
+            return Err("The image folder in Settings is not a full path. Fix it in Settings, or choose a folder here.".into());
+        }
+        if !dir.is_dir() && std::fs::create_dir_all(&dir).is_err() {
+            return Err(format!("Could not use the image folder from Settings ({set}). Choose another here, or fix it in Settings."));
+        }
+        Ok(Some(dir))
+    }
+
+    /// The folder pictures are saved into unless told otherwise (Settings). "" is the Desktop.
+    pub fn set_image_folder(&mut self, folder: &str) {
+        self.image_folder = folder.trim().to_owned();
     }
 
     fn editor_paste(&mut self, p: &mut dyn Platform, now: u64) {
@@ -1527,11 +1554,15 @@ impl Controller {
             PathBuf::new() // nothing is saved
         } else {
             match self.effective_folder(p) {
-                Some(f) if !f.is_absolute() => {
+                Err(why) => {
+                    self.editor_toast(why, now);
+                    return;
+                }
+                Ok(Some(f)) if !f.is_absolute() => {
                     self.editor_toast("Type the full path of the folder, starting with the drive letter.", now);
                     return;
                 }
-                Some(f) if f.is_dir() => f,
+                Ok(Some(f)) if f.is_dir() => f,
                 _ => {
                     self.editor_toast("That folder does not exist. Choose another with the folder button.", now);
                     return;
@@ -1605,13 +1636,16 @@ impl Controller {
             Ok(Exported::File(path)) => {
                 p.file_created(&path);
                 p.log(&format!("saved image as {}", path.file_name().unwrap_or_default().to_string_lossy()));
-                // remember where it went (the Desktop is the default and is not stored)
+                // remember where it went (the default folder, the Desktop or the one from Settings,
+                // is not stored)
                 let dir = path.parent().map(|d| d.to_string_lossy().into_owned());
                 let desktop = p.desktop_folder().map(|d| d.to_string_lossy().into_owned());
                 let e = self.editor.as_mut().expect("editor");
-                let remembered = if dir == desktop { None } else { dir };
-                if e.presets.folder != remembered {
+                let default_dir = if e.default_folder.is_empty() { desktop } else { Some(e.default_folder.clone()) };
+                let remembered = if dir == default_dir { None } else { dir };
+                if e.presets.folder != remembered || e.presets.folder_base != e.default_folder {
                     e.presets.folder = remembered;
+                    e.presets.folder_base = e.default_folder.clone();
                     let text = e.presets.to_text();
                     if let Err(err) = p.save_presets(&text) {
                         p.log(&format!("could not save the presets file: {err}"));
@@ -1999,6 +2033,8 @@ impl Controller {
                 let Some(hit) = self.editor_hit_at(m.x, m.y) else { return };
                 self.editor_press(p, hit, m, now);
             }
+            // the right button belongs to the carousel's Copy menu
+            MouseKind::RightDown => {}
         }
     }
 
@@ -2469,7 +2505,13 @@ impl Controller {
     fn browse_folder(&mut self, p: &mut dyn Platform, now: u64) {
         let Some(e) = self.editor.as_ref() else { return };
         let Some(target) = self.open.as_ref().map(|o| o.target.clone()) else { return };
-        let start = if e.folder.trim().is_empty() { p.desktop_folder() } else { Some(PathBuf::from(e.folder.trim())) };
+        let start = if !e.folder.trim().is_empty() {
+            Some(PathBuf::from(e.folder.trim()))
+        } else if Path::new(e.default_folder.trim()).is_absolute() {
+            Some(PathBuf::from(e.default_folder.trim()))
+        } else {
+            p.desktop_folder()
+        };
         match p.folder_dialog(start.as_deref(), &target) {
             SaveChoice::Path(dir) => {
                 if let Some(e) = self.editor.as_mut() {

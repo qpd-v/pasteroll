@@ -71,10 +71,15 @@ the experimental packages; it does not indicate broader Wayland compatibility.
 - **Advanced Image Paste**: Ctrl+click the desktop or any window (the key is a setting) with an
   image chosen and the picture grows into an editor instead of being saved or pasted at once:
   outline, resize, crop, rounded corners, drop shadow, background removal or fill, padding, rotate
-  and flip, PNG / JPG / WebP / BMP with quality, a file name and folder of your choice, undo and
+  and flip, PNG / JPG / WebP / BMP with quality, a file name and folder of your choice (Settings sets
+  the folder pictures go to unless you pick another; it starts as the Desktop), undo and
   redo, and presets you can reuse. In a window you choose what is pasted: the picture, the saved
   file's path, or its name. A plain click still saves (desktop) or pastes (window) the picture
   immediately. The clip itself is never changed.
+- **Several clips at once** (Complete mode): Ctrl+click clips in the list to choose them (Ctrl+Shift+click
+  chooses everything from the last one you chose), then click where they should go (or press Enter) to
+  paste them one per line, in the order you chose them. Ctrl+C, or right-click and Copy, puts them on the
+  clipboard instead. Pictures cannot be joined into text and are left out. Esc clears the choice.
 - **Pin** clips (Ctrl+P) so they are never removed automatically.
 - **Recycle bin**: deleted clips can be brought back (Ctrl+Z, or the Recycle bin filter) for 30
   days; Shift+Delete deletes for good.
@@ -197,7 +202,7 @@ It starts on Image, or on Path in a terminal, and you can change it for each pas
 the picture is saved as a file.
 
 The bar at the bottom holds the file name, the folder to save into (the Desktop unless you choose
-another; it is remembered) and **Paste Image** (or **Paste Path** / **Paste Name**). **Cancel**, Esc or the back arrow return to the
+another; it is remembered until you change the folder in Settings) and **Paste Image** (or **Paste Path** / **Paste Name**). **Cancel**, Esc or the back arrow return to the
 carousel without saving. Undo and redo (Ctrl+Z, Ctrl+Y) and **Reset all** are at the top, next to
 **Presets**: save the current settings under a name and apply them to any picture later (a
 preset keeps everything except the crop). Enter pastes; while you type in a box Enter finishes the

@@ -13,6 +13,7 @@
 //! - what is pasted is the real text, even where the preview shows hidden characters as tokens.
 
 mod editor;
+mod multi;
 mod viewer;
 
 use crate::event::{Event, Key, MouseEvent, MouseKind};
@@ -206,6 +207,12 @@ struct Ui {
     hover: Option<Hit>,
     /// Deleting this clip for good was asked for; Enter (or another click) confirms.
     confirm_delete: Option<i64>,
+    /// Clips chosen for a multiple paste, in the order they were chosen.
+    picks: Vec<i64>,
+    /// The clip a Ctrl+Shift range grows from: the last one chosen by itself.
+    pick_anchor: Option<i64>,
+    /// The right-click menu, while it is open.
+    menu: Option<multi::Menu>,
 }
 
 struct Open {
@@ -311,6 +318,8 @@ pub struct Controller {
     edit_rx: std::sync::mpsc::Receiver<EditMsg>,
     /// The key that, held while clicking the desktop or a window, opens the image editor.
     advanced_modifier: pasteroll_core::config::ClickModifier,
+    /// Where Paste Path and the image editor save pictures ("" = the Desktop).
+    image_folder: String,
     /// How the carousel looks: everything on show, or only the clip (every feature works in both).
     ui_mode: UiMode,
 }
@@ -428,6 +437,7 @@ impl Controller {
             edit_tx,
             edit_rx,
             advanced_modifier: pasteroll_core::config::ClickModifier::Ctrl,
+            image_folder: String::new(),
             ui_mode: UiMode::Complete,
         }
     }
@@ -734,6 +744,9 @@ impl Controller {
                 warned: false,
                 hover: None,
                 confirm_delete: None,
+                picks: Vec::new(),
+                pick_anchor: None,
+                menu: None,
             },
         });
         p.input_active(true);
@@ -925,6 +938,11 @@ impl Controller {
         if let Some(o) = self.open.as_mut() {
             o.matched = o.matched.saturating_sub(1);
             o.total = o.total.saturating_sub(1);
+            // a clip that is gone cannot be part of a multiple paste
+            o.ui.picks.retain(|k| *k != id);
+            if o.ui.pick_anchor == Some(id) {
+                o.ui.pick_anchor = None;
+            }
         }
     }
 
@@ -1360,6 +1378,10 @@ impl Controller {
         if key != Key::Enter {
             self.withdraw_warning();
         }
+        // an open right-click menu: any key closes it, and Esc does nothing more
+        if self.close_menu() && key == Key::Escape {
+            return;
+        }
         // a pending "delete permanently?": Enter confirms, Esc keeps the clip, anything else
         // carries on as usual
         if self.open.as_ref().is_some_and(|o| o.ui.confirm_delete.is_some()) {
@@ -1417,7 +1439,7 @@ impl Controller {
                         o.query.clear();
                     }
                     self.refresh(p);
-                } else {
+                } else if !self.clear_picks() {
                     self.cancel(p, "cancelled");
                 }
             }
@@ -1446,6 +1468,12 @@ impl Controller {
             Key::Backspace => self.erase(p, false),
             Key::CtrlBackspace => self.erase(p, true),
             Key::CtrlA => {}
+            // copies the chosen clips (or the one shown) without pasting them anywhere
+            Key::CtrlC => {
+                if !adding {
+                    self.copy_picks(p, now);
+                }
+            }
             Key::CtrlP => self.toggle_pin(p, now),
             // Delete is destructive and irreversible; with text in the search box it is more
             // likely meant for the box (Ctrl+A, Delete), so it only acts on an empty box.
@@ -1483,7 +1511,6 @@ impl Controller {
             | Key::F3
             | Key::ShiftF3
             | Key::F11
-            | Key::CtrlC
             | Key::CtrlF
             | Key::CtrlI
             | Key::CtrlS => {}
@@ -1518,11 +1545,21 @@ impl Controller {
         if m.kind == MouseKind::Move && !self.open.as_ref().is_some_and(|o| o.ui.dragging) {
             let mut vm = self.view_model();
             let hover = pasteroll_render::button_at(&vm, self.size_dip(), self.overlay.scale, m.x, m.y);
+            let menu_hover = vm
+                .menu
+                .as_ref()
+                .and_then(|_| pasteroll_render::menu_item_at(&vm, self.size_dip(), self.overlay.scale, m.x, m.y));
             vm.wipe();
             if let Some(o) = self.open.as_mut() {
                 if o.ui.hover != hover {
                     o.ui.hover = hover;
                     self.dirty = true;
+                }
+                if let Some(menu) = o.ui.menu.as_mut() {
+                    if menu.hover != menu_hover {
+                        menu.hover = menu_hover;
+                        self.dirty = true;
+                    }
                 }
             }
             return;
@@ -1539,6 +1576,10 @@ impl Controller {
         match m.kind {
             MouseKind::Down | MouseKind::DoubleClick => {
                 let hit = self.renderer.hit_test(vm, size, scale, x, y);
+                // Ctrl+click chooses a clip, a click on the right-click menu acts on it
+                if self.multi_mouse(p, m, hit, scale, now) {
+                    return;
+                }
                 // an open dropdown closes on any click that is not on one of its items
                 if let Hit::DropdownItem(i) = hit {
                     self.dropdown_pick(p, i);
@@ -1582,6 +1623,10 @@ impl Controller {
                         }
                     }
                 }
+            }
+            MouseKind::RightDown => {
+                let hit = self.renderer.hit_test(vm, size, scale, x, y);
+                self.multi_mouse(p, m, hit, scale, now);
             }
             MouseKind::Move => {
                 let dragging = self.open.as_ref().is_some_and(|o| o.ui.dragging);
@@ -1671,6 +1716,10 @@ impl Controller {
     /// Whole clip, or just the selected part if the user selected one.
     fn confirm(&mut self, p: &mut dyn Platform) {
         let Some(open) = self.open.as_ref() else { return };
+        if !open.ui.picks.is_empty() {
+            self.confirm_picks(p);
+            return;
+        }
         let Some(id) = open.current_id() else {
             return; // nothing matches the search: Enter has nothing to paste
         };
@@ -1742,15 +1791,7 @@ impl Controller {
         let (payload, whole) = match selection {
             Some(t) => (Payload::Text(t), false),
             None => {
-                let st = self.store.borrow();
-                let payload = match st.kind(id) {
-                    Ok(Some(Kind::Text)) => st.text(id).ok().flatten().map(Payload::Text),
-                    Ok(Some(Kind::Files)) => st.files(id).ok().flatten().map(Payload::Files),
-                    Ok(Some(Kind::Image)) => st.image_png(id).ok().flatten().map(Payload::Image),
-                    _ => None,
-                };
-                drop(st);
-                match payload {
+                match self.clip_payload(id) {
                     Some(pl) => (pl, true),
                     None => {
                         self.cancel(p, "clip could not be read");
@@ -1901,7 +1942,9 @@ impl Controller {
             return;
         }
         // Ctrl+click (by default) on a picture opens the editor, which types nothing yet
-        let editor_click = self.current_is_image() && p.click_modifiers().has(self.advanced_modifier);
+        let editor_click = self.current_is_image()
+            && self.picks_allow_editor()
+            && p.click_modifiers().has(self.advanced_modifier);
         let polled = if editor_click { p.poll_click_editor(first) } else { p.poll_click(first) };
         match polled {
             ClickPoll::Pending => {}
@@ -1921,7 +1964,7 @@ impl Controller {
             ClickPoll::Target(t) => {
                 // Ctrl+click (by default) with a picture: the editor first, then the result is
                 // pasted into the window that was clicked
-                if self.current_is_image() && p.click_modifiers().has(self.advanced_modifier) {
+                if self.current_is_image() && self.picks_allow_editor() && p.click_modifiers().has(self.advanced_modifier) {
                     self.status = None;
                     self.open_editor(p, now, Some(t));
                     return;
@@ -1996,17 +2039,9 @@ impl Controller {
             }
         }
         let Some(open) = self.open.as_ref() else { return vm };
-        let (ids, active): (Vec<i64>, usize) = match open.session.as_ref() {
-            Some(s) => {
-                let (items, cur) = s.window_items();
-                // No Bloat shows the one clip, not the list around it
-                let (before, after) = if self.ui_mode == UiMode::NoBloat { (0, 0) } else { (ROWS_BEFORE, ROWS_AFTER) };
-                let lo = cur.saturating_sub(before);
-                let hi = (cur + 1 + after).min(items.len());
-                (items[lo..hi].iter().map(|i| i.id).collect(), cur - lo)
-            }
-            None => (Vec::new(), 0),
-        };
+        let (ids, active) = self.row_ids();
+        let picks = open.ui.picks.clone();
+        let menu_state = open.ui.menu;
         vm.active = active;
         vm.slim = self.ui_mode == UiMode::NoBloat;
         vm.card_buttons = open.session.is_some() && !vm.slim;
@@ -2051,10 +2086,17 @@ impl Controller {
         if let Some((m, t)) = counts {
             vm.footer = format!("{} of {} clips", thousands(m), thousands(t));
         }
+        if !picks.is_empty() && !vm.slim {
+            vm.footer = multi::footer_text(picks.len());
+        }
         if let Some(st) = &self.status {
             vm.footer = st.text.clone();
         }
         let words = if adding { Vec::new() } else { search::terms(&vm.query) };
+        if !vm.slim {
+            vm.picked = ids.iter().map(|id| picks.contains(id)).collect();
+            vm.menu = menu_state.map(|m| m.view(picks.len()));
+        }
         for id in ids {
             let (kind, pinned, title, meta) = self.row_info(id);
             if vm.slim {

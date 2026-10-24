@@ -309,6 +309,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 send(kind, x, y);
                 return LRESULT(0);
             }
+            // the carousel's Copy menu; the viewer has no use for the right button
+            WM_RBUTTONDOWN if matches!(role, Role::Carousel) => {
+                let (x, y) = xy(lparam);
+                send(MouseKind::RightDown, x, y);
+                return LRESULT(0);
+            }
             WM_MOUSEMOVE => {
                 // ask once for a WM_MOUSELEAVE, so hover highlights go out when the pointer does
                 if !ptr.is_null() {

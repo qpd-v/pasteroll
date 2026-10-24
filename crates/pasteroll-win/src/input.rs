@@ -133,3 +133,11 @@ pub fn left_up() {
     send(&[mouse(MOUSEEVENTF_LEFTUP)]);
 }
 
+pub fn right_down() {
+    send(&[mouse(MOUSEEVENTF_RIGHTDOWN)]);
+}
+
+pub fn right_up() {
+    send(&[mouse(MOUSEEVENTF_RIGHTUP)]);
+}
+

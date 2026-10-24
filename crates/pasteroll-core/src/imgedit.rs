@@ -419,6 +419,9 @@ pub fn preview_source(src: &Rgba) -> (Rgba, f32) {
 pub struct Presets {
     pub items: Vec<(String, EditParams)>,
     pub folder: Option<String>,
+    /// The Settings image folder ("" = the Desktop) in force when `folder` was remembered. Changing
+    /// that setting makes the remembered folder stale: [`Presets::remembered_folder`] ignores it.
+    pub folder_base: String,
 }
 
 pub const PRESET_NAME_MAX: usize = 40;
@@ -569,6 +572,10 @@ impl Presets {
                 }
                 continue;
             }
+            if name == "@folder_base" {
+                out.folder_base = rest.trim().to_owned();
+                continue;
+            }
             let Some(name) = clean_preset_name(name) else { continue };
             if out.items.len() >= PRESETS_MAX || out.items.iter().any(|(n, _)| *n == name) {
                 continue;
@@ -590,6 +597,9 @@ impl Presets {
         if let Some(f) = &self.folder {
             if !f.contains(['\n', '\t']) {
                 s.push_str(&format!("@folder\t{f}\n"));
+                if !self.folder_base.is_empty() && !self.folder_base.contains(['\n', '\t']) {
+                    s.push_str(&format!("@folder_base\t{}\n", self.folder_base));
+                }
             }
         }
         for (name, p) in &self.items {
@@ -597,6 +607,12 @@ impl Presets {
             s.push_str(&format!("{name}\t{}\n", kv.join(" ")));
         }
         s
+    }
+
+    /// The folder last chosen in the editor, unless the Settings image folder (`configured`, "" for
+    /// the Desktop) has been changed since: a new choice in Settings wins over an old one here.
+    pub fn remembered_folder(&self, configured: &str) -> Option<&str> {
+        self.folder.as_deref().filter(|_| self.folder_base == configured)
     }
 
     /// Adds or replaces a preset. `false` when the name is unusable or the list is full.
@@ -626,6 +642,22 @@ mod tests {
 
     fn solid(w: u32, h: u32, c: [u8; 4]) -> Rgba {
         Rgba { width: w, height: h, pixels: c.iter().copied().cycle().take(w as usize * h as usize * 4).collect() }
+    }
+
+    #[test]
+    fn a_remembered_folder_is_dropped_when_the_settings_folder_changes() {
+        let mut p = Presets { folder: Some("/pics/a".into()), folder_base: "/pics".into(), ..Presets::default() };
+        let back = Presets::parse(&p.to_text());
+        assert_eq!(back, p, "folder and its base survive the file");
+        assert_eq!(p.remembered_folder("/pics"), Some("/pics/a"));
+        assert_eq!(p.remembered_folder("/other"), None, "the setting changed");
+        assert_eq!(p.remembered_folder(""), None);
+        // a file from before the setting existed was made with the Desktop as the default
+        let old = Presets::parse("@folder\t/pics/a\n");
+        assert_eq!(old.remembered_folder(""), Some("/pics/a"));
+        assert_eq!(old.remembered_folder("/pics"), None);
+        p.folder_base.clear();
+        assert!(!p.to_text().contains("@folder_base"));
     }
 
     #[test]

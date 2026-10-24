@@ -283,6 +283,15 @@ impl Platform for WinPlatform {
         unsafe { (GetAsyncKeyState(VK_SHIFT.0 as i32) as u16 & 0x8000) != 0 }
     }
 
+    fn modifiers_now(&self) -> pasteroll_app::Modifiers {
+        let down = |vk: VIRTUAL_KEY| unsafe { (GetAsyncKeyState(vk.0 as i32) as u16 & 0x8000) != 0 };
+        pasteroll_app::Modifiers { ctrl: down(VK_CONTROL), shift: down(VK_SHIFT), alt: down(VK_MENU) }
+    }
+
+    fn line_break(&self) -> &'static str {
+        "\r\n"
+    }
+
     fn save_dialog(&mut self, name: &str, ext: &str, target: &Target) -> SaveChoice {
         // the dialog needs the keyboard: stop swallowing it while the dialog is up
         self.input_active(false);

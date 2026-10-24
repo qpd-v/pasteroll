@@ -34,6 +34,9 @@ const ID_MODE: [i32; 2] = [126, 127];
 const ID_UPDATES: i32 = 128;
 const ID_CHECK_NOW: i32 = 129;
 const ID_LAST_CHECK: i32 = 134;
+const ID_IMG_EDIT: i32 = 135;
+const ID_IMG_BROWSE: i32 = 136;
+const ID_IMG_RESET: i32 = 137;
 const ID_EX_LIST: i32 = 130;
 const ID_EX_EDIT: i32 = 131;
 const ID_EX_ADD: i32 = 132;
@@ -65,6 +68,8 @@ struct State {
     autostart: HWND,
     autostart_was: bool,
     modifier: [HWND; 3],
+    /// The box holding the folder pictures are saved in ("" = the Desktop).
+    img_edit: HWND,
     mode: [HWND; 2],
     updates: HWND,
     check_now: HWND,
@@ -80,6 +85,9 @@ struct State {
 /// Height of the mode choice and the update check at the top of the window; everything below it is
 /// pushed down.
 const MODE_H: i32 = 120;
+
+/// Height of the "save pictures in this folder" row, added below the image editor key.
+const IMG_H: i32 = 60;
 
 /// A settings window is open (the one-time update question waits for it to close).
 static OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -259,8 +267,8 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
             0,
             w!("Segoe UI"),
         );
-        // client area 520 x (688 + the mode choice) at 96 dpi
-        let (cw, ch) = (s(520), s(688 + MODE_H));
+        // client area 520 x (688 + the mode choice + the picture folder) at 96 dpi
+        let (cw, ch) = (s(520), s(688 + MODE_H + IMG_H));
         let mut r = RECT { left: 0, top: 0, right: cw, bottom: ch };
         let _ = AdjustWindowRectEx(&mut r, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, false, WINDOW_EX_STYLE(0));
         let (ww, wh) = (r.right - r.left, r.bottom - r.top);
@@ -429,6 +437,24 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
             SendMessageW(modifier[i], BM_SETCHECK, Some(WPARAM(usize::from(on))), Some(LPARAM(0)));
         }
 
+        child(hwnd, w!("STATIC"), "Save pictures (Paste Path and the image editor) in this folder:", 0, 0, (16, 426, 490, 20), 0, dpi, font);
+        let img_edit = child(
+            hwnd,
+            w!("EDIT"),
+            &cfg.image_folder,
+            ES_AUTOHSCROLL as u32 | WS_TABSTOP.0,
+            WS_EX_CLIENTEDGE.0,
+            (16, 450, 360, 24),
+            ID_IMG_EDIT,
+            dpi,
+            font,
+        );
+        SendMessageW(img_edit, EM_SETCUEBANNER, Some(WPARAM(0)), Some(LPARAM(w!("The Desktop").as_ptr() as isize)));
+        child(hwnd, w!("BUTTON"), "Browse...", BS_PUSHBUTTON as u32 | WS_TABSTOP.0, 0, (384, 449, 72, 26), ID_IMG_BROWSE, dpi, font);
+        child(hwnd, w!("BUTTON"), "Desktop", BS_PUSHBUTTON as u32 | WS_TABSTOP.0, 0, (462, 449, 42, 26), ID_IMG_RESET, dpi, font);
+        // everything below moves down by the height of this row
+        TOP.set(MODE_H + IMG_H);
+
         child(hwnd, w!("STATIC"), "Never record copies made in these programs", 0, 0, (16, 432, 480, 20), 0, dpi, font);
         let lb = (LBS_NOTIFY | LBS_NOINTEGRALHEIGHT) as u32 | WS_VSCROLL.0 | WS_TABSTOP.0;
         let ex_list = child(hwnd, w!("LISTBOX"), "", lb, WS_EX_CLIENTEDGE.0, (16, 456, 300, 84), ID_EX_LIST, dpi, font);
@@ -489,6 +515,7 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
             autostart,
             autostart_was: crate::setup::autostart_enabled(),
             modifier,
+            img_edit,
             mode,
             updates,
             check_now,
@@ -588,6 +615,18 @@ fn check_now() {
     refresh_last_check();
 }
 
+/// "Browse..." beside the picture folder: a folder chooser, starting at the folder in the box (or
+/// the Desktop). Cancelling changes nothing.
+fn browse_image_folder(hwnd: HWND) {
+    let current = ST.with(|c| c.try_borrow().ok().and_then(|g| g.as_ref().map(|s| (s.img_edit, get_text(s.img_edit)))));
+    let Some((edit, typed)) = current else { return };
+    let typed = typed.trim().to_owned();
+    let start = Some(PathBuf::from(&typed)).filter(|p| !typed.is_empty() && p.is_dir());
+    if let pasteroll_app::SaveChoice::Path(dir) = crate::dialogs::pick_folder(hwnd, start.as_deref(), hwnd) {
+        set_text(edit, &dir.to_string_lossy());
+    }
+}
+
 /// Whether the update box is ticked right now (self-test).
 pub fn probe_updates_checked() -> Option<bool> {
     sync_update_choice();
@@ -627,6 +666,7 @@ struct Snapshot {
     paused: bool,
     warn: bool,
     modifier: ClickModifier,
+    image_folder: String,
     mode: UiMode,
     updates: bool,
     exclude: Vec<String>,
@@ -651,6 +691,7 @@ fn current_choices() -> Option<Snapshot> {
                 .zip(s.modifier.iter())
                 .find(|(_, h)| check(**h))
                 .map_or(s.orig.advanced_image_modifier, |(m, _)| *m),
+            image_folder: get_text(s.img_edit),
             mode: chosen_mode(s),
             updates: check(s.updates),
             exclude: s.exclude.clone(),
@@ -671,6 +712,7 @@ fn build_text(snap: &Snapshot, text: &str) -> Result<String, Vec<String>> {
         warn_multiline: snap.warn,
         size_percent: snap.size,
         advanced_modifier: snap.modifier,
+        image_folder: snap.image_folder.clone(),
         mode: snap.mode,
         exclude_apps: snap.exclude.clone(),
         filter_names: snap.filters.clone(),
@@ -823,6 +865,14 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                     ID_SAVE => save(),
                     ID_CANCEL => close(),
                     ID_CHECK_NOW => check_now(),
+                    ID_IMG_BROWSE => browse_image_folder(hwnd),
+                    ID_IMG_RESET => ST.with(|c| {
+                        if let Ok(g) = c.try_borrow() {
+                            if let Some(s) = g.as_ref() {
+                                set_text(s.img_edit, "");
+                            }
+                        }
+                    }),
                     ID_EX_ADD => {
                         let added = ST.with(|c| {
                             let Ok(mut g) = c.try_borrow_mut() else { return None };
@@ -957,6 +1007,7 @@ mod tests {
             paused: false,
             warn: true,
             modifier: ClickModifier::Ctrl,
+            image_folder: String::new(),
             mode: UiMode::Complete,
             updates: false,
             exclude: vec![],
@@ -988,6 +1039,7 @@ mod tests {
             paused: false,
             warn: true,
             modifier: ClickModifier::Ctrl,
+            image_folder: String::new(),
             mode: UiMode::Complete,
             updates: false,
             exclude: vec![],
@@ -1013,6 +1065,7 @@ mod tests {
                 paused: false,
                 warn: true,
                 modifier: ClickModifier::Ctrl,
+                image_folder: String::new(),
                 mode: UiMode::Complete,
                 updates,
                 exclude: vec![],
@@ -1045,6 +1098,7 @@ mod tests {
             paused: false,
             warn: true,
             modifier: ClickModifier::Ctrl,
+            image_folder: String::new(),
             mode: UiMode::Complete,
             updates: false,
             exclude: vec!["bitwarden.exe".into()],

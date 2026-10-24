@@ -14,6 +14,8 @@ use std::time::Duration;
 
 mod editor;
 mod editor_anywhere;
+mod image_folder;
+mod multi;
 mod no_bloat;
 mod ocr_regions;
 
@@ -54,6 +56,8 @@ struct Fake {
     animating: bool,
     keepalives: u32,
     shift: bool,
+    /// Which of Ctrl, Shift and Alt are held right now.
+    mods: Modifiers,
     /// What the save dialog answers.
     save_choice: SaveChoice,
     /// The last carousel frame presented (to see it dimmed behind the viewer).
@@ -110,6 +114,7 @@ impl Fake {
             animating: false,
             keepalives: 0,
             shift: false,
+            mods: Modifiers::default(),
             save_choice: SaveChoice::Unavailable,
             last_overlay: None,
             click_mods: Modifiers::default(),
@@ -188,6 +193,9 @@ impl Platform for Fake {
     }
     fn shift_held(&self) -> bool {
         self.shift
+    }
+    fn modifiers_now(&self) -> Modifiers {
+        Modifiers { shift: self.shift || self.mods.shift, ..self.mods }
     }
     fn save_dialog(&mut self, _name: &str, _ext: &str, _target: &Target) -> SaveChoice {
         self.save_choice.clone()

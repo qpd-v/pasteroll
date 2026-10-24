@@ -17,7 +17,7 @@ fn ctrl() -> Modifiers {
 
 impl H {
     /// A session over the clips with a window running `exe` in front (and a Desktop folder).
-    fn window_session(clips: &[Clip<'_>], exe: &str) -> (H, PathBuf) {
+    pub(super) fn window_session(clips: &[Clip<'_>], exe: &str) -> (H, PathBuf) {
         let mut h = H::new(clips);
         let folder = h.dir.join("Desktop");
         std::fs::create_dir_all(&folder).unwrap();
@@ -28,7 +28,7 @@ impl H {
     }
 
     /// Clicks the window in front with `mods` held, in a session that is already open.
-    fn click_window(&mut self, g: u64, mods: Modifiers) {
+    pub(super) fn click_window(&mut self, g: u64, mods: Modifiers) {
         self.p.click_mods = mods;
         let t = self.p.foreground.clone().expect("a window in front");
         self.p.click_polls = VecDeque::from([ClickPoll::Target(t)]);
@@ -37,7 +37,7 @@ impl H {
     }
 
     /// Ctrl+click on the window, then the animation, then the whole picture arriving.
-    fn open_editor_in_window(&mut self) -> u64 {
+    pub(super) fn open_editor_in_window(&mut self) -> u64 {
         let g = self.open();
         self.click_window(g, ctrl());
         assert!(self.c.editor_is_open(), "Ctrl+click in a window opens the editor");
@@ -47,7 +47,7 @@ impl H {
     }
 
     /// Presses the editor's Paste button and lets the result be delivered.
-    fn press_paste(&mut self) {
+    pub(super) fn press_paste(&mut self) {
         self.eclick_rect(|l| l.paste);
         self.wait_for(|h| !h.c.editor_is_open() || h.c.editor_animating());
         self.settle_editor();
@@ -219,7 +219,7 @@ impl H {
     }
 
     /// Types `text` into the editor's Folder box.
-    fn type_folder(&mut self, text: &str) {
+    pub(super) fn type_folder(&mut self, text: &str) {
         self.eclick_rect(|l| l.folder);
         self.etype(text);
         self.ekey(Key::Enter);

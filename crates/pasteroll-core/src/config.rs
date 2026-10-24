@@ -118,6 +118,8 @@ pub struct Config {
     pub size_percent: u32,
     /// Hold this while clicking where an image should go, to edit it before it is saved or pasted.
     pub advanced_image_modifier: ClickModifier,
+    /// The folder Paste Path and the image editor save pictures into. Empty: the Desktop.
+    pub image_folder: String,
     /// Which interface the carousel shows.
     pub mode: UiMode,
     /// Whether to look for a newer version (see [`UpdateCheck`]).
@@ -140,6 +142,7 @@ impl Default for Config {
             terminal_apps: Vec::new(),
             size_percent: SIZE_DEFAULT,
             advanced_image_modifier: ClickModifier::Ctrl,
+            image_folder: String::new(),
             mode: UiMode::Complete,
             updates: UpdateCheck::Ask,
         }
@@ -172,6 +175,9 @@ terminal_apps = []
 # editor (outline, resize, crop, shadow and more) instead of saving or pasting the picture right away.
 # "ctrl", "shift" or "alt".
 advanced_image_modifier = "ctrl"
+# The folder the image editor and Paste Path save pictures into. "" means the Desktop. Settings has a
+# Browse button for it.
+image_folder = ""
 
 [appearance]
 # "complete" shows everything. "no-bloat" shows only the current clip: no list and no buttons on the
@@ -200,6 +206,22 @@ fn int(item: &Item, key: &str) -> Result<u64, String> {
         Some(_) => Err(format!("{key} must not be negative")),
         None => Err(format!("{key} must be a whole number")),
     }
+}
+
+/// The longest folder path accepted (Windows' long-path limit is 32,767; no real folder needs this).
+const FOLDER_MAX: usize = 1024;
+
+/// A folder path as written in the file: trimmed, no control characters, not absurdly long. Empty is
+/// allowed and means the Desktop. Whether the folder exists is checked when a picture is saved.
+pub fn clean_folder(text: &str) -> Result<String, String> {
+    let t = text.trim();
+    if t.chars().count() > FOLDER_MAX {
+        return Err(format!("image_folder is longer than {FOLDER_MAX} characters"));
+    }
+    if t.chars().any(char::is_control) {
+        return Err("image_folder must not contain control characters".into());
+    }
+    Ok(t.to_owned())
 }
 
 fn strings(item: &Item, key: &str) -> Result<Vec<String>, String> {
@@ -286,6 +308,11 @@ pub fn parse(text: &str) -> Result<Config, Vec<String>> {
                                 cfg.terminal_apps = list.iter().map(|s| s.trim().to_ascii_lowercase()).collect()
                             }
                             Err(e) => problems.push(e),
+                        },
+                        "image_folder" => match v.as_str().map(clean_folder) {
+                            Some(Ok(f)) => cfg.image_folder = f,
+                            Some(Err(e)) => problems.push(e),
+                            None => problems.push("image_folder must be text (a folder path, or \"\" for the Desktop)".into()),
                         },
                         other => problems.push(format!("unknown setting [paste] {other}")),
                     }
@@ -435,6 +462,10 @@ pub fn set_value(text: &str, key: &str, val: &str) -> Result<String, Vec<String>
         "advanced_image_modifier" => match ClickModifier::parse(val) {
             Some(m) => ("paste", value(m.label().to_ascii_lowercase())),
             None => return Err(vec![format!("advanced_image_modifier must be ctrl, shift or alt (got {val:?})")]),
+        },
+        "image_folder" => match clean_folder(val) {
+            Ok(f) => ("paste", value(f)),
+            Err(e) => return Err(vec![e]),
         },
         "size" => {
             let v = val.trim().trim_end_matches('%');
@@ -613,6 +644,10 @@ pub fn describe(c: &Config) -> String {
         }
     ));
     s.push_str(&format!("image editor:   {}+click where it should go\n", c.advanced_image_modifier.label()));
+    s.push_str(&format!(
+        "image folder:   {}\n",
+        if c.image_folder.is_empty() { "the Desktop" } else { c.image_folder.as_str() }
+    ));
     if !c.exclude_apps.is_empty() {
         s.push_str(&format!("excluded apps:  {}\n", c.exclude_apps.join(", ")));
     }
@@ -650,6 +685,24 @@ mod tests {
         assert_eq!(parse(&out).unwrap().advanced_image_modifier, ClickModifier::Alt);
         assert!(set_value("", "paste.advanced_image_modifier", "super").is_err());
         assert!(describe(&c).contains("Shift+click"));
+    }
+
+    #[test]
+    fn the_image_folder_defaults_to_the_desktop_and_can_be_changed() {
+        assert_eq!(parse("").unwrap().image_folder, "", "a file from before the setting existed");
+        assert_eq!(parse(TEMPLATE).unwrap().image_folder, "");
+        let c = parse("[paste]\nimage_folder = '  C:\\Users\\me\\Pictures\\Pasteroll  '\n").unwrap();
+        assert_eq!(c.image_folder, "C:\\Users\\me\\Pictures\\Pasteroll", "spaces around it are not part of it");
+        assert!(describe(&c).contains("Pictures"));
+        assert!(describe(&Config::default()).contains("the Desktop"));
+        assert!(parse("[paste]\nimage_folder = 3\n").is_err());
+        assert!(parse("[paste]\nimage_folder = \"a\\u0007b\"\n").is_err(), "a control character");
+        assert!(parse(&format!("[paste]\nimage_folder = \"{}\"\n", "x".repeat(2000))).is_err());
+        let out = set_value("", "image_folder", "/home/me/Pictures").unwrap();
+        assert_eq!(parse(&out).unwrap().image_folder, "/home/me/Pictures");
+        let out = set_value(&out, "paste.image_folder", "").unwrap();
+        assert_eq!(parse(&out).unwrap().image_folder, "", "an empty value goes back to the Desktop");
+        assert!(set_value("", "image_folder", "a\u{7}b").is_err());
     }
 
     #[test]

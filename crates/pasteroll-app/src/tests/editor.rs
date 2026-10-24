@@ -47,7 +47,7 @@ impl H {
     }
 
     /// Ctrl+click on the desktop, then the animation, then the whole picture arriving.
-    fn open_editor(&mut self) -> u64 {
+    pub(super) fn open_editor(&mut self) -> u64 {
         let g = self.open();
         self.click_desktop(g, Modifiers { ctrl: true, ..Modifiers::default() });
         assert!(self.c.editor_is_open(), "Ctrl+click on the desktop opens the editor");

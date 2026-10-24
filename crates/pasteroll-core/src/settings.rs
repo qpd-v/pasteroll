@@ -138,6 +138,8 @@ pub struct Choice {
     pub warn_multiline: bool,
     pub size_percent: u32,
     pub advanced_modifier: ClickModifier,
+    /// Where pictures are saved by Paste Path and the image editor ("" = the Desktop).
+    pub image_folder: String,
     pub mode: UiMode,
     pub exclude_apps: Vec<String>,
     pub filter_names: Vec<String>,
@@ -155,6 +157,7 @@ impl Choice {
             warn_multiline: c.warn_multiline_in_terminals,
             size_percent: c.size_percent,
             advanced_modifier: c.advanced_image_modifier,
+            image_folder: c.image_folder.clone(),
             mode: c.mode,
             exclude_apps: c.exclude_apps.clone(),
             filter_names: c.custom_filters.iter().map(|f| f.name.clone()).collect(),
@@ -190,6 +193,11 @@ pub fn build_text(orig: &Config, choice: &Choice, text: &str) -> Result<String, 
     }
     if choice.advanced_modifier != orig.advanced_image_modifier {
         t = config::set_value(&t, "advanced_image_modifier", choice.advanced_modifier.label())?;
+    }
+    // compared after cleaning, so a stray space is not a change
+    let folder = config::clean_folder(&choice.image_folder).map_err(|e| vec![e])?;
+    if folder != orig.image_folder {
+        t = config::set_value(&t, "image_folder", &folder)?;
     }
     if choice.mode != orig.mode {
         t = config::set_value(&t, "mode", choice.mode.key())?;
@@ -311,6 +319,24 @@ mod tests {
         let ch = Choice { advanced_modifier: ClickModifier::Shift, ..same };
         let out = build_text(&orig, &ch, "").unwrap();
         assert_eq!(config::parse(&out).unwrap().advanced_image_modifier, ClickModifier::Shift);
+    }
+
+    #[test]
+    fn the_image_folder_is_written_only_when_it_changes() {
+        let orig = config::parse("").unwrap();
+        let same = Choice::from_config(&orig);
+        assert_eq!(same.image_folder, "");
+        assert_eq!(build_text(&orig, &same, "").unwrap(), "");
+        let ch = Choice { image_folder: "  /home/me/Pictures/Pasteroll ".into(), ..same.clone() };
+        let out = build_text(&orig, &ch, "").unwrap();
+        assert_eq!(config::parse(&out).unwrap().image_folder, "/home/me/Pictures/Pasteroll");
+        // back to the Desktop
+        let now = config::parse(&out).unwrap();
+        let back = Choice { image_folder: String::new(), ..Choice::from_config(&now) };
+        assert_eq!(config::parse(&build_text(&now, &back, &out).unwrap()).unwrap().image_folder, "");
+        // a value that cannot be saved is an error, not a silent drop
+        let bad = Choice { image_folder: "a\u{7}b".into(), ..same };
+        assert!(build_text(&orig, &bad, "").is_err());
     }
 
     #[test]

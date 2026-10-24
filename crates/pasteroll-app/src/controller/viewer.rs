@@ -1885,6 +1885,8 @@ impl Controller {
                 let Some(hit) = self.viewer_hit(m.x, m.y) else { return };
                 self.viewer_press(p, hit, m, now);
             }
+            // the right button belongs to the carousel's Copy menu
+            MouseKind::RightDown => {}
         }
     }
 

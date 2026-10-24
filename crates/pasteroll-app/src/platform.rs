@@ -224,6 +224,14 @@ pub trait Platform {
     fn shift_held(&self) -> bool {
         false
     }
+    /// Which of Ctrl, Shift and Alt are held right now (Ctrl+click chooses several clips).
+    fn modifiers_now(&self) -> Modifiers {
+        Modifiers { shift: self.shift_held(), ..Modifiers::default() }
+    }
+    /// What separates the lines of several clips pasted together.
+    fn line_break(&self) -> &'static str {
+        "\n"
+    }
     /// Asks where to save a clip. `name` is the suggested file name, `ext` its extension. The
     /// platform takes care of input and focus around the dialog and gives the keyboard back to
     /// `target` afterwards.

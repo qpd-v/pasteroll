@@ -125,6 +125,15 @@ pub struct Dropdown {
     pub hover: Option<usize>,
 }
 
+/// A small menu opened by a right click, drawn at the pointer.
+#[derive(Debug, Clone)]
+pub struct MenuView {
+    pub items: Vec<String>,
+    /// Where the click was, in DIP; the menu opens there, moved inward where it would stick out.
+    pub at: (f32, f32),
+    pub hover: Option<usize>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ViewModel {
     pub query: String,
@@ -153,6 +162,10 @@ pub struct ViewModel {
     /// No Bloat: the search bar and filter button are shown too (while a search or filter is in
     /// use). Ignored when `slim` is off, where they are always there.
     pub slim_bar: bool,
+    /// Which of `rows` are chosen for a multiple paste (Complete only; a missing entry is `false`).
+    pub picked: Vec<bool>,
+    /// The right-click menu, while it is open.
+    pub menu: Option<MenuView>,
 }
 
 impl ViewModel {
@@ -192,6 +205,8 @@ impl Default for ViewModel {
             hover: None,
             slim: false,
             slim_bar: false,
+            picked: Vec::new(),
+            menu: None,
         }
     }
 }
@@ -220,6 +235,8 @@ pub enum Hit {
     Query,
     FilterButton,
     DropdownItem(usize),
+    /// An entry of the right-click menu (index into `MenuView::items`).
+    MenuItem(usize),
     /// Index into `ViewModel::rows`.
     Row(usize),
     /// The active item's body. `pos` is a UTF-16 offset into the displayed text.
@@ -251,7 +268,26 @@ pub struct Geometry {
     pub footer: Rect,
     pub dropdown: Option<Rect>,
     pub dropdown_items: Vec<Rect>,
+    /// The right-click menu and its entries.
+    pub menu: Option<Rect>,
+    pub menu_items: Vec<Rect>,
     pub scale: f32,
+}
+
+const MENU_ITEM_H: f32 = 28.0;
+const MENU_W: f32 = 168.0;
+
+/// The right-click menu: opens at the click, moved inward so all of it stays inside the window.
+fn menu_geometry(vm: &ViewModel, size_dip: (f32, f32)) -> (Option<Rect>, Vec<Rect>) {
+    let Some(m) = &vm.menu else { return (None, Vec::new()) };
+    let h = m.items.len() as f32 * MENU_ITEM_H + 8.0;
+    let x = m.at.0.clamp(OUTER, (size_dip.0 - OUTER - MENU_W).max(OUTER));
+    let y = m.at.1.clamp(OUTER, (size_dip.1 - OUTER - h).max(OUTER));
+    let rect = Rect { x, y, w: MENU_W, h };
+    let items = (0..m.items.len())
+        .map(|i| Rect { x: x + 4.0, y: y + 4.0 + i as f32 * MENU_ITEM_H, w: MENU_W - 8.0, h: MENU_ITEM_H })
+        .collect();
+    (Some(rect), items)
 }
 
 /// The filter menu under the filter button. In the full window it is one column. In No Bloat's
@@ -323,6 +359,8 @@ fn slim_geometry(vm: &ViewModel, size_dip: (f32, f32), scale: f32) -> Geometry {
         footer,
         dropdown,
         dropdown_items,
+        menu: None,
+        menu_items: Vec::new(),
         scale,
     }
 }
@@ -391,6 +429,7 @@ pub fn geometry(vm: &ViewModel, size_dip: (f32, f32), scale: f32) -> Geometry {
     }
 
     let (dropdown, dropdown_items) = dropdown_geometry(vm, filter_button, size_dip);
+    let (menu, menu_items) = menu_geometry(vm, size_dip);
 
     Geometry {
         surface,
@@ -405,6 +444,8 @@ pub fn geometry(vm: &ViewModel, size_dip: (f32, f32), scale: f32) -> Geometry {
         footer,
         dropdown,
         dropdown_items,
+        menu,
+        menu_items,
         scale,
     }
 }
@@ -689,6 +730,28 @@ impl Renderer {
             }
         }
 
+        if let (Some(rect), Some(menu)) = (g.menu, &vm.menu) {
+            cv.fill(rect, 6.0, MENU, 1.0);
+            cv.stroke(rect, 6.0, MENU_BORDER, 1.0, 1.0);
+            for (i, item) in menu.items.iter().enumerate() {
+                let r = g.menu_items[i];
+                if menu.hover == Some(i) {
+                    cv.fill(r, 4.0, ACCENT, 0.28);
+                }
+                self.draw_text(
+                    &mut cv,
+                    item,
+                    ((r.x + 10.0) * s, (r.y + 6.0) * s),
+                    FONT_PX * s,
+                    18.0 * s,
+                    None,
+                    Wrap::None,
+                    FOREGROUND,
+                    scaled(r, s),
+                );
+            }
+        }
+
         // tiny-skia holds premultiplied RGBA; the frame is opaque, so swizzle to BGRA directly.
         let mut bgra = cv.pm.take();
         for px in bgra.chunks_exact_mut(4) {
@@ -815,11 +878,21 @@ impl Renderer {
                 cv.stroke(r, 8.0, SURFACE_BORDER, 1.0, 1.0);
                 continue;
             }
+            let picked = vm.picked.get(i).copied().unwrap_or(false);
             if is_active {
                 cv.fill(r, 8.0, ACTIVE_ROW, 1.0);
                 cv.stroke(r, 8.0, ACCENT, 0.9, 1.2);
             }
-            self.draw_icon(cv, row.kind, r.x + 12.0, r.y + (ROW_H - 12.0) / 2.0, if is_active { ACCENT } else { MUTED });
+            if picked {
+                // chosen for a multiple paste: a tint, and a check where the kind's icon would be
+                cv.fill(r, 8.0, ACCENT, 0.17);
+                if !is_active {
+                    cv.stroke(r, 8.0, ACCENT, 0.55, 1.0);
+                }
+                draw_check(cv, r.x + 18.0, r.y + ROW_H / 2.0);
+            } else {
+                self.draw_icon(cv, row.kind, r.x + 12.0, r.y + (ROW_H - 12.0) / 2.0, if is_active { ACCENT } else { MUTED });
+            }
             let title_x = r.x + 32.0;
             // the active card's Expand button sits at the right of its title line
             let buttons = if is_active && vm.card_buttons { CARD_BUTTON + 6.0 } else { 0.0 };
@@ -1020,6 +1093,12 @@ impl Renderer {
     pub fn hit_test(&mut self, vm: &ViewModel, size_dip: (f32, f32), scale: f32, px: f32, py: f32) -> Hit {
         let g = geometry(vm, size_dip, scale);
         let (x, y) = (px / scale, py / scale);
+        // an open menu covers whatever is under it
+        if let Some(r) = g.menu {
+            if r.contains(x, y) {
+                return g.menu_items.iter().position(|it| it.contains(x, y)).map_or(Hit::Nothing, Hit::MenuItem);
+            }
+        }
         if let Some(r) = g.dropdown {
             if r.contains(x, y) {
                 for (i, it) in g.dropdown_items.iter().enumerate() {
@@ -1147,6 +1226,14 @@ pub fn button_at(vm: &ViewModel, size_dip: (f32, f32), scale: f32, px: f32, py: 
         .map(|(_, h)| h)
 }
 
+/// Which entry of the right-click menu (if any) is under `(px, py)` (pixels). Geometry only, so it
+/// can run on every pointer move.
+pub fn menu_item_at(vm: &ViewModel, size_dip: (f32, f32), scale: f32, px: f32, py: f32) -> Option<usize> {
+    let (_, items) = menu_geometry(vm, size_dip);
+    let (x, y) = (px / scale, py / scale);
+    items.iter().position(|r| r.contains(x, y))
+}
+
 /// A dark label beside `anchor` (above it, or below when `below`), kept inside the frame.
 fn tooltip(r: &mut Renderer, cv: &mut Canvas, text: &str, anchor: Rect, size_dip: (f32, f32), below: bool) {
     let s = cv.s;
@@ -1176,6 +1263,17 @@ fn tooltip(r: &mut Renderer, cv: &mut Canvas, text: &str, anchor: Rect, size_dip
 pub fn first_line(s: &str) -> String {
     let line = s.split(['\r', '\n']).next().unwrap_or("");
     line.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// A filled disc with a tick, centred on `(cx, cy)`: a chosen clip.
+fn draw_check(cv: &mut Canvas, cx: f32, cy: f32) {
+    let s = cv.s;
+    let mut pb = PathBuilder::new();
+    pb.push_circle(cx * s, cy * s, 7.0 * s);
+    if let Some(p) = pb.finish() {
+        cv.pm.fill_path(&p, &paint(ACCENT, 1.0), FillRule::Winding, Transform::identity(), None);
+    }
+    cv.line(&[(cx - 3.2, cy + 0.2), (cx - 0.8, cy + 2.6), (cx + 3.4, cy - 2.4)], (20, 22, 26), 1.7);
 }
 
 fn draw_star(cv: &mut Canvas, cx: f32, cy: f32, r: f32, rgb: Rgb) {

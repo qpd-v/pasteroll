@@ -49,6 +49,8 @@ pub enum MouseKind {
     Up,
     Move,
     DoubleClick,
+    /// The right button went down over the carousel (it opens the Copy menu).
+    RightDown,
     /// The pointer left the window.
     Leave,
 }

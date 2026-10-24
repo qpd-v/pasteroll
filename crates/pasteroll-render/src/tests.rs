@@ -88,6 +88,49 @@ fn with_one_row_it_is_the_active_row_alone() {
 }
 
 #[test]
+fn a_chosen_row_is_drawn_differently_and_the_others_are_not_touched() {
+    let mut r = Renderer::new();
+    let plain = text_vm("x", None);
+    let before = r.render(&plain, SIZE, 1.0);
+    let mut vm = text_vm("x", None);
+    vm.picked = vec![false, false, true, false, false, false, false];
+    let after = r.render(&vm, SIZE, 1.0);
+    let g = geometry(&vm, SIZE, 1.0);
+    assert!(region_differs(&before, &after, g.rows[2].unwrap(), 1.0), "the chosen row is marked");
+    assert!(!region_differs(&before, &after, g.rows[1].unwrap().inset(2.0), 1.0), "its neighbour is not");
+    assert!(!region_differs(&before, &after, g.rows[vm.active].unwrap().inset(2.0), 1.0), "nor is the one shown");
+    // a list that has been given no choice at all draws exactly as it always did
+    let mut none = text_vm("x", None);
+    none.picked = vec![false; 7];
+    assert_eq!(r.render(&none, SIZE, 1.0).bgra, before.bgra);
+}
+
+#[test]
+fn a_menu_is_drawn_inside_the_window_and_catches_clicks() {
+    let mut r = Renderer::new();
+    let mut vm = text_vm("x", None);
+    let plain = r.render(&vm, SIZE, 1.0);
+    // opened at the bottom right corner: moved inward so all of it shows
+    vm.menu = Some(MenuView { items: vec!["Copy".into(), "Clear selection".into()], at: (SIZE.0 - 3.0, SIZE.1 - 3.0), hover: Some(1) });
+    let g = geometry(&vm, SIZE, 1.0);
+    let menu = g.menu.expect("a menu");
+    assert!(menu.x >= 0.0 && menu.y >= 0.0 && menu.x + menu.w <= SIZE.0 && menu.y + menu.h <= SIZE.1, "{menu:?}");
+    assert_eq!(g.menu_items.len(), 2);
+    assert!(region_differs(&plain, &r.render(&vm, SIZE, 1.0), menu, 1.0), "it is drawn");
+    // the entries answer clicks, the rest of the menu swallows them, what is outside it is as before
+    let it = g.menu_items[0];
+    assert_eq!(r.hit_test(&vm, SIZE, 1.0, it.x + 3.0, it.y + 3.0), Hit::MenuItem(0));
+    let it = g.menu_items[1];
+    assert_eq!(r.hit_test(&vm, SIZE, 1.0, it.x + 3.0, it.y + 3.0), Hit::MenuItem(1));
+    assert_eq!(r.hit_test(&vm, SIZE, 1.0, menu.x + 1.0, menu.y + 1.0), Hit::Nothing);
+    assert_eq!(menu_item_at(&vm, SIZE, 1.0, it.x + 3.0, it.y + 3.0), Some(1));
+    assert_eq!(menu_item_at(&vm, SIZE, 1.0, 2.0, 2.0), None);
+    let under = g.rows[2].unwrap();
+    vm.menu = None;
+    assert!(matches!(r.hit_test(&vm, SIZE, 1.0, under.x + 3.0, under.y + 3.0), Hit::Row(_)));
+}
+
+#[test]
 fn empty_state_renders_a_message_without_rows() {
     let mut r = Renderer::new();
     let vm = ViewModel { body: Body::Message("Nothing matches".into()), ..ViewModel::default() };

@@ -269,6 +269,7 @@ pub fn create(opts: &Options) -> Result<HWND> {
         controller.set_paste_policy(PastePolicy::new(cfg.warn_multiline_in_terminals, &cfg.terminal_apps));
         controller.set_custom_filters(cfg.custom_filters.clone());
         controller.set_advanced_modifier(cfg.advanced_image_modifier);
+        controller.set_image_folder(&cfg.image_folder);
         controller.init_ui_mode(cfg.mode);
         controller.set_ocr(Arc::new(crate::ocr::WinOcr));
         let platform = WinPlatform::new(hwnd, overlay, viewer, hooks).with_db(&opts.db);
