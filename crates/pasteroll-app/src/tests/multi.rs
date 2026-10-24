@@ -277,6 +277,27 @@ fn many_lines_into_a_terminal_ask_first() {
 }
 
 #[test]
+fn changing_what_is_chosen_asks_again_before_a_terminal_paste() {
+    let mut h = four();
+    h.p.foreground = Some(target(1, "windowsterminal.exe"));
+    let g = h.open();
+    h.click_row(0, CTRL);
+    h.click_row(1, CTRL);
+    h.enter(g);
+    assert!(h.footer().contains("terminal"), "{}", h.footer());
+    // one more clip is chosen: the warning no longer describes what would be pasted
+    h.click_row(2, CTRL);
+    assert!(!h.footer().contains("terminal"), "{}", h.footer());
+    h.enter(g);
+    assert!(h.p.pastes.is_empty(), "it asks again instead of pasting");
+    assert!(h.footer().contains("terminal"), "{}", h.footer());
+    h.right_click_row(1); // chosen already: keeps the choice and withdraws the warning
+    assert!(!h.footer().contains("terminal"), "{}", h.footer());
+    h.enter(g);
+    assert!(h.p.pastes.is_empty());
+}
+
+#[test]
 fn no_bloat_has_no_choosing() {
     let mut h = four();
     h.c.init_ui_mode(UiMode::NoBloat);

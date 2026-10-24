@@ -1508,7 +1508,7 @@ impl Controller {
         if !dir.is_absolute() {
             return Err("The image folder in Settings is not a full path. Fix it in Settings, or choose a folder here.".into());
         }
-        if !dir.is_dir() && std::fs::create_dir_all(&dir).is_err() {
+        if !dir.is_dir() && make_private_dir(&dir).is_err() {
             return Err(format!("Could not use the image folder from Settings ({set}). Choose another here, or fix it in Settings."));
         }
         Ok(Some(dir))
@@ -2660,4 +2660,17 @@ mod tests {
         }
         assert_eq!(split_id(POP_PALETTE), None, "popup items are not panel items");
     }
+}
+
+/// Makes the folder (and any missing parents). On Linux the folders made here are for the person
+/// alone: pictures saved in them are plain copies of clips that the history keeps encrypted.
+fn make_private_dir(dir: &Path) -> std::io::Result<()> {
+    let mut b = std::fs::DirBuilder::new();
+    b.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        b.mode(0o700);
+    }
+    b.create(dir)
 }

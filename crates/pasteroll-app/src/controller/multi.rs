@@ -47,6 +47,8 @@ struct Joined {
     used: usize,
     /// How many were left out because they are pictures.
     skipped: usize,
+    /// How many were left out because they could not be read (gone, or damaged).
+    unreadable: usize,
 }
 
 impl Drop for Joined {
@@ -100,6 +102,7 @@ impl Controller {
                 o.ui.picks.clear();
                 o.ui.pick_anchor = None;
                 self.dirty = true;
+                self.withdraw_warning();
                 true
             }
             _ => false,
@@ -140,6 +143,7 @@ impl Controller {
                     o.ui.menu = Some(Menu { at: (m.x / scale, m.y / scale), hover: None });
                     self.dirty = true;
                 }
+                self.withdraw_warning();
                 true
             }
             MouseKind::Down | MouseKind::DoubleClick => {
@@ -186,6 +190,7 @@ impl Controller {
         }
         o.ui.pick_anchor = Some(id);
         self.dirty = true;
+        self.withdraw_warning();
     }
 
     /// Ctrl+Shift+click: chooses every clip from the anchor to `id`, in the order walked from the
@@ -225,6 +230,7 @@ impl Controller {
         }
         // the anchor stays: a second Ctrl+Shift+click grows or shrinks the walk from the same clip
         self.dirty = true;
+        self.withdraw_warning();
         if full {
             self.flash(&format!("At most {PICKS_MAX} clips can be chosen at once"), now);
         }
@@ -234,11 +240,15 @@ impl Controller {
     fn join_picks(&self, picks: &[i64], line_break: &str) -> Result<Joined, &'static str> {
         use zeroize::Zeroize;
         let st = self.store.borrow();
-        let mut out = Joined { text: String::new(), used: 0, skipped: 0 };
+        let mut out = Joined { text: String::new(), used: 0, skipped: 0, unreadable: 0 };
         for &id in picks {
             let piece = match st.kind(id) {
                 Ok(Some(Kind::Text)) => st.text(id).ok().flatten(),
                 Ok(Some(Kind::Files)) => st.files(id).ok().flatten().map(|f| f.join(line_break)),
+                Ok(Some(Kind::Image)) => {
+                    out.skipped += 1;
+                    continue;
+                }
                 _ => None,
             };
             match piece {
@@ -257,7 +267,7 @@ impl Controller {
                     out.used += 1;
                     t.zeroize();
                 }
-                None => out.skipped += 1,
+                None => out.unreadable += 1,
             }
         }
         Ok(out)
@@ -274,8 +284,8 @@ impl Controller {
             [only] => (*only, None),
             many => match self.join_picks(many, p.line_break()) {
                 Ok(j) if j.used > 0 => {
-                    if j.skipped > 0 {
-                        p.log(&format!("{} picture(s) left out of a multiple paste", j.skipped));
+                    if j.skipped + j.unreadable > 0 {
+                        p.log(&format!("{} clip(s) left out of a multiple paste", j.skipped + j.unreadable));
                     }
                     (many[0], Some(j.text.clone()))
                 }
@@ -308,7 +318,9 @@ impl Controller {
     pub(super) fn copy_picks(&mut self, p: &mut dyn Platform, now: u64) {
         let Some(o) = self.open.as_ref() else { return };
         let ids: Vec<i64> = if o.ui.picks.is_empty() { o.current_id().into_iter().collect() } else { o.ui.picks.clone() };
+        let highlighted = if o.ui.picks.is_empty() { self.selected_text() } else { None };
         let (payload, used, skipped) = match ids.as_slice() {
+            _ if highlighted.is_some() => (Payload::Text(highlighted.unwrap_or_default()), 1, 0),
             [] => return, // nothing matches the search
             [one] => match self.clip_payload(*one) {
                 Some(pl) => (pl, 1, 0),
@@ -318,7 +330,7 @@ impl Controller {
                 }
             },
             many => match self.join_picks(many, p.line_break()) {
-                Ok(j) if j.used > 0 => (Payload::Text(j.text.clone()), j.used, j.skipped),
+                Ok(j) if j.used > 0 => (Payload::Text(j.text.clone()), j.used, j.skipped + j.unreadable),
                 Ok(_) => {
                     self.flash("Pictures cannot be joined into text. Choose text clips.", now);
                     return;
@@ -339,7 +351,7 @@ impl Controller {
         let message = match (used, skipped) {
             (1, _) => "Copied".to_owned(),
             (n, 0) => format!("Copied {n} clips"),
-            (n, s) => format!("Copied {n} clips ({s} picture(s) left out)"),
+            (n, s) => format!("Copied {n} clips ({s} left out: pictures or unreadable)"),
         };
         self.end_session(p);
         self.notify(p, &message, now);
