@@ -92,7 +92,7 @@ fn run_inner(db: PathBuf, capture: bool, max_seconds: Option<u64>) -> Result<(),
     platform.grab_activation()?;
     platform.set_size(cfg.size_percent);
 
-    let mut shell = match Shell::new(&platform, 0, cfg.paused) {
+    let mut shell = match Shell::new(&platform, 0, cfg.paused, cfg.mode) {
         Ok(s) => Some(s),
         Err(e) => {
             eprintln!("[pasteroll] no tray icon or settings window: {e}");
@@ -103,6 +103,10 @@ fn run_inner(db: PathBuf, capture: bool, max_seconds: Option<u64>) -> Result<(),
         if std::env::var_os("PASTEROLL_NO_NOTICE").is_none() && crate::install::first_run_pending(&db) {
             sh.show_notice(&platform);
             crate::install::mark_first_run_done(&db);
+        }
+        // for the isolated screen tests, which have no tray icon to click
+        if std::env::var_os("PASTEROLL_OPEN_SETTINGS").is_some() {
+            sh.open_settings(&platform);
         }
     }
     let (wake_r, wake_w) = pipe()?;
@@ -141,6 +145,9 @@ fn run_inner(db: PathBuf, capture: bool, max_seconds: Option<u64>) -> Result<(),
     );
     controller.set_paste_policy(PastePolicy::new(cfg.warn_multiline_in_terminals, &cfg.terminal_apps));
     controller.set_advanced_modifier(cfg.advanced_image_modifier);
+    controller.set_image_folder(&cfg.image_folder);
+    controller.init_ui_mode(cfg.mode);
+    pasteroll_app::Platform::ui_mode_changed(&mut platform, cfg.mode);
     controller.set_custom_filters(cfg.custom_filters.clone());
     controller.set_ocr(Arc::new(crate::dialogs::Tesseract));
 
@@ -165,7 +172,7 @@ fn run_inner(db: PathBuf, capture: bool, max_seconds: Option<u64>) -> Result<(),
     }
     let started = Instant::now();
     eprintln!(
-        "[pasteroll] running; history={}; capture={}; activation=Ctrl+Shift+middle-click",
+        "[pasteroll] running; history={}; capture={}; clipboard=X11 (XFixes); activation=Ctrl+Shift+middle-click",
         db.display(),
         capture
     );
@@ -182,7 +189,7 @@ fn run_inner(db: PathBuf, capture: bool, max_seconds: Option<u64>) -> Result<(),
                 Ok(Some(ev)) => {
                     if let Some(sh) = shell.as_mut().filter(|sh| sh.owns(&ev)) {
                         for a in sh.handle(&platform, ev) {
-                            shell_action(a, &mut controller, &platform, sh, &db);
+                            shell_action(a, &mut controller, &mut platform, sh, &db);
                         }
                         continue;
                     }
@@ -199,7 +206,7 @@ fn run_inner(db: PathBuf, capture: bool, max_seconds: Option<u64>) -> Result<(),
         }
         if let Some(sh) = shell.as_mut() {
             for a in sh.poll_sni(&platform) {
-                shell_action(a, &mut controller, &platform, sh, &db);
+                shell_action(a, &mut controller, &mut platform, sh, &db);
             }
             let _ = platform.conn.flush_if_needed();
         }
@@ -231,7 +238,7 @@ fn run_inner(db: PathBuf, capture: bool, max_seconds: Option<u64>) -> Result<(),
 }
 
 /// Carries out what the tray menu or the settings window asked for.
-fn shell_action(a: ShellAction, controller: &mut Controller, p: &LinuxPlatform, shell: &mut Shell, db: &std::path::Path) {
+fn shell_action(a: ShellAction, controller: &mut Controller, p: &mut LinuxPlatform, shell: &mut Shell, db: &std::path::Path) {
     match a {
         ShellAction::Quit => STOP.store(true, Ordering::SeqCst),
         ShellAction::TogglePause => {
@@ -245,6 +252,19 @@ fn shell_action(a: ShellAction, controller: &mut Controller, p: &LinuxPlatform, 
                 .and_then(|t| ks::write_config_text::<LinuxOs>(db, &t));
             if let Err(e) = saved {
                 eprintln!("[pasteroll] could not remember the pause setting: {e}");
+            }
+        }
+        ShellAction::SetMode(mode) => {
+            if controller.ui_mode() == mode {
+                return;
+            }
+            controller.set_ui_mode(p, mode);
+            shell.set_mode(mode);
+            let saved = ks::read_config_text(db)
+                .and_then(|t| pasteroll_core::config::set_value(&t, "mode", mode.key()).map_err(|e| e.join("; ")))
+                .and_then(|t| ks::write_config_text::<LinuxOs>(db, &t));
+            if let Err(e) = saved {
+                eprintln!("[pasteroll] could not remember the mode: {e}");
             }
         }
         ShellAction::OpenFolder => {

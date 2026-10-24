@@ -143,11 +143,13 @@ pub fn render_config(cfg: &Config) -> Result<String, String> {
         "terminal_apps = {}\n",
         strings(&cfg.terminal_apps)
     ));
+    text.push_str(&format!("image_folder = {}\n", quote(&cfg.image_folder)));
     text.push_str(&format!(
         "advanced_image_modifier = \"{}\"\n\n",
         cfg.advanced_image_modifier.label().to_ascii_lowercase()
     ));
     text.push_str("[appearance]\n");
+    text.push_str(&format!("mode = \"{}\"\n", cfg.mode.key()));
     text.push_str(&format!("size = {}\n", cfg.size_percent));
     for filter in &cfg.custom_filters {
         text.push_str("\n[[filters]]\n");
@@ -184,6 +186,7 @@ mod tests {
     #[test]
     fn accepted_settings_keep_unrelated_options_and_filters() {
         let previous = Config {
+            image_folder: "/home/me/Pictures/pasteroll \"shots\"".into(),
             advanced_image_modifier: pasteroll_core::config::ClickModifier::Alt,
             mode: pasteroll_core::config::UiMode::NoBloat,
             custom_filters: vec![CustomFilter {
@@ -196,6 +199,7 @@ mod tests {
         assert_eq!(proposal.config.exclude_apps, vec!["keepassxc"]);
         assert_eq!(proposal.config.limits.max_age_days, None);
         assert_eq!(proposal.config.custom_filters, previous.custom_filters);
+        assert_eq!(proposal.config.image_folder, previous.image_folder, "the GNOME panel has no folder control: it is kept");
         assert_eq!(proposal.config.mode, previous.mode, "a Linux save keeps the chosen mode");
         let text = render_config(&proposal.config).unwrap();
         let parsed = config::parse(&text).unwrap();

@@ -325,6 +325,8 @@ pub fn event(
             y: b as f32,
         })),
         14 => Some(Event::ClickOutside(generation)),
+        // a right click on the list (the Copy menu)
+        15 => Some(Event::Mouse(MouseEvent { kind: MouseKind::RightDown, x: a as f32, y: b as f32 })),
         _ => return Err(Error::Protocol),
     })
 }

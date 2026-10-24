@@ -19,7 +19,8 @@ use crate::x::{self, Atoms, Keymap, XResult};
 use pasteroll_app::{
     ClickPoll, Event, MouseEvent, MouseKind, OverlayInfo, PasteKey, Payload, Platform, SaveChoice, Target, Wheel,
 };
-use pasteroll_render::{Frame, HEIGHT, WIDTH};
+use pasteroll_core::config::UiMode;
+use pasteroll_render::{window_dip, Frame, HEIGHT, WIDTH};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -114,6 +115,8 @@ pub struct LinuxPlatform {
     scale: f32,
     /// The carousel size setting (percent of normal).
     size_percent: u32,
+    /// Complete or No Bloat: the carousel window is sized for it.
+    mode: UiMode,
     screen_size: (u16, u16),
     depth: u8,
     overlay: Window,
@@ -255,6 +258,7 @@ impl LinuxPlatform {
             keymap,
             scale,
             size_percent: 100,
+            mode: UiMode::Complete,
             screen_size: (screen.width_in_pixels, screen.height_in_pixels),
             depth: screen.root_depth,
             overlay,
@@ -567,6 +571,11 @@ impl LinuxPlatform {
                 replay = true;
                 out.push(Action::Event(Event::ClickPaste(gen)));
             }
+            // a right click on the list opens its Copy menu
+            3 if inside => {
+                let (x, y) = self.local(rx, ry);
+                out.push(Action::Event(Event::Mouse(MouseEvent { kind: MouseKind::RightDown, x, y })));
+            }
             2 | 3 if !inside => {
                 replay = true;
                 out.push(Action::Event(Event::ClickCancel(gen)));
@@ -809,8 +818,9 @@ impl Platform for LinuxPlatform {
         let (mx, my, sw, sh) = self.monitor_at(at);
         let factor = pasteroll_core::settings::size_factor(self.size_percent);
         let scale = self.scale * factor;
-        let w = ((WIDTH * scale).round() as i32).clamp(200, sw.max(200));
-        let h = ((HEIGHT * scale).round() as i32).clamp(150, sh.max(150));
+        let (base_w, base_h) = window_dip(self.mode);
+        let w = ((base_w * scale).round() as i32).clamp(200, sw.max(200));
+        let h = ((base_h * scale).round() as i32).clamp(150, sh.max(150));
         // next to the pointer, moved back onto that monitor if it would overflow
         let mut x = at.0 + 12;
         let mut y = at.1 + 12;
@@ -949,9 +959,18 @@ impl Platform for LinuxPlatform {
         choice
     }
 
+    fn ui_mode_changed(&mut self, mode: UiMode) {
+        self.mode = mode;
+    }
+
     fn shift_held(&self) -> bool {
         let (_, _, m) = self.pointer();
         m & keys::SHIFT != 0
+    }
+
+    fn modifiers_now(&self) -> pasteroll_app::Modifiers {
+        let (_, _, m) = self.pointer();
+        pasteroll_app::Modifiers { ctrl: m & keys::CONTROL != 0, shift: m & keys::SHIFT != 0, alt: m & keys::ALT != 0 }
     }
 
     fn save_dialog(&mut self, name: &str, _ext: &str, target: &Target) -> SaveChoice {
@@ -1138,15 +1157,7 @@ impl Platform for LinuxPlatform {
     }
 
     fn desktop_folder(&self) -> Option<PathBuf> {
-        let home = std::env::var_os("HOME").map(PathBuf::from)?;
-        let dirs = std::fs::read_to_string(home.join(".config").join("user-dirs.dirs")).unwrap_or_default();
-        let from_file = dirs.lines().find_map(|l| {
-            let v = l.trim().strip_prefix("XDG_DESKTOP_DIR=")?;
-            let v = v.trim_matches('"').replace("$HOME", &home.to_string_lossy());
-            Some(PathBuf::from(v))
-        });
-        let p = from_file.unwrap_or_else(|| home.join("Desktop"));
-        p.is_dir().then_some(p)
+        sys::desktop_folder()
     }
 
     fn local_timestamp(&self) -> String {

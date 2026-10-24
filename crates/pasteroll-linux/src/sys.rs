@@ -127,6 +127,30 @@ pub fn default_db() -> Result<PathBuf, String> {
     Ok(base.join("pasteroll").join("history.db"))
 }
 
+/// The Desktop folder, if there is one: `XDG_DESKTOP_DIR` from the user-dirs file in
+/// `$XDG_CONFIG_HOME` (else `~/.config`), else `~/Desktop`. Only an existing folder counts.
+pub fn desktop_folder() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").filter(|v| !v.is_empty()).map(PathBuf::from)?;
+    let config = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()).map(PathBuf::from);
+    desktop_in(&home, config.as_deref())
+}
+
+fn desktop_in(home: &Path, config_home: Option<&Path>) -> Option<PathBuf> {
+    let config = config_home.map(Path::to_path_buf).unwrap_or_else(|| home.join(".config"));
+    let dirs = std::fs::read_to_string(config.join("user-dirs.dirs")).unwrap_or_default();
+    let from_file = dirs.lines().find_map(|line| {
+        let value = line.trim().strip_prefix("XDG_DESKTOP_DIR=")?;
+        let value = value.trim_matches('"').replace("$HOME", &home.to_string_lossy());
+        Some(PathBuf::from(value))
+    });
+    // a relative value is not a folder we can name; `XDG_DESKTOP_DIR="$HOME/"` is how the user-dirs
+    // file says "there is no Desktop", and pictures must not then land in the home folder itself
+    let path = from_file
+        .filter(|p| p.is_absolute() && p.as_path() != home)
+        .unwrap_or_else(|| home.join("Desktop"));
+    path.is_dir().then_some(path)
+}
+
 /// Core dumps would put the decrypted history on disk: turn them off for this process.
 pub fn harden_process() {
     unsafe {
@@ -232,6 +256,25 @@ pub fn stop_running(db: &Path) -> Result<(), String> {
     }
     if !instance_running(db)? { return Ok(()); }
     Err("Pasteroll did not quit. Quit it from the tray icon and try again. Older versions may not support stop.".into())
+}
+
+#[cfg(test)]
+mod desktop_tests {
+    use super::*;
+
+    #[test]
+    fn the_desktop_comes_from_the_user_dirs_file_in_the_config_folder() {
+        let dir = std::env::temp_dir().join(format!("pasteroll-desktop-{}", std::process::id()));
+        let (home, config) = (dir.join("home"), dir.join("cfg"));
+        std::fs::create_dir_all(home.join("Schreibtisch")).unwrap();
+        std::fs::create_dir_all(&config).unwrap();
+        assert_eq!(desktop_in(&home, Some(&config)), None, "no Desktop folder and no file");
+        std::fs::write(config.join("user-dirs.dirs"), "XDG_DESKTOP_DIR=\"$HOME/Schreibtisch\"\n").unwrap();
+        assert_eq!(desktop_in(&home, Some(&config)), Some(home.join("Schreibtisch")));
+        std::fs::create_dir_all(home.join("Desktop")).unwrap();
+        assert_eq!(desktop_in(&home, None), Some(home.join("Desktop")), "~/.config is not read when the config folder is elsewhere");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(test)]

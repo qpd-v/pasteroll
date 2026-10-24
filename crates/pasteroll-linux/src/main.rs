@@ -224,7 +224,7 @@ mod cli {
             }
             Some("set") => {
                 let (Some(key), Some(val)) = (positional.get(1), positional.get(2)) else {
-                    return fail("usage: config set KEY VALUE   (keys: max_clips, max_total_mb, max_age_days, max_clip_mb, max_pins, paused, warn_multiline_in_terminals, size)");
+                    return fail("usage: config set KEY VALUE   (keys: max_clips, max_total_mb, max_age_days, max_clip_mb, max_pins, paused, warn_multiline_in_terminals, size, mode, image_folder)");
                 };
                 let text = match ks::read_config_text(db) {
                     Ok(t) => t,

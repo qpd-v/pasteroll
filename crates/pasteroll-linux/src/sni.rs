@@ -5,6 +5,7 @@
 //! the session bus in their own thread; what the person clicked comes back as [`SniEvent`]s that
 //! the main loop polls. Nothing here touches the clipboard or the history.
 
+use pasteroll_core::config::UiMode;
 use pasteroll_core::logo;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,6 +29,8 @@ pub enum SniEvent {
     /// Right click on a host without a menu of its own: show ours at these coordinates.
     ContextMenu(i32, i32),
     Pause,
+    /// One of the two looks was chosen in the menu.
+    Mode(UiMode),
     Settings,
     Folder,
     Quit,
@@ -55,10 +58,16 @@ fn pixmaps(paused: bool) -> Vec<Pixmap> {
 
 struct Shared {
     paused: AtomicBool,
+    /// The look in use: true for No Bloat.
+    no_bloat: AtomicBool,
     tx: Mutex<Sender<SniEvent>>,
 }
 
 impl Shared {
+    fn state(&self) -> (bool, bool) {
+        (self.paused.load(Ordering::SeqCst), self.no_bloat.load(Ordering::SeqCst))
+    }
+
     fn send(&self, e: SniEvent) {
         if let Ok(tx) = self.tx.lock() {
             let _ = tx.send(e);
@@ -143,6 +152,9 @@ const ID_SETTINGS: i32 = 2;
 const ID_FOLDER: i32 = 3;
 const ID_SEP: i32 = 4;
 const ID_QUIT: i32 = 5;
+const ID_COMPLETE: i32 = 6;
+const ID_NO_BLOAT: i32 = 7;
+const ID_SEP2: i32 = 8;
 
 struct Menu {
     shared: Arc<Shared>,
@@ -176,8 +188,19 @@ fn label(text: &str) -> Vec<(&'static str, Value<'static>)> {
     vec![("label", Value::from(text.to_string())), ("enabled", Value::from(true)), ("visible", Value::from(true))]
 }
 
-fn item_props(id: i32, paused: bool) -> Vec<(&'static str, Value<'static>)> {
+/// A radio item: the look in use has the dot.
+fn radio(text: &str, on: bool) -> Vec<(&'static str, Value<'static>)> {
+    let mut v = label(text);
+    v.push(("toggle-type", Value::from("radio".to_string())));
+    v.push(("toggle-state", Value::from(i32::from(on))));
+    v
+}
+
+fn item_props(id: i32, paused: bool, no_bloat: bool) -> Vec<(&'static str, Value<'static>)> {
     match id {
+        ID_COMPLETE => radio(UiMode::Complete.label(), !no_bloat),
+        ID_NO_BLOAT => radio(UiMode::NoBloat.label(), no_bloat),
+        ID_SEP2 => vec![("type", Value::from("separator".to_string())), ("visible", Value::from(true))],
         ID_PAUSE => label(if paused { "Resume recording" } else { "Pause recording" }),
         ID_SETTINGS => label("Settings..."),
         ID_FOLDER => label("Open data folder"),
@@ -207,25 +230,25 @@ impl Menu {
     }
 
     fn get_layout(&self, _parent: i32, _depth: i32, _names: Vec<String>) -> (u32, Value<'static>) {
-        let paused = self.shared.paused.load(Ordering::SeqCst);
-        let kids = [ID_PAUSE, ID_SETTINGS, ID_FOLDER, ID_SEP, ID_QUIT]
+        let (paused, no_bloat) = self.shared.state();
+        let kids = [ID_PAUSE, ID_SETTINGS, ID_FOLDER, ID_SEP, ID_COMPLETE, ID_NO_BLOAT, ID_SEP2, ID_QUIT]
             .iter()
-            .map(|&id| node(id, &item_props(id, paused), Vec::new()))
+            .map(|&id| node(id, &item_props(id, paused, no_bloat), Vec::new()))
             .collect();
         let rev = self.revision.lock().map(|r| *r).unwrap_or(1);
-        (rev, node(ID_ROOT, &item_props(ID_ROOT, paused), kids))
+        (rev, node(ID_ROOT, &item_props(ID_ROOT, paused, no_bloat), kids))
     }
 
     fn get_group_properties(&self, ids: Vec<i32>, _names: Vec<String>) -> Vec<(i32, HashMap<String, Value<'static>>)> {
-        let paused = self.shared.paused.load(Ordering::SeqCst);
+        let (paused, no_bloat) = self.shared.state();
         ids.into_iter()
-            .map(|id| (id, item_props(id, paused).into_iter().map(|(k, v)| (k.to_string(), v)).collect()))
+            .map(|id| (id, item_props(id, paused, no_bloat).into_iter().map(|(k, v)| (k.to_string(), v)).collect()))
             .collect()
     }
 
     fn get_property(&self, id: i32, name: String) -> Value<'static> {
-        let paused = self.shared.paused.load(Ordering::SeqCst);
-        item_props(id, paused)
+        let (paused, no_bloat) = self.shared.state();
+        item_props(id, paused, no_bloat)
             .into_iter()
             .find(|(k, _)| *k == name)
             .map(|(_, v)| v)
@@ -238,6 +261,8 @@ impl Menu {
         }
         match id {
             ID_PAUSE => self.shared.send(SniEvent::Pause),
+            ID_COMPLETE => self.shared.send(SniEvent::Mode(UiMode::Complete)),
+            ID_NO_BLOAT => self.shared.send(SniEvent::Mode(UiMode::NoBloat)),
             ID_SETTINGS => self.shared.send(SniEvent::Settings),
             ID_FOLDER => self.shared.send(SniEvent::Folder),
             ID_QUIT => self.shared.send(SniEvent::Quit),
@@ -263,6 +288,7 @@ impl Menu {
 
 enum Ctl {
     Paused(bool),
+    Mode(UiMode),
 }
 
 /// A running StatusNotifierItem. Dropping it closes the connection and removes the icon.
@@ -274,11 +300,15 @@ pub struct Sni {
 impl Sni {
     /// Registers the icon with the desktop's watcher. `None` when there is no session bus or no
     /// watcher (the caller then uses the XEmbed tray).
-    pub fn start(paused: bool) -> Option<Sni> {
+    pub fn start(paused: bool, mode: UiMode) -> Option<Sni> {
         let (tx, events) = mpsc::channel();
         let (ctl, ctl_rx) = mpsc::channel();
         let (ready_tx, ready_rx) = mpsc::channel();
-        let shared = Arc::new(Shared { paused: AtomicBool::new(paused), tx: Mutex::new(tx) });
+        let shared = Arc::new(Shared {
+            paused: AtomicBool::new(paused),
+            no_bloat: AtomicBool::new(mode == UiMode::NoBloat),
+            tx: Mutex::new(tx),
+        });
         let sh = shared.clone();
         std::thread::Builder::new()
             .name("sni".into())
@@ -302,6 +332,10 @@ impl Sni {
 
     pub fn set_paused(&self, paused: bool) {
         let _ = self.ctl.send(Ctl::Paused(paused));
+    }
+
+    pub fn set_mode(&self, mode: UiMode) {
+        let _ = self.ctl.send(Ctl::Mode(mode));
     }
 }
 
@@ -368,6 +402,16 @@ fn watch(conn: &Connection, shared: &Arc<Shared>, ctl: &Receiver<Ctl>) {
                     &(2u32, 0i32),
                 );
             }
+            Ok(Ctl::Mode(mode)) => {
+                shared.no_bloat.store(mode == UiMode::NoBloat, Ordering::SeqCst);
+                let _ = conn.emit_signal(
+                    None::<&str>,
+                    MENU_PATH,
+                    "com.canonical.dbusmenu",
+                    "LayoutUpdated",
+                    &(3u32, 0i32),
+                );
+            }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 let now = watcher_present(conn);
                 if now && !present {
@@ -410,24 +454,44 @@ mod tests {
     }
 
     #[test]
-    fn the_menu_has_five_entries_under_the_root() {
+    fn the_menu_has_eight_entries_under_the_root() {
         let (tx, _rx) = mpsc::channel();
-        let m = Menu { shared: Arc::new(Shared { paused: AtomicBool::new(true), tx: Mutex::new(tx) }), revision: Mutex::new(1) };
+        let m = Menu { shared: shared(true, tx), revision: Mutex::new(1) };
         let (rev, root) = m.get_layout(0, -1, Vec::new());
         assert_eq!(rev, 1);
         let Value::Structure(s) = root else { panic!("root is a structure") };
         let f = s.fields();
         assert_eq!(f.len(), 3);
         let Value::Array(kids) = &f[2] else { panic!("children are an array") };
-        assert_eq!(kids.len(), 5);
+        assert_eq!(kids.len(), 8);
         let g = m.get_group_properties(vec![ID_PAUSE], Vec::new());
         assert_eq!(g[0].1.get("label"), Some(&Value::from("Resume recording".to_string())));
+    }
+
+    fn shared(paused: bool, tx: Sender<SniEvent>) -> Arc<Shared> {
+        Arc::new(Shared { paused: AtomicBool::new(paused), no_bloat: AtomicBool::new(false), tx: Mutex::new(tx) })
+    }
+
+    #[test]
+    fn the_look_in_use_has_the_dot() {
+        let (tx, _rx) = mpsc::channel();
+        let m = Menu { shared: shared(false, tx), revision: Mutex::new(1) };
+        let state = |id: i32| m.get_group_properties(vec![id], Vec::new())[0].1.get("toggle-state").cloned();
+        assert_eq!(state(ID_COMPLETE), Some(Value::from(1i32)));
+        assert_eq!(state(ID_NO_BLOAT), Some(Value::from(0i32)));
+        m.shared.no_bloat.store(true, Ordering::SeqCst);
+        assert_eq!(state(ID_COMPLETE), Some(Value::from(0i32)));
+        assert_eq!(state(ID_NO_BLOAT), Some(Value::from(1i32)));
     }
 
     #[test]
     fn menu_clicks_become_events() {
         let (tx, rx) = mpsc::channel();
-        let m = Menu { shared: Arc::new(Shared { paused: AtomicBool::new(false), tx: Mutex::new(tx) }), revision: Mutex::new(1) };
+        let m = Menu { shared: shared(false, tx), revision: Mutex::new(1) };
+        m.event(ID_COMPLETE, "clicked".into(), Value::from(0i32), 0);
+        m.event(ID_NO_BLOAT, "clicked".into(), Value::from(0i32), 0);
+        assert_eq!(rx.try_recv().unwrap(), SniEvent::Mode(UiMode::Complete));
+        assert_eq!(rx.try_recv().unwrap(), SniEvent::Mode(UiMode::NoBloat));
         m.event(ID_QUIT, "clicked".into(), Value::from(0i32), 0);
         m.event(ID_PAUSE, "hovered".into(), Value::from(0i32), 0);
         m.event(ID_SETTINGS, "clicked".into(), Value::from(0i32), 0);

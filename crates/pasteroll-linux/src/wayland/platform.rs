@@ -6,7 +6,8 @@ use pasteroll_app::{
     ClickPoll, Modifiers, OverlayInfo, PasteKey, Payload, Platform, SaveChoice, Target,
 };
 use pasteroll_core::keystore as ks;
-use pasteroll_render::{Frame, HEIGHT, WIDTH};
+use pasteroll_core::config::UiMode;
+use pasteroll_render::{window_dip, Frame, HEIGHT, WIDTH};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -31,6 +32,8 @@ pub struct GnomePlatform {
     client: Client,
     db: PathBuf,
     size_percent: u32,
+    /// Complete or No Bloat: the carousel window is sized for it.
+    mode: UiMode,
     stage_scale: f32,
     keyboard_opt_in: bool,
     mouse_ticket: Option<u64>,
@@ -72,15 +75,16 @@ fn device_rect((x, y, w, h): (i32, i32, u32, u32), scale: f32) -> (i32, i32, u32
 
 // UI scale determines text/card density; stage scale only converts Shell positions.
 // Keeping these distinct supports both Mutter physical and logical layout modes.
-fn overlay_geometry(context: &Context, size_percent: u32) -> OverlayInfo {
+fn overlay_geometry(context: &Context, size_percent: u32, mode: UiMode) -> OverlayInfo {
     let scale = context.scale as f32;
     let stage_scale = context.stage_scale as f32;
     let monitor = device_rect(context.monitor, stage_scale);
     let factor = pasteroll_core::settings::size_factor(size_percent);
     let max_w = monitor.2.max(200).min(4096);
     let max_h = monitor.3.max(150).min(4096);
-    let mut width = ((WIDTH * factor * scale).round() as u32).clamp(200.min(max_w), max_w);
-    let mut height = ((HEIGHT * factor * scale).round() as u32).clamp(150.min(max_h), max_h);
+    let (base_w, base_h) = window_dip(mode);
+    let mut width = ((base_w * factor * scale).round() as u32).clamp(200.min(max_w), max_w);
+    let mut height = ((base_h * factor * scale).round() as u32).clamp(150.min(max_h), max_h);
     let pixels = u64::from(width) * u64::from(height);
     let max_pixels = (MAX_FRAME_BYTES / 4) as u64;
     if pixels > max_pixels {
@@ -157,6 +161,7 @@ impl GnomePlatform {
             client,
             db,
             size_percent,
+            mode: UiMode::Complete,
             stage_scale: 1.0,
             keyboard_opt_in,
             mouse_ticket: None,
@@ -334,7 +339,7 @@ impl Platform for GnomePlatform {
             }
         };
         self.remember_context(context.clone());
-        let geometry = overlay_geometry(&context, self.size_percent);
+        let geometry = overlay_geometry(&context, self.size_percent, self.mode);
         let stage_scale = context.stage_scale as f32;
         let (width, height) = geometry.size_px;
         let shown = if self.keyboard_opt_in {
@@ -487,6 +492,21 @@ impl Platform for GnomePlatform {
                     .ok_or(Error::Disconnected)
             })
             .unwrap_or(false)
+    }
+
+    fn ui_mode_changed(&mut self, mode: UiMode) {
+        self.mode = mode;
+    }
+
+    fn modifiers_now(&self) -> Modifiers {
+        let mods = self
+            .client
+            .context()
+            .map(|c| c.modifiers)
+            .ok()
+            .or_else(|| self.last_context.as_ref().map(|c| c.modifiers))
+            .unwrap_or(0);
+        Modifiers { ctrl: mods & CONTROL != 0, shift: mods & SHIFT != 0, alt: mods & ALT != 0 }
     }
 
     fn save_dialog(&mut self, name: &str, _ext: &str, _target: &Target) -> SaveChoice {
@@ -729,20 +749,7 @@ impl Platform for GnomePlatform {
     }
 
     fn desktop_folder(&self) -> Option<PathBuf> {
-        let home = std::env::var_os("HOME")
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)?;
-        let dirs = std::fs::read_to_string(home.join(".config").join("user-dirs.dirs"))
-            .unwrap_or_default();
-        let from_file = dirs.lines().find_map(|line| {
-            let value = line.trim().strip_prefix("XDG_DESKTOP_DIR=")?;
-            let value = value
-                .trim_matches('"')
-                .replace("$HOME", &home.to_string_lossy());
-            Some(PathBuf::from(value))
-        });
-        let path = from_file.unwrap_or_else(|| home.join("Desktop"));
-        path.is_dir().then_some(path)
+        crate::sys::desktop_folder()
     }
 
     fn local_timestamp(&self) -> String {
@@ -856,8 +863,8 @@ mod tests {
         let external = monitor_context(1.0, 1.0, (0, 0, 1920, 1080));
         let builtin = monitor_context(2.0, 1.0, (1920, 0, 3840, 2160));
         for percent in [50, 100, 150, 200] {
-            let low = overlay_geometry(&external, percent);
-            let high = overlay_geometry(&builtin, percent);
+            let low = overlay_geometry(&external, percent, UiMode::Complete);
+            let high = overlay_geometry(&builtin, percent, UiMode::Complete);
             assert_eq!(high.size_px, (low.size_px.0 * 2, low.size_px.1 * 2));
             assert_eq!(high.monitor_px, (1920, 0, 3840, 2160));
             // The home viewer is 75%: 2880x1620, not an invalid 5760x3240.
@@ -873,8 +880,8 @@ mod tests {
         let physical = monitor_context(2.0, 1.0, (-3840, 0, 3840, 2160));
         let logical_layout = monitor_context(2.0, 2.0, (-1920, 0, 1920, 1080));
         assert_eq!(
-            overlay_geometry(&physical, 100),
-            overlay_geometry(&logical_layout, 100)
+            overlay_geometry(&physical, 100, UiMode::Complete),
+            overlay_geometry(&logical_layout, 100, UiMode::Complete)
         );
         for context in [physical, logical_layout] {
             let stage_scale = context.stage_scale as f32;

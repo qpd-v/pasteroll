@@ -16,7 +16,7 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parent.parent
-EXE = ROOT / "target/x86_64-unknown-linux-musl/release/pasteroll"
+EXE = Path(os.environ.get("PASTEROLL_EXE", ROOT / "target/x86_64-unknown-linux-musl/release/pasteroll"))
 OUT = ROOT / "target-dev/linux-x11-smoke"
 
 
@@ -95,7 +95,11 @@ def main():
 
         rfd, wfd = os.pipe()
         try:
-            xvfb = subprocess.Popen(["Xvfb", "-displayfd", str(wfd), "-screen", "0", "1280x800x24", "-nolisten", "tcp"],
+            # WSL's /tmp/.X11-unix has no sticky bit, so Xvfb refuses its file socket there: use the
+            # abstract socket instead (clients find it through the same DISPLAY).
+            sticky = not os.path.isdir("/tmp/.X11-unix") or os.stat("/tmp/.X11-unix").st_mode & 0o1000
+            xvfb = subprocess.Popen(["Xvfb", "-displayfd", str(wfd), "-screen", "0", "1280x800x24", "-nolisten", "tcp"]
+                                    + ([] if sticky else ["-nolisten", "unix"]),
                                     pass_fds=(wfd,), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             processes.append(xvfb)
             os.close(wfd)

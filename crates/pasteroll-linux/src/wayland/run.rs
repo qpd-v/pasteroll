@@ -203,6 +203,7 @@ fn apply_settings(
         &proposal.config.terminal_apps,
     ));
     controller.set_custom_filters(proposal.config.custom_filters.clone());
+    controller.set_image_folder(&proposal.config.image_folder);
     platform.set_size_percent(proposal.config.size_percent);
     *current = proposal.config;
     eprintln!("[pasteroll] settings saved; {removed} clip(s) removed; restarting");
@@ -332,6 +333,9 @@ fn run_inner(
         &cfg.terminal_apps,
     ));
     controller.set_advanced_modifier(cfg.advanced_image_modifier);
+    controller.set_image_folder(&cfg.image_folder);
+    controller.init_ui_mode(cfg.mode);
+    pasteroll_app::Platform::ui_mode_changed(&mut platform, cfg.mode);
     controller.set_custom_filters(cfg.custom_filters.clone());
     controller.set_ocr(Arc::new(crate::dialogs::Tesseract));
 

@@ -10,6 +10,16 @@
   range, then click where to paste (or Enter) to paste them one per line in the order chosen. Ctrl+C or
   right-click and Copy puts them on the clipboard without pasting. Pictures are left out; Esc clears.
 
+## Linux, not released yet (Linux is still on beta.4)
+
+- The picture folder setting and choosing several clips (Ctrl+click, Ctrl+Shift+click, Ctrl+C, right-click
+  Copy) are in the Linux code and pass an isolated X11 test (a private Xvfb screen under WSL). Not tried
+  yet on a real desktop, on GNOME Wayland or on COSMIC.
+- Complete and No Bloat on Linux: a choice in the tray menu, `pasteroll config set mode no-bloat`, and the
+  matching window size (checked on X11; the GNOME Wayland size is untested).
+- The Desktop folder is found from `$XDG_CONFIG_HOME/user-dirs.dirs`, not only `~/.config`.
+- `docs/FLATPAK_NOTES.md` lists what a sandbox would need and what is still missing.
+
 ## 0.1.0-beta.10 (Windows only)
 
 - Which version is the newest is now **signed** (Windows). The update check no longer trusts GitHub's

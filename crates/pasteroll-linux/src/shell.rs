@@ -24,6 +24,8 @@ use x11rb::CURRENT_TIME;
 #[derive(Debug)]
 pub enum ShellAction {
     TogglePause,
+    /// The look chosen in the tray menu (Complete or No Bloat).
+    SetMode(config::UiMode),
     Quit,
     OpenFolder,
     /// The settings window wants to save. `confirmed` is false until any deletion was agreed to.
@@ -169,6 +171,8 @@ const ID_PAUSE: u32 = 1;
 const ID_SETTINGS: u32 = 2;
 const ID_FOLDER: u32 = 3;
 const ID_QUIT: u32 = 4;
+const ID_COMPLETE: u32 = 5;
+const ID_NO_BLOAT: u32 = 6;
 
 const S_SLIDER: [u32; 4] = [101, 102, 103, 104];
 const S_PAUSE: u32 = 120;
@@ -188,7 +192,12 @@ const S_CONFIRM: u32 = 160;
 const S_BACK: u32 = 161;
 
 const SET_W: f32 = 520.0;
-const SET_H: f32 = 728.0;
+const SET_H: f32 = 792.0;
+/// Extra height of the picture-folder row, which sits above the list of programs to ignore.
+const IMG_H: f32 = 64.0;
+const S_IMG_ENTRY: u32 = 134;
+const S_IMG_BROWSE: u32 = 135;
+const S_IMG_RESET: u32 = 136;
 const S_SIZE: u32 = 105;
 
 struct SettingsWin {
@@ -213,6 +222,9 @@ struct SettingsWin {
     fl_top: usize,
     entry: String,
     entry_focus: bool,
+    /// The folder pictures are saved in (empty: the Desktop), and whether its box has the keyboard.
+    image_folder: String,
+    image_focus: bool,
     hover: Option<u32>,
     drag: Option<u32>,
     status: String,
@@ -235,6 +247,7 @@ pub struct Shell {
     menu: Option<Menu>,
     settings: Option<SettingsWin>,
     paused: bool,
+    mode: config::UiMode,
     /// The StatusNotifierItem icon, when the desktop has a watcher for one (else the XEmbed tray).
     sni: Option<Sni>,
 }
@@ -244,15 +257,15 @@ fn rect(x: f32, y: f32, w: f32, h: f32) -> Rect {
 }
 
 impl Shell {
-    pub fn new(p: &LinuxPlatform, screen: usize, paused: bool) -> Result<Shell, Box<dyn std::error::Error>> {
+    pub fn new(p: &LinuxPlatform, screen: usize, paused: bool, mode: config::UiMode) -> Result<Shell, Box<dyn std::error::Error>> {
         let atoms = ShellAtoms::new(&p.conn, screen)?;
         // MANAGER messages (a tray appearing later) arrive on the root window
         p.conn.change_window_attributes(
             p.root,
             &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE | EventMask::STRUCTURE_NOTIFY),
         )?;
-        let sni = if std::env::var_os("PASTEROLL_NO_SNI").is_some() { None } else { Sni::start(paused) };
-        let mut s = Shell { notice: None, atoms, renderer: None, tray: None, menu: None, settings: None, paused, sni };
+        let sni = if std::env::var_os("PASTEROLL_NO_SNI").is_some() { None } else { Sni::start(paused, mode) };
+        let mut s = Shell { notice: None, atoms, renderer: None, tray: None, menu: None, settings: None, paused, mode, sni };
         if s.sni.is_none() {
             s.dock(p);
         }
@@ -271,6 +284,14 @@ impl Shell {
         self.paint_tray(p);
     }
 
+    /// The look in use changed: the menus show it.
+    pub fn set_mode(&mut self, mode: config::UiMode) {
+        self.mode = mode;
+        if let Some(s) = &self.sni {
+            s.set_mode(mode);
+        }
+    }
+
     // ------------------------------------------------------------------ tray icon
 
     /// What the StatusNotifier icon was asked to do since the last call.
@@ -287,6 +308,7 @@ impl Shell {
                 SniEvent::Activate | SniEvent::Settings => self.open_settings(p),
                 SniEvent::ContextMenu(x, y) => self.open_menu(p, (x, y)),
                 SniEvent::Pause => out.push(ShellAction::TogglePause),
+                SniEvent::Mode(m) => out.push(ShellAction::SetMode(m)),
                 SniEvent::Folder => out.push(ShellAction::OpenFolder),
                 SniEvent::Quit => out.push(ShellAction::Quit),
                 // the watcher is gone: use the old tray, if there is one
@@ -462,20 +484,23 @@ impl Shell {
         let item_h = 28.0f32;
         let w = 208.0f32;
         let pause_text = if self.paused { "Resume recording" } else { "Pause recording" };
-        let rows: [(u32, &str, bool); 4] = [
+        // (id, text, has the dot): the two looks are radio items
+        let rows: [(u32, &str, bool); 6] = [
             (ID_PAUSE, pause_text, false),
             (ID_SETTINGS, "Settings...", false),
             (ID_FOLDER, "Open data folder", false),
+            (ID_COMPLETE, config::UiMode::Complete.label(), self.mode == config::UiMode::Complete),
+            (ID_NO_BLOAT, config::UiMode::NoBloat.label(), self.mode == config::UiMode::NoBloat),
             (ID_QUIT, "Quit Pasteroll", false),
         ];
         let mut widgets = Vec::new();
         let mut y = 4.0f32;
-        for (i, (id, text, _)) in rows.iter().enumerate() {
-            if i == 3 {
+        for (i, (id, text, checked)) in rows.iter().enumerate() {
+            if i == 3 || i == 5 {
                 widgets.push(Widget::new(0, rect(0.0, y, w, 8.0), "", WKind::Separator));
                 y += 8.0;
             }
-            widgets.push(Widget::new(*id, rect(0.0, y, w, item_h), *text, WKind::MenuItem { checked: false, enabled: true }));
+            widgets.push(Widget::new(*id, rect(0.0, y, w, item_h), *text, WKind::MenuItem { checked: *checked, enabled: true }));
             y += item_h;
         }
         let h = y + 4.0;
@@ -615,6 +640,7 @@ impl Shell {
         let pos = steps.positions(&cfg.limits);
         let size_choices = settings::size_choices(cfg.size_percent);
         let size_pos = size_choices.iter().position(|v| *v == cfg.size_percent).unwrap_or(size_choices.len() / 2);
+        let cfg_image_folder = cfg.image_folder.clone();
         let state = SettingsWin {
             win,
             gc,
@@ -637,6 +663,8 @@ impl Shell {
             fl_top: 0,
             entry: String::new(),
             entry_focus: false,
+            image_folder: cfg_image_folder,
+            image_focus: false,
             hover: None,
             drag: None,
             status: String::new(),
@@ -728,40 +756,49 @@ impl Shell {
                 WKind::Check { checked: s.modifier == *m },
             ));
         }
-        w.push(Widget::new(0, rect(16.0, 440.0, 488.0, 22.0), "Never record copies made in these programs", WKind::Label));
+        w.push(Widget::new(0, rect(16.0, 440.0, 488.0, 22.0), "Save pictures (Paste Path and the image editor) in this folder", WKind::Label));
+        w.push(Widget::new(
+            S_IMG_ENTRY,
+            rect(16.0, 466.0, 300.0, 28.0),
+            s.image_folder.clone(),
+            WKind::Entry { placeholder: "The Desktop".into(), focused: s.image_focus },
+        ));
+        w.push(Widget::new(S_IMG_BROWSE, rect(330.0, 466.0, 84.0, 28.0), "Browse...", WKind::Button { primary: false }));
+        w.push(Widget::new(S_IMG_RESET, rect(420.0, 466.0, 84.0, 28.0), "Desktop", WKind::Button { primary: false }));
+        w.push(Widget::new(0, rect(16.0, 440.0 + IMG_H, 488.0, 22.0), "Never record copies made in these programs", WKind::Label));
         w.push(Widget::new(
             S_EX_LIST,
-            rect(16.0, 466.0, 300.0, 76.0),
+            rect(16.0, 466.0 + IMG_H, 300.0, 76.0),
             "No programs listed",
             WKind::List { items: s.exclude.clone(), selected: s.ex_sel, top: s.ex_top },
         ));
         w.push(Widget::new(
             S_EX_ENTRY,
-            rect(330.0, 466.0, 174.0, 28.0),
+            rect(330.0, 466.0 + IMG_H, 174.0, 28.0),
             s.entry.clone(),
             WKind::Entry { placeholder: "program name".into(), focused: s.entry_focus },
         ));
-        w.push(Widget::new(S_EX_ADD, rect(330.0, 500.0, 84.0, 28.0), "Add", WKind::Button { primary: false }));
-        w.push(Widget::new(S_EX_REMOVE, rect(420.0, 500.0, 84.0, 28.0), "Remove", WKind::Button { primary: false }));
-        w.push(Widget::new(0, rect(330.0, 534.0, 174.0, 30.0), "For example keepassxc", WKind::Note));
+        w.push(Widget::new(S_EX_ADD, rect(330.0, 500.0 + IMG_H, 84.0, 28.0), "Add", WKind::Button { primary: false }));
+        w.push(Widget::new(S_EX_REMOVE, rect(420.0, 500.0 + IMG_H, 84.0, 28.0), "Remove", WKind::Button { primary: false }));
+        w.push(Widget::new(0, rect(330.0, 534.0 + IMG_H, 174.0, 30.0), "For example keepassxc", WKind::Note));
         w.push(Widget::new(
             0,
-            rect(16.0, 572.0, 488.0, 22.0),
+            rect(16.0, 572.0 + IMG_H, 488.0, 22.0),
             "Custom filters (add them from the filter menu in the overlay)",
             WKind::Label,
         ));
         w.push(Widget::new(
             S_FL_LIST,
-            rect(16.0, 598.0, 300.0, 76.0),
+            rect(16.0, 598.0 + IMG_H, 300.0, 76.0),
             "No custom filters",
             WKind::List { items: s.filters.clone(), selected: s.fl_sel, top: s.fl_top },
         ));
-        w.push(Widget::new(S_FL_REMOVE, rect(330.0, 598.0, 84.0, 28.0), "Remove", WKind::Button { primary: false }));
+        w.push(Widget::new(S_FL_REMOVE, rect(330.0, 598.0 + IMG_H, 84.0, 28.0), "Remove", WKind::Button { primary: false }));
         if !s.status.is_empty() {
-            w.push(Widget::new(0, rect(16.0, 672.0, 300.0, 44.0), s.status.clone(), WKind::Note));
+            w.push(Widget::new(0, rect(16.0, 672.0 + IMG_H, 300.0, 44.0), s.status.clone(), WKind::Note));
         }
-        w.push(Widget::new(S_SAVE, rect(330.0, 680.0, 84.0, 32.0), "Save", WKind::Button { primary: true }));
-        w.push(Widget::new(S_CANCEL, rect(420.0, 680.0, 84.0, 32.0), "Cancel", WKind::Button { primary: false }));
+        w.push(Widget::new(S_SAVE, rect(330.0, 680.0 + IMG_H, 84.0, 32.0), "Save", WKind::Button { primary: true }));
+        w.push(Widget::new(S_CANCEL, rect(420.0, 680.0 + IMG_H, 84.0, 32.0), "Cancel", WKind::Button { primary: false }));
         Some(UiView { size: (SET_W, SET_H), chrome: Chrome::Window, widgets: w, hover: s.hover })
     }
 
@@ -787,6 +824,7 @@ impl Shell {
             warn_multiline: s.warn,
             size_percent: s.size_choices[s.size_pos.min(s.size_choices.len() - 1)],
             advanced_modifier: s.modifier,
+            image_folder: s.image_folder.clone(),
             // the mode has no control in this window yet: Save keeps whatever the file says
             mode: s.orig.mode,
             exclude_apps: s.exclude.clone(),
@@ -983,6 +1021,8 @@ impl Shell {
             Some(ID_PAUSE) => out.push(ShellAction::TogglePause),
             Some(ID_SETTINGS) => self.open_settings(p),
             Some(ID_FOLDER) => out.push(ShellAction::OpenFolder),
+            Some(ID_COMPLETE) => out.push(ShellAction::SetMode(config::UiMode::Complete)),
+            Some(ID_NO_BLOAT) => out.push(ShellAction::SetMode(config::UiMode::NoBloat)),
             Some(ID_QUIT) => out.push(ShellAction::Quit),
             _ => {}
         }
@@ -1062,6 +1102,7 @@ impl Shell {
                 return;
             }
             s.entry_focus = false;
+            s.image_focus = false;
             match target {
                 Some(w) => match &w.kind {
                     WKind::Slider { .. } => {
@@ -1093,7 +1134,13 @@ impl Shell {
                             s.fl_sel = row;
                         }
                     }
-                    WKind::Entry { .. } => s.entry_focus = true,
+                    WKind::Entry { .. } => {
+                        if w.id == S_IMG_ENTRY {
+                            s.image_focus = true;
+                        } else {
+                            s.entry_focus = true;
+                        }
+                    }
                     WKind::Button { .. } => action = Some(w.id),
                     _ => {}
                 },
@@ -1107,6 +1154,12 @@ impl Shell {
                 return;
             }
             Some(S_EX_ADD) => self.add_exclusion(),
+            Some(S_IMG_BROWSE) => self.browse_image_folder(p),
+            Some(S_IMG_RESET) => {
+                if let Some(s) = self.settings.as_mut() {
+                    s.image_folder.clear();
+                }
+            }
             Some(S_EX_REMOVE) => {
                 if let Some(s) = self.settings.as_mut() {
                     if let Some(i) = s.ex_sel.take().filter(|i| *i < s.exclude.len()) {
@@ -1138,6 +1191,29 @@ impl Shell {
         self.paint_settings(p);
     }
 
+    /// "Browse...": the desktop's folder chooser, opening at the folder now set.
+    fn browse_image_folder(&mut self, p: &LinuxPlatform) {
+        let start = self
+            .settings
+            .as_ref()
+            .map(|s| s.image_folder.trim().to_owned())
+            .filter(|f| std::path::Path::new(f).is_absolute());
+        // the chooser is another program: it needs the keyboard, and our window would sit over it
+        let choice = crate::dialogs::pick_folder(start.as_deref().map(std::path::Path::new));
+        let _ = p.conn.flush();
+        match choice {
+            pasteroll_app::SaveChoice::Path(dir) => {
+                if let Some(s) = self.settings.as_mut() {
+                    s.image_folder = dir.to_string_lossy().into_owned();
+                }
+            }
+            pasteroll_app::SaveChoice::Unavailable => self.set_status(
+                "No folder chooser was found (install zenity or kdialog), so type the folder instead.".to_owned(),
+            ),
+            _ => {}
+        }
+    }
+
     fn add_exclusion(&mut self) {
         let Some(s) = self.settings.as_mut() else { return };
         let name = s.entry.trim().to_ascii_lowercase();
@@ -1166,8 +1242,8 @@ impl Shell {
             }
             return;
         }
-        let (confirming, focus) = match self.settings.as_ref() {
-            Some(s) => (s.confirm.is_some(), s.entry_focus),
+        let (confirming, focus, image_focus) = match self.settings.as_ref() {
+            Some(s) => (s.confirm.is_some(), s.entry_focus, s.image_focus),
             None => return,
         };
         match k {
@@ -1185,10 +1261,38 @@ impl Shell {
                 self.add_exclusion();
                 self.paint_settings(p);
             }
+            Key::Enter if image_focus && !confirming => {
+                if let Some(s) = self.settings.as_mut() {
+                    s.image_focus = false;
+                }
+                self.paint_settings(p);
+            }
             Key::Enter if !focus && !confirming => self.request_save(p, out),
+            // Tab moves the keyboard: nothing, the folder box, the program box, and round again
             Key::Tab if !confirming => {
                 if let Some(s) = self.settings.as_mut() {
-                    s.entry_focus = !s.entry_focus;
+                    match (s.image_focus, s.entry_focus) {
+                        (false, false) => s.image_focus = true,
+                        (true, _) => {
+                            s.image_focus = false;
+                            s.entry_focus = true;
+                        }
+                        (false, true) => s.entry_focus = false,
+                    }
+                }
+                self.paint_settings(p);
+            }
+            Key::Char(c) if image_focus => {
+                if let Some(s) = self.settings.as_mut() {
+                    if s.image_folder.chars().count() < 1024 {
+                        s.image_folder.push(c);
+                    }
+                }
+                self.paint_settings(p);
+            }
+            Key::Backspace if image_focus => {
+                if let Some(s) = self.settings.as_mut() {
+                    s.image_folder.pop();
                 }
                 self.paint_settings(p);
             }
