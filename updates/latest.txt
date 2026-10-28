@@ -1,5 +1,4 @@
 pasteroll-update-latest 1
-version 0.1.0-beta.14
-note Multi-paste works from the keyboard: Ctrl+M, Shift or Ctrl with the arrows, Space, and Ctrl+A to choose all.
-note Hold Ctrl while you click where to paste, or press Ctrl+E, for options: join with a comma, space or tab, number or bullet them.
-note Settings has a Clear history button, and About and the update question match the new look.
+version 0.1.0-beta.15
+note Choosing several clips now collapses the tall card into a row, so the whole list is easy to choose from.
+note Picture clips show a small picture at the right end of their row.
