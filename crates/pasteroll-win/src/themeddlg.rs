@@ -256,7 +256,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
 /// Debug aid: opens the window on `what` (`about` or `question`), saves a picture to `out` and closes it.
 pub fn snapshot(what: &str, out: &std::path::Path) -> Result<(), String> {
     let (title, heading, body, buttons, focus): (&str, String, String, &[&str], usize) = match what {
-        "about" => ("About Pasteroll", "Pasteroll 0.1.0-beta.14".into(), crate::about::body(), &["OK"], 0),
+        "about" => ("About Pasteroll", crate::about::heading(), crate::about::body(), &["OK"], 0),
         "question" => (
             "Pasteroll updates",
             "Let Pasteroll check for updates?".into(),

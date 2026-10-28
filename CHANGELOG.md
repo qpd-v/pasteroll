@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-beta.15 (Windows only)
 
 - **Choosing several clips collapses the list to rows.** While Multi-paste is on, or any clip is chosen
   (by Ctrl+click, Shift+click or the keyboard), the tall card of the clip shown shrinks, with a short
