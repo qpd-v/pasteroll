@@ -59,14 +59,14 @@ fetches the note again when you open it. The setting is
 ### Download and install (Windows, only when you ask)
 
 When a newer version has been found, the tray menu offers **Download and install**. Nothing is
-downloaded until you click it and confirm. Then Pasteroll fetches the update from GitHub: a small
+downloaded until you click **Download and install** in the update window. Then Pasteroll fetches the update from GitHub: a small
 signed description of the release and the installer (or, for a portable copy, the program file) from
 `github.com`, which hands the download over to GitHub's own file hosts
 (`release-assets.githubusercontent.com`, `objects.githubusercontent.com`). GitHub sees your IP address
 and the program name and version, as for any download. Before anything is run, Pasteroll checks that the
 release description is signed with the Pasteroll release key (its public half is built into the
 program) and that the downloaded file matches it exactly; a file that fails is deleted, not run.
-`pasteroll update --yes` does the same from the command line, without the confirmation window. The installer is kept in a private `pasteroll-update` folder inside the data folder until the next update (and Setup may write `update-setup.log` there, and its own temporary files in your temp folder). Your
+`pasteroll update --yes` does the same from the command line, without the update window. The installer is kept in a private `pasteroll-update` folder inside the data folder until the next update (and Setup may write `update-setup.log` there, and its own temporary files in your temp folder). Your
 clipboard history, settings and keys are never sent, and the installer does not touch them.
 
 ## How it is stored

@@ -284,6 +284,18 @@ def main():
             check("the restarted program is left a marker to say it updated",
                   (update_folder / "pending.txt").read_text() == NEW_VERSION)
 
+            # ---- 2b. the same through the real update window: it offers, downloads, verifies, replaces
+            window_copy = scratch / "portable-window"
+            window_copy.mkdir()
+            shutil.copyfile(e2e_exe, window_copy / "pasteroll.exe")
+            (window_copy / "portable.txt").write_bytes(b"")
+            result = run(window_copy / "pasteroll.exe", "update-window-e2e", env=update_env(release, public), timeout=150)
+            pages = [l for l in result.stdout.splitlines() if l.startswith("page: ")]
+            check("the update window offers the version with its plain lines", any(p.startswith("page: available notes=2") for p in pages), result.stdout)
+            check("the update window shows the download and the steps after it", any("Downloading" in p for p in pages) and any("Verifying" in p for p in pages), result.stdout)
+            check("the update window ends on restarting and the program file was replaced",
+                  pages and pages[-1] == "page: restarting" and (window_copy / "pasteroll.exe").read_bytes() == stub_bytes, result.stdout)
+
             # ---- 3. refusals
             def refused(label, sig, setup_payload=None, manifest_bytes=None, expect=None):
                 folder = scratch / ("refuse-" + str(len(checks)))
@@ -309,6 +321,23 @@ def main():
             refused("an update signed by the wrong key is refused", bad_sig, expect="not signed")
             refused("a program file that is not what was signed is refused", good_sig,
                     setup_payload=b"M" * len(stub_bytes), expect="checksum")
+            # ... and the window says so instead of leaving it to a notification
+            refused_copy = scratch / "refuse-window"
+            refused_copy.mkdir()
+            shutil.copyfile(e2e_exe, refused_copy / "pasteroll.exe")
+            (refused_copy / "portable.txt").write_bytes(b"")
+            rel_bad = Release(scratch / "serve-refuse-window")
+            try:
+                rel_bad.publish("update-manifest.txt", manifest.read_bytes())
+                rel_bad.publish("update-manifest.txt.sig", good_sig.read_bytes())
+                rel_bad.publish(setup_name, setup_bytes)
+                rel_bad.publish(exe_name, b"M" * len(stub_bytes))
+                result = run(refused_copy / "pasteroll.exe", "update-window-e2e", env=update_env(rel_bad, public), timeout=150, ok=(1,))
+            finally:
+                rel_bad.stop()
+            failed = [l for l in result.stdout.splitlines() if l.startswith("page: failed")]
+            check("the update window reports a file that is not what was signed, and changes nothing",
+                  failed and "checksum" in failed[-1] and (refused_copy / "pasteroll.exe").read_bytes() == e2e_exe.read_bytes(), result.stdout)
             tampered = manifest.read_bytes().replace(b"setup ", b"setup ", 1).replace(b"1", b"2", 1)
             refused("a manifest changed after signing is refused", good_sig, manifest_bytes=tampered, expect="not signed")
 

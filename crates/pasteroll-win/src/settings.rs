@@ -625,7 +625,7 @@ fn refresh_last_check() {
 fn check_now() {
     let db = ST.with(|c| c.try_borrow().ok().and_then(|g| g.as_ref().map(|s| s.db.clone())));
     if let (Some(db), Some(window)) = (db, app::tray_window()) {
-        crate::update::check_now(window, Some(db));
+        crate::updatewin::open_check(window, Some(db));
     }
     refresh_last_check();
 }
@@ -974,7 +974,6 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
 /// Debug aid: opens the window against `db`'s config, saves a picture of it to `out` (PNG) and
 /// closes it. Nothing is written to the config.
 pub fn snapshot(db: &std::path::Path, out: &std::path::Path) -> Result<(), String> {
-    use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
     let cfg = keystore::load_config(db).map_err(|p| p.join("; "))?;
     create(db.to_path_buf(), cfg).map_err(|e| e.to_string())?;
     // let it paint
@@ -990,44 +989,7 @@ pub fn snapshot(db: &std::path::Path, out: &std::path::Path) -> Result<(), Strin
         }
     }
     let hwnd = ST.with(|c| c.borrow().as_ref().map(|s| s.hwnd)).ok_or("window did not open")?;
-    let result = unsafe {
-        let mut r = RECT::default();
-        let _ = GetWindowRect(hwnd, &mut r);
-        let (w, h) = (r.right - r.left, r.bottom - r.top);
-        let dc = GetDC(None);
-        let mem = CreateCompatibleDC(Some(dc));
-        let bmp = CreateCompatibleBitmap(dc, w, h);
-        let old = SelectObject(mem, bmp.into());
-        let ok = PrintWindow(hwnd, mem, PRINT_WINDOW_FLAGS(2)).as_bool();
-        let mut bi = BITMAPINFO {
-            bmiHeader: BITMAPINFOHEADER {
-                biSize: size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: w,
-                biHeight: -h,
-                biPlanes: 1,
-                biBitCount: 32,
-                biCompression: BI_RGB.0,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let mut buf = vec![0u8; (w * h * 4) as usize];
-        GetDIBits(mem, bmp, 0, h as u32, Some(buf.as_mut_ptr() as *mut _), &mut bi, DIB_RGB_COLORS);
-        SelectObject(mem, old);
-        let _ = DeleteObject(bmp.into());
-        let _ = DeleteDC(mem);
-        ReleaseDC(None, dc);
-        if !ok {
-            Err("PrintWindow failed".to_owned())
-        } else {
-            let mut rgba = Vec::with_capacity(buf.len());
-            for p in buf.chunks_exact(4) {
-                rgba.extend_from_slice(&[p[2], p[1], p[0], 255]);
-            }
-            let img = pasteroll_core::image::Rgba { width: w as u32, height: h as u32, pixels: rgba };
-            pasteroll_core::image::encode_png(&img).ok_or_else(|| "could not encode the picture".to_owned())
-        }
-    };
+    let result = settingsui::capture_window(hwnd);
     close();
     std::fs::write(out, result?).map_err(|e| e.to_string())
 }

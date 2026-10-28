@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.0-beta.13 (Windows only)
+
+- Checking for updates, downloading and installing now happen in one **update window**: it shows what
+  is new, a real progress bar with the size while it downloads, the later steps, and any problem with
+  a **Try again** button. A download can be cancelled. It follows Windows' light or dark mode and is
+  styled like the new Settings window.
+- Far fewer notifications: none while checking or updating (the window shows it, and "Check for updates
+  now" shows its answer there too). The notification icon announces a new version once, and a click on
+  it opens the update window. After the restart there is one short "updated" line.
+
 ## 0.1.0-beta.12 (Windows only)
 
 - A multi-paste is now kept in history as one clip, with a small badge showing how many clips went

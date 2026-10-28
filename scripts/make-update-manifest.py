@@ -33,7 +33,7 @@ MAX_NOTE_CHARS = 160
 
 # Present only in the end-to-end test build (cargo feature e2e-test-server); never in a release.
 TEST_BUILD_MARKERS = (b"PASTEROLL_UPDATE_BASE", b"PASTEROLL_UPDATE_TEST_KEY", b"PASTEROLL_UPDATE_ANNOUNCE",
-                      b"update-dialog-preview", b"PASTEROLL_E2E_RESTART_NOTE")
+                      b"update-window-e2e", b"PASTEROLL_E2E_RESTART_NOTE")
 
 
 def sha256(data):

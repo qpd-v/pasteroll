@@ -115,9 +115,9 @@ pub fn colorref(c: Rgb) -> COLORREF {
 /// Everything the painting needs: the theme, its brushes, and where the cards and fields are.
 pub struct Look {
     pub theme: Theme,
-    bg: HBRUSH,
-    card: HBRUSH,
-    field: HBRUSH,
+    pub(crate) bg: HBRUSH,
+    pub(crate) card: HBRUSH,
+    pub(crate) field: HBRUSH,
     /// Cards, in DIP: x, y, width, height.
     pub cards: Vec<[i32; 4]>,
     /// Frames of edit boxes and lists, in DIP.
@@ -314,10 +314,14 @@ const CDIS_DISABLED_BIT: u32 = 0x4;
 const CDIS_FOCUS_BIT: u32 = 0x10;
 const CDIS_HOT_BIT: u32 = 0x40;
 
-/// Id of the buttons that sit on the page, not on a card (Save and Cancel).
+/// Ids of the controls that sit on the page, not on a card: Save and Cancel, the status line of the
+/// settings window, and the update window's own (1000 to 1099).
 fn on_page(id: i32) -> bool {
-    id == 1 || id == 2
+    matches!(id, 1 | 2 | 150) || (1000..1100).contains(&id)
 }
+
+/// The update window's main button (Download and install, Try again): the accent colour.
+const ID_PRIMARY: i32 = 1001;
 
 /// Handles `WM_NOTIFY`: paints check boxes, radio buttons, push buttons and sliders. `None` leaves
 /// the message to Windows.
@@ -362,7 +366,7 @@ fn draw_button(nm: &NMCUSTOMDRAW, look: &mut Look, dpi: u32) -> bool {
     match kind {
         // push buttons, and the default one (Save), which is filled with the accent colour
         0 | 1 => {
-            let default = kind == 1;
+            let default = kind == 1 || id == ID_PRIMARY;
             let (fill, border, color) = if default {
                 (if hot || pressed { t.accent_hot } else { t.accent }, None, t.on_accent)
             } else {
@@ -442,7 +446,7 @@ pub fn control_colors(hdc: HDC, id: i32, kind: ControlKind) -> Option<LRESULT> {
             SetBkMode(hdc, OPAQUE);
             match kind {
                 ControlKind::Label => {
-                    let (bg, brush) = if on_page(id) || id == 150 { (t.bg, look.bg) } else { (t.card, look.card) };
+                    let (bg, brush) = if on_page(id) { (t.bg, look.bg) } else { (t.card, look.card) };
                     SetBkColor(hdc, colorref(bg));
                     SetTextColor(hdc, colorref(if is_muted(id) { t.muted } else { t.text }));
                     LRESULT(brush.0 as isize)
@@ -465,7 +469,49 @@ pub enum ControlKind {
 
 /// Labels drawn in the quieter colour: notes and values.
 fn is_muted(id: i32) -> bool {
-    matches!(id, 111..=115 | 134 | 150 | 160..=169)
+    matches!(id, 111..=115 | 134 | 150 | 160..=169 | 1011..=1019)
+}
+
+/// A picture (PNG bytes) of the window as it is drawn now: a debugging aid for looking at the windows.
+pub fn capture_window(hwnd: HWND) -> Result<Vec<u8>, String> {
+    use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
+    unsafe {
+        let mut r = RECT::default();
+        let _ = GetWindowRect(hwnd, &mut r);
+        let (w, h) = (r.right - r.left, r.bottom - r.top);
+        let dc = GetDC(None);
+        let mem = CreateCompatibleDC(Some(dc));
+        let bmp = CreateCompatibleBitmap(dc, w, h);
+        let old = SelectObject(mem, bmp.into());
+        let ok = PrintWindow(hwnd, mem, PRINT_WINDOW_FLAGS(2)).as_bool();
+        let mut bi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: w,
+                biHeight: -h,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut buf = vec![0u8; (w * h * 4) as usize];
+        GetDIBits(mem, bmp, 0, h as u32, Some(buf.as_mut_ptr() as *mut _), &mut bi, DIB_RGB_COLORS);
+        SelectObject(mem, old);
+        let _ = DeleteObject(bmp.into());
+        let _ = DeleteDC(mem);
+        ReleaseDC(None, dc);
+        if !ok {
+            return Err("PrintWindow failed".to_owned());
+        }
+        let mut rgba = Vec::with_capacity(buf.len());
+        for p in buf.chunks_exact(4) {
+            rgba.extend_from_slice(&[p[2], p[1], p[0], 255]);
+        }
+        let img = pasteroll_core::image::Rgba { width: w as u32, height: h as u32, pixels: rgba };
+        pasteroll_core::image::encode_png(&img).ok_or_else(|| "could not encode the picture".to_owned())
+    }
 }
 
 #[cfg(test)]

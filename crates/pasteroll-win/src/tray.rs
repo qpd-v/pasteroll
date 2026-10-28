@@ -1,7 +1,7 @@
 //! The notification-area icon and its menu: pause or resume recording, the Complete / No Bloat
 //! mode, settings, the data folder and quit. The icon is drawn in code, so there is no resource file to ship.
 
-use crate::{about, app, installui, settings, update};
+use crate::{about, app, installui, settings, update, updatewin};
 use pasteroll_core::config::UiMode;
 use pasteroll_core::update::Version;
 use std::cell::UnsafeCell;
@@ -220,31 +220,20 @@ fn open_release_page() {
 
 /// Starts the confirmation for installing the newer version that a check found.
 fn offer_install(hwnd: HWND) {
-    if let (Some(v), Some(db)) = (update::newer(), app::db_path()) {
-        installui::offer(hwnd.0 as isize, db, v);
+    if let Some(v) = update::newer() {
+        updatewin::open_offer(hwnd.0 as isize, app::db_path(), v);
     }
 }
 
-/// Shows progress or failure of an update the person chose to install.
+/// What the program itself must do about an update. Progress and failures are in the update window,
+/// not in notifications: only start-up findings and "updated to ..." are told here.
 unsafe fn show_install_events(hwnd: HWND) {
     for event in installui::take_events() {
         match event {
-            installui::Event::Say(text) => {
-                BALLOON_OPENS_RELEASE.store(false, Ordering::Relaxed);
-                balloon(hwnd, "Updating Pasteroll", &text);
-            }
-            installui::Event::SetupStarted => {
-                balloon(hwnd, "Updating Pasteroll", "Installing the update. Pasteroll will close and start again by itself.");
-            }
-            installui::Event::Replaced(exe) => {
-                balloon(hwnd, "Updating Pasteroll", "Update installed. Pasteroll is restarting.");
-                app::restart_to(Some(&exe));
-            }
+            // Setup closes this program and starts the new one by itself
+            installui::Event::SetupStarted => {}
+            installui::Event::Replaced(exe) => app::restart_to(Some(&exe)),
             installui::Event::Failed(text) => {
-                BALLOON_OPENS_RELEASE.store(false, Ordering::Relaxed);
-                balloon(hwnd, "Pasteroll update", &text);
-            }
-            installui::Event::Notice(text) => {
                 BALLOON_OPENS_RELEASE.store(false, Ordering::Relaxed);
                 balloon(hwnd, "Pasteroll update", &text);
             }
@@ -256,7 +245,8 @@ unsafe fn show_install_events(hwnd: HWND) {
     }
 }
 
-/// Shows what a finished update check found. Automatic checks speak only when there is news.
+/// Announces what a finished automatic check found, once per new version. (A check the person asks
+/// for is shown in the update window.)
 unsafe fn show_update_results(hwnd: HWND) {
     let current = Version::current();
     for d in update::take_deliveries() {
@@ -274,14 +264,6 @@ unsafe fn show_update_results(hwnd: HWND) {
                 );
                 BALLOON_OPENS_RELEASE.store(true, Ordering::Relaxed);
                 update::set_newer(found);
-            }
-            update::Outcome::UpToDate(_) if d.manual => {
-                BALLOON_OPENS_RELEASE.store(false, Ordering::Relaxed);
-                balloon(hwnd, "Pasteroll is up to date", &format!("Pasteroll {current} is the newest version."));
-            }
-            update::Outcome::Failed(e) if d.manual => {
-                BALLOON_OPENS_RELEASE.store(false, Ordering::Relaxed);
-                balloon(hwnd, "Could not check for updates", &e);
             }
             _ => {}
         }
@@ -345,7 +327,7 @@ unsafe fn show_menu(hwnd: HWND) {
             ID_SETTINGS => settings::open(),
             ID_FOLDER => app::open_data_folder(),
             ID_ABOUT => about::show(Some(hwnd)),
-            ID_CHECK_UPDATE => update::check_now(hwnd.0 as isize, app::db_path()),
+            ID_CHECK_UPDATE => updatewin::open_check(hwnd.0 as isize, app::db_path()),
             ID_OPEN_UPDATE => open_release_page(),
             ID_INSTALL_UPDATE => offer_install(hwnd),
             ID_QUIT => app::quit(),

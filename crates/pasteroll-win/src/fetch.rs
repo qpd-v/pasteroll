@@ -6,7 +6,30 @@
 use crate::update::{send, status_message, Endpoint};
 use pasteroll_core::update_manifest::Hasher;
 use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+
+/// Set by the update window's Cancel button: the download of the update stops at its next chunk.
+static CANCEL: AtomicBool = AtomicBool::new(false);
+/// Never set: the small downloads (the note and the manifest) cannot be cancelled.
+static NEVER: AtomicBool = AtomicBool::new(false);
+/// What a cancelled download reports.
+pub const CANCELLED: &str = "the download was cancelled";
+
+/// Asks the running download of the update to stop.
+pub fn request_cancel() {
+    CANCEL.store(true, Ordering::Release);
+}
+
+/// Forgets an earlier cancel (before a new update starts).
+pub fn reset_cancel() {
+    CANCEL.store(false, Ordering::Release);
+}
+
+/// Whether Cancel was pressed since the last [`reset_cancel`].
+pub fn cancel_requested() -> bool {
+    CANCEL.load(Ordering::Acquire)
+}
 
 /// GitHub's own hosts: the release page, and the two names its file storage has used.
 pub const GITHUB_HOSTS: [&str; 3] = ["github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"];
@@ -90,7 +113,7 @@ pub fn download(
     dest: Dest,
     progress: &mut dyn FnMut(u64, Option<u64>),
 ) -> Result<Got, String> {
-    download_within(DOWNLOAD_TIME, url, hosts, max, dest, progress)
+    download_within(DOWNLOAD_TIME, url, hosts, max, dest, progress, &CANCEL)
 }
 
 /// [`download`] with its own limit on the whole transfer.
@@ -101,6 +124,7 @@ fn download_within(
     max: u64,
     dest: Dest,
     progress: &mut dyn FnMut(u64, Option<u64>),
+    cancel: &AtomicBool,
 ) -> Result<Got, String> {
     let started = Instant::now();
     let mut dest = dest;
@@ -122,6 +146,9 @@ fn download_within(
                 let mut size = 0u64;
                 let mut buf = vec![0u8; 64 * 1024];
                 loop {
+                    if cancel.load(Ordering::Acquire) {
+                        return Err(CANCELLED.to_owned());
+                    }
                     if started.elapsed() > time {
                         return Err("the download took too long".to_owned());
                     }
@@ -169,7 +196,7 @@ fn download_within(
 /// A small file (the manifest or its signature) into memory.
 pub fn download_small(url: &str, hosts: &[&str], max: usize) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
-    download_within(SMALL_TIME, url, hosts, max as u64, Dest::Memory(&mut out, max), &mut |_, _| {})?;
+    download_within(SMALL_TIME, url, hosts, max as u64, Dest::Memory(&mut out, max), &mut |_, _| {}, &NEVER)?;
     Ok(out)
 }
 
@@ -390,10 +417,37 @@ mod tests {
         let started = Instant::now();
         let mut mem = Vec::new();
         let url = local(port, "/slow");
-        let err = download_within(Duration::from_millis(700), &url, &LOCAL, 1 << 20, Dest::Memory(&mut mem, 1 << 20), &mut |_, _| {}).unwrap_err();
+        let err = download_within(Duration::from_millis(700), &url, &LOCAL, 1 << 20, Dest::Memory(&mut mem, 1 << 20), &mut |_, _| {}, &AtomicBool::new(false)).unwrap_err();
         assert!(err.contains("too long"), "{err}");
         assert!(started.elapsed() < Duration::from_secs(10), "it gave up at the limit, not when the server finished");
         assert!(mem.len() < 100, "only the few bytes that arrived");
+        let _ = server.join();
+    }
+
+    #[test]
+    fn a_cancelled_download_stops_at_the_next_chunk_and_says_so() {
+        let body = vec![7u8; 600_000];
+        let (port, server) = serve(vec![("200 OK", String::new(), body, None)]);
+        let cancel = AtomicBool::new(false);
+        let mut mem = Vec::new();
+        let mut chunks = 0;
+        let err = download_within(
+            DOWNLOAD_TIME,
+            &local(port, "/f"),
+            &LOCAL,
+            1 << 20,
+            Dest::Memory(&mut mem, 1 << 20),
+            &mut |_, _| {
+                chunks += 1;
+                if chunks == 2 {
+                    cancel.store(true, Ordering::Release);
+                }
+            },
+            &cancel,
+        )
+        .unwrap_err();
+        assert_eq!(err, CANCELLED);
+        assert!(mem.len() < 600_000, "it did not keep going to the end");
         let _ = server.join();
     }
 

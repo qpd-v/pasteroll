@@ -148,7 +148,7 @@ maintainer did not sign. The limits of that are listed below; please read them.
 - **Network observers.** A network attacker, or a certificate authority your computer trusts, can see
   that you are updating, read the request, stall it, or serve older genuine releases (see above). They
   cannot forge a release.
-- **`pasteroll update --yes`** installs without the confirmation window, since the flag is the
+- **`pasteroll update --yes`** installs without the update window, since the flag is the
   confirmation.
 - **No Authenticode signature.** The installer has no code-signing certificate, and a file that
   Pasteroll downloads itself carries no "downloaded from the internet" mark, so Windows SmartScreen

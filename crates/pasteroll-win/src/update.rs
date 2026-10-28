@@ -54,8 +54,6 @@ pub enum Outcome {
 /// A finished check waiting for the tray window to show it.
 pub struct Delivery {
     pub outcome: Outcome,
-    /// The person asked for this check (so even "up to date" and failures are shown).
-    pub manual: bool,
 }
 
 static DELIVERIES: Mutex<Vec<Delivery>> = Mutex::new(Vec::new());
@@ -73,6 +71,11 @@ pub fn take_deliveries() -> Vec<Delivery> {
 
 pub fn newer() -> Option<Version> {
     NEWER.lock().ok().and_then(|g| g.as_ref().map(|f| f.version.clone()))
+}
+
+/// The newer version with the plain lines its signed note carried, when a check in this run found it.
+pub fn newer_found() -> Option<Found> {
+    NEWER.lock().ok().and_then(|g| g.clone())
 }
 
 /// The plain lines of the signed note for `found`, fetched and verified now (only a note that names
@@ -97,9 +100,9 @@ pub fn clear_newer() {
     }
 }
 
-fn deliver(window: isize, outcome: Outcome, manual: bool) {
+fn deliver(window: isize, outcome: Outcome) {
     if let Ok(mut d) = DELIVERIES.lock() {
-        d.push(Delivery { outcome, manual });
+        d.push(Delivery { outcome });
     }
     unsafe {
         let _ = PostMessageW(Some(HWND(window as *mut _)), WM_UPDATE_RESULT, WPARAM(0), LPARAM(0));
@@ -458,7 +461,7 @@ pub fn start_daily(window: isize, db: PathBuf) {
                                 };
                             if let Outcome::Newer(found) = &outcome {
                                 if state.should_announce(&found.version, &Version::current()) {
-                                    deliver(window, outcome, false);
+                                    deliver(window, outcome);
                                 }
                             }
                         }
@@ -577,20 +580,18 @@ fn ask_in_background(window: isize, db: PathBuf) {
     }
 }
 
-/// A check the person asked for: the result is always shown. A second click while one is running
-/// does nothing.
-pub fn check_now(window: isize, db: Option<PathBuf>) {
-    let spawned = std::thread::Builder::new().name("pasteroll-update-now".into()).spawn(move || {
-        let state = db.as_ref().and_then(|d| state_path(d)).map(|p| UpdateState::load(&p)).unwrap_or_default();
-        let Some(outcome) = check_guarded(&state) else { return };
-        if let Some(db) = &db {
-            remember(db, &outcome);
-        }
-        deliver(window, outcome, true);
-    });
-    if spawned.is_err() {
-        deliver(window, Outcome::Failed("could not start the check".to_owned()), true);
+/// A check the person asked for, run on the calling (worker) thread and remembered like any other. A
+/// newer version is also kept for the tray menu. `None` when another check is already running.
+pub fn check_now_blocking(db: Option<&Path>) -> Option<Outcome> {
+    let state = db.and_then(state_path).map(|p| UpdateState::load(&p)).unwrap_or_default();
+    let outcome = check_guarded(&state)?;
+    if let Some(db) = db {
+        remember(db, &outcome);
     }
+    if let Outcome::Newer(found) = &outcome {
+        set_newer(found.clone());
+    }
+    Some(outcome)
 }
 
 /// `pasteroll update-check`: one check from the command line, printed. Exit code 0 when it could

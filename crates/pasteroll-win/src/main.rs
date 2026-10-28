@@ -50,6 +50,7 @@ mod sigcheck;
 mod testsupport;
 mod tray;
 mod update;
+mod updatewin;
 mod winsys;
 
 use pasteroll_core::config;
@@ -590,8 +591,6 @@ fn main() {
         "probe" => probe::run(),
         "update-check" => update::command(),
         "update" => update::install_command(&db, flag(&args, "--yes")),
-        #[cfg(feature = "e2e-test-server")]
-        "update-dialog-preview" => installui::preview_confirmation(),
         // the administrator half of an update for a copy in Program Files (see elevated.rs)
         "apply-update" => elevated::apply_update(args.get(1).map(String::as_str), args.get(2..).unwrap_or(&[])),
         "update-verify" => match (args.get(1), args.get(2), args.get(3), args.get(4)) {
@@ -612,6 +611,23 @@ fn main() {
                     Err(e) => fail(e),
                 },
                 None => fail("usage: settings-snapshot --out FILE.png [--db FILE]"),
+            }
+        }
+        #[cfg(feature = "e2e-test-server")]
+        "update-window-e2e" => updatewin::e2e(&db),
+        // debug aid: a picture of the update window on one of its pages (no network)
+        "update-window-snapshot" => {
+            unsafe {
+                let _ = windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
+                    windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+                );
+            }
+            match (value(&args, "--page"), value(&args, "--out")) {
+                (Some(page), Some(out)) => match updatewin::snapshot(&page, Path::new(&out)) {
+                    Ok(()) => 0,
+                    Err(e) => fail(e),
+                },
+                _ => fail("usage: update-window-snapshot --page PAGE --out FILE.png"),
             }
         }
         "clipboard-selftest" => selftest::run(),
