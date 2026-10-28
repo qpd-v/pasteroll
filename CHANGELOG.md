@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.0-beta.12 (Windows only)
+
+- A multi-paste is now kept in history as one clip, with a small badge showing how many clips went
+  into it (Ctrl+C or right-click Copy of several clips is kept too). It is not kept while recording is
+  paused. Older versions still read these clips as ordinary text.
+- The **Multi-paste** button in the Complete carousel is now an icon (a checklist) with a tooltip.
+- The Settings window is redesigned: it follows Windows' light or dark app mode (and changes when that
+  does), is much more compact (about 570 DIP tall instead of 870, so it fits on a small or
+  high-scaling screen) and is laid out in two columns of cards.
+
 ## 0.1.0-beta.11 (Windows only)
 
 - Settings has a **Save pictures in this folder** choice (with Browse and a Desktop button). Paste Path and

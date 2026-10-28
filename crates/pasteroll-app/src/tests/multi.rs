@@ -217,7 +217,7 @@ fn ctrl_c_copies_the_chosen_clips_and_pastes_nothing() {
     assert!(!h.c.is_open(), "the carousel closes");
     // the person is told, where the carousel was
     assert!(matches!(h.vm().body, pasteroll_render::Body::Message(ref m) if m == "Copied 2 clips"));
-    assert_eq!(h.c.store().borrow().count().unwrap(), 4, "and the copy is not recorded as a new clip");
+    assert_eq!(h.c.store().borrow().count().unwrap(), 5, "the copy is kept once, as one multi-paste entry");
 }
 
 #[test]
@@ -517,4 +517,81 @@ fn multi_paste_starts_off_each_time_and_no_bloat_has_no_button() {
     let vm = nb.vm();
     let size = nb.p.window();
     assert_eq!(pasteroll_render::geometry(&vm, (size.0 as f32, size.1 as f32), 1.0).multi_button.w, 0.0);
+}
+
+// ---------------------------------------------------------------- a multi-paste is kept in history
+
+impl H {
+    /// Opens the carousel again and returns the badge numbers of its rows (0 = no badge).
+    fn badges(&mut self) -> Vec<u32> {
+        self.open();
+        self.vm().rows.iter().map(|r| r.multi).collect()
+    }
+}
+
+#[test]
+fn a_multi_paste_becomes_a_history_entry_with_a_badge() {
+    let mut h = four();
+    let g = h.open();
+    h.click_row(1, CTRL); // c
+    h.click_row(3, CTRL); // a
+    h.click_to_paste(g);
+    assert_eq!(h.pasted_texts(), vec!["c\na"]);
+    h.open();
+    let vm = h.vm();
+    assert_eq!(vm.rows[vm.active].multi, 2, "the newest entry is the multi-paste");
+    assert_eq!(vm.rows[vm.active].title, "c\na");
+    assert!(vm.rows[vm.active].meta.starts_with("Multi-paste, 2 clips"), "{}", vm.rows[vm.active].meta);
+    assert!(vm.rows.iter().enumerate().all(|(i, r)| i == vm.active || r.multi == 0), "ordinary clips have no badge");
+    assert_eq!(newest_text(&mut h), "c\na");
+}
+
+#[test]
+fn copying_several_clips_is_kept_too() {
+    let mut h = four();
+    let g = h.open();
+    h.click_row(0, CTRL);
+    h.click_row(2, CTRL);
+    h.send(Event::Key(Key::CtrlC, g));
+    assert_eq!(h.badges().iter().filter(|b| **b == 2).count(), 1);
+}
+
+#[test]
+fn one_clip_is_not_a_multi_paste() {
+    let mut h = four();
+    let g = h.open();
+    h.click_row(2, CTRL);
+    h.click_to_paste(g);
+    assert!(h.badges().iter().all(|b| *b == 0));
+}
+
+#[test]
+fn a_multi_paste_is_not_kept_while_recording_is_paused() {
+    let mut h = four();
+    h.c.set_paused(true);
+    let g = h.open();
+    h.click_row(1, CTRL);
+    h.click_row(2, CTRL);
+    h.click_to_paste(g);
+    assert_eq!(h.pasted_texts(), vec!["c\nb"], "it is still pasted");
+    assert!(h.badges().iter().all(|b| *b == 0), "but not recorded");
+}
+
+#[test]
+fn pasting_the_same_clips_again_does_not_add_a_second_entry() {
+    let mut h = four();
+    let g = h.open();
+    h.click_row(1, CTRL); // c
+    h.click_row(2, CTRL); // b
+    h.click_to_paste(g);
+    // the multi-paste is now the first row, so c and b are one row further down
+    let g = h.open();
+    h.click_row(2, CTRL);
+    h.click_row(3, CTRL);
+    h.click_to_paste(g);
+    assert_eq!(h.pasted_texts(), vec!["c
+b", "c
+b"]);
+    assert_eq!(h.badges().iter().filter(|b| **b == 2).count(), 1);
+    assert_eq!(h.c.store().borrow().count().unwrap(), 5);
 }

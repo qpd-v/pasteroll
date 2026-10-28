@@ -23,6 +23,7 @@ mod editor;
 mod icons;
 mod textmap;
 mod viewer;
+pub mod widgets;
 
 pub use editor::{
     crop_part_at, editor_hit, editor_layout, fit_rect, ButtonView, Col, CropPart, CropView, EHit, ELayout, EditorView, FieldView, Item,
@@ -64,8 +65,8 @@ const INNER: f32 = 10.0;
 const RADIUS: f32 = 8.0;
 const BAR_H: f32 = 34.0;
 const FILTER_W: f32 = 118.0;
-/// The Multi-paste button beside the filter button (Complete only).
-const MULTI_W: f32 = 100.0;
+/// The Multi-paste button beside the filter button (Complete only): an icon, as wide as the bar is high.
+const MULTI_W: f32 = BAR_H;
 const ROW_H: f32 = 28.0;
 const FOOTER_H: f32 = 20.0;
 const DROPDOWN_ITEM_H: f32 = 28.0;
@@ -109,6 +110,9 @@ pub struct RowView {
     pub meta: String,
     /// Character ranges (not bytes) of `title` to emphasise: the query matches.
     pub highlights: Vec<(usize, usize)>,
+    /// A text clip made by a multi-paste: how many clips were joined into it (0 = an ordinary clip).
+    /// Drawn as a small badge on the row.
+    pub multi: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -854,19 +858,7 @@ impl Renderer {
             } else if hot {
                 cv.stroke(m, 6.0, MUTED, 0.8, 1.0);
             }
-            let label = "Multi-paste";
-            let tw = self.measure(label, FONT_PX * s, 18.0 * s) / s;
-            self.draw_text(
-                cv,
-                label,
-                ((m.x + (m.w - tw) / 2.0) * s, (m.y + 8.0) * s),
-                FONT_PX * s,
-                18.0 * s,
-                None,
-                Wrap::None,
-                if vm.multi_mode { FOREGROUND } else { MUTED },
-                scaled(m, s),
-            );
+            icons::draw(cv, Icon::MultiPaste, m, 16.0, if vm.multi_mode { FOREGROUND } else if hot { FOREGROUND } else { MUTED });
         }
         let f = g.filter_button;
         self.draw_text(
@@ -932,7 +924,14 @@ impl Renderer {
             let title_x = r.x + 32.0;
             // the active card's Expand button sits at the right of its title line
             let buttons = if is_active && vm.card_buttons { CARD_BUTTON + 6.0 } else { 0.0 };
-            let right_pad = buttons + if row.pinned { 28.0 } else { 12.0 };
+            let edge = buttons + if row.pinned { 28.0 } else { 12.0 };
+            // a multi-paste carries a small badge with the number of clips joined into it
+            let badge_w = if row.multi > 1 {
+                self.measure(&row.multi.to_string(), SMALL_PX * s, 16.0 * s) / s + 30.0
+            } else {
+                0.0
+            };
+            let right_pad = edge + if badge_w > 0.0 { badge_w + 6.0 } else { 0.0 };
             let clip = scaled(Rect { x: title_x, y: r.y, w: (r.w - 32.0 - right_pad).max(0.0), h: ROW_H }, s);
             let col = if is_active { FOREGROUND } else { MUTED };
             let title = if is_active && !row.meta.is_empty() { row.meta.clone() } else { first_line(&row.title) };
@@ -966,6 +965,23 @@ impl Renderer {
                 col,
                 clip,
             );
+            if badge_w > 0.0 {
+                let pill = Rect { x: r.x + r.w - edge - badge_w, y: r.y + (ROW_H - 18.0) / 2.0, w: badge_w, h: 18.0 };
+                cv.fill(pill, 9.0, ACCENT, 0.24);
+                cv.stroke(pill, 9.0, ACCENT, 0.7, 1.0);
+                icons::draw(cv, Icon::MultiPaste, Rect { x: pill.x + 6.0, y: pill.y, w: 14.0, h: 18.0 }, 11.0, FOREGROUND);
+                self.draw_text(
+                    cv,
+                    &row.multi.to_string(),
+                    ((pill.x + 23.0) * s, (pill.y + 1.0) * s),
+                    SMALL_PX * s,
+                    16.0 * s,
+                    None,
+                    Wrap::None,
+                    FOREGROUND,
+                    scaled(pill, s),
+                );
+            }
             if row.pinned {
                 draw_star(cv, r.x + r.w - 18.0 - buttons, r.y + ROW_H / 2.0, 6.0, ACCENT);
             }
@@ -1002,6 +1018,10 @@ impl Renderer {
             Some(Hit::Restore) => (g.restore, "Restore from the recycle bin (Ctrl+Z)"),
             Some(Hit::Delete) if vm.in_trash => (g.delete, "Delete permanently (Del)"),
             Some(Hit::Delete) => (g.delete, "Move to recycle bin (Del). Shift+click deletes permanently"),
+            Some(Hit::MultiButton) if vm.multi_mode => {
+                (Some(g.multi_button), "Multi-paste is on. Click clips to choose, then click where to paste")
+            }
+            Some(Hit::MultiButton) => (Some(g.multi_button), "Multi-paste: click several clips, then click where to paste"),
             _ => return,
         };
         let Some(r) = rect else { return };

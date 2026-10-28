@@ -43,6 +43,7 @@ mod platform;
 mod probe;
 mod selftest;
 mod settings;
+mod settingsui;
 mod setup;
 mod sigcheck;
 #[cfg(test)]
@@ -183,6 +184,7 @@ fn seed(db: &Path, args: &[String]) -> i32 {
                 title: (*t).to_owned(),
                 meta: String::new(),
                 highlights: vec![],
+                multi: 0,
             })
             .collect(),
         active: 0,

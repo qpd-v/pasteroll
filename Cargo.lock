@@ -923,7 +923,7 @@ dependencies = [
 
 [[package]]
 name = "pasteroll-app"
-version = "0.1.0-beta.11"
+version = "0.1.0-beta.12"
 dependencies = [
  "pasteroll-core",
  "pasteroll-render",
@@ -932,7 +932,7 @@ dependencies = [
 
 [[package]]
 name = "pasteroll-core"
-version = "0.1.0-beta.11"
+version = "0.1.0-beta.12"
 dependencies = [
  "argon2",
  "chacha20poly1305",
@@ -951,7 +951,7 @@ dependencies = [
 
 [[package]]
 name = "pasteroll-linux"
-version = "0.1.0-beta.11"
+version = "0.1.0-beta.12"
 dependencies = [
  "libc",
  "pasteroll-app",
@@ -965,7 +965,7 @@ dependencies = [
 
 [[package]]
 name = "pasteroll-render"
-version = "0.1.0-beta.11"
+version = "0.1.0-beta.12"
 dependencies = [
  "cosmic-text",
  "pasteroll-core",
@@ -975,7 +975,7 @@ dependencies = [
 
 [[package]]
 name = "pasteroll-win"
-version = "0.1.0-beta.11"
+version = "0.1.0-beta.12"
 dependencies = [
  "embed-resource",
  "pasteroll-app",

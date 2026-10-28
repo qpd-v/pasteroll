@@ -44,6 +44,8 @@ pub enum Icon {
     Check,
     Crop,
     Bookmark,
+    /// Multi-paste: a checklist of clips.
+    MultiPaste,
 }
 
 /// Maps a point of the 16-unit design grid into `r` (DIP), centred, `size` units across.
@@ -298,6 +300,12 @@ pub(crate) fn draw(cv: &mut Canvas, icon: Icon, r: Rect, size: f32, rgb: Rgb) {
             poly(cv, &g, &[(3.0, 9.5), (13.0, 9.5), (13.0, 14.5), (3.0, 9.5)], rgb, 1.4);
             for x in [2.0, 6.0, 10.0, 14.0] {
                 circle(cv, &g, x, 8.0, 0.55, rgb, None);
+            }
+        }
+        Icon::MultiPaste => {
+            for y in [3.5, 8.0, 12.5] {
+                poly(cv, &g, &[(1.6, y + 0.1), (2.9, y + 1.4), (5.0, y - 1.3)], rgb, 1.5);
+                poly(cv, &g, &[(7.6, y), (14.6, y)], rgb, 1.6);
             }
         }
         Icon::Check => poly(cv, &g, &[(3.0, 8.5), (6.5, 12.0), (13.0, 4.5)], rgb, 1.8),

@@ -137,6 +137,8 @@ pub struct ClipInfo {
     pub width: u32,
     pub height: u32,
     pub files: usize,
+    /// For a text clip made by a multi-paste: how many clips were joined into it; 0 otherwise.
+    pub joined: usize,
     /// First part of the text, or the file paths, or "image WxH".
     pub search: String,
     /// When the clip was last copied (Unix seconds), 0 when unknown (clips stored by older versions).
@@ -427,6 +429,11 @@ impl Store {
         self.add(Kind::Text, text.as_bytes(), Record::for_text(text).with_origin(now, source), now)
     }
 
+    /// A multi-paste: the text of `clips` clips joined, kept as one text clip that says so.
+    pub fn add_joined_text(&mut self, text: &str, now: i64, clips: usize) -> Result<i64, StoreError> {
+        self.add(Kind::Text, text.as_bytes(), Record::for_joined_text(text, clips).with_origin(now, None), now)
+    }
+
     pub fn add_image_png(&mut self, png: &[u8], now: i64) -> Result<i64, StoreError> {
         self.add_image_png_from(png, now, None)
     }
@@ -630,7 +637,8 @@ impl Store {
                 total_chars: rec.total_chars as usize,
                 width: rec.width,
                 height: rec.height,
-                files: rec.files as usize,
+                files: if Kind::from_i64(k) == Kind::Files { rec.files as usize } else { 0 },
+                joined: if Kind::from_i64(k) == Kind::Text { rec.files as usize } else { 0 },
                 search: rec.text,
                 copied_at: rec.copied_at,
                 source: rec.source,

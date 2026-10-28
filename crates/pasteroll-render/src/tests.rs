@@ -13,6 +13,7 @@ fn text_vm(display: &str, selection: Option<(usize, usize)>) -> ViewModel {
                 title: format!("clip number {i}"),
                 meta: format!("Text, {i} characters"),
                 highlights: vec![],
+                multi: 0,
             })
             .collect(),
         active: 3,
@@ -438,6 +439,7 @@ fn slim_vm(display: &str) -> ViewModel {
             title: "clip".into(),
             meta: "Text, 4 characters".into(),
             highlights: vec![],
+            multi: 0,
         }],
         active: 0,
         body: Body::Text { display: display.to_owned(), selection: None, scroll: 0.0 },

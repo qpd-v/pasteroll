@@ -168,6 +168,8 @@ struct RowInfo {
     pinned: bool,
     title: String,
     meta: String,
+    /// Clips joined into this text clip by a multi-paste (0 = an ordinary clip).
+    multi: u32,
 }
 
 impl Drop for RowInfo {
@@ -301,6 +303,8 @@ pub struct Controller {
     last_activity_ms: u64,
     last_maintain_ms: Option<u64>,
     row_cache: HashMap<i64, RowInfo>,
+    /// Set while a multi-paste is being pasted: how many clips went into the text (see `multi.rs`).
+    joined_paste: Option<usize>,
     preview_gen: u64,
     overlay: OverlayInfo,
     dirty: bool,
@@ -424,6 +428,7 @@ impl Controller {
             last_activity_ms: 0,
             last_maintain_ms: None,
             row_cache: HashMap::new(),
+            joined_paste: None,
             preview_gen: 0,
             overlay: OverlayInfo::new(1.0, (WIDTH as u32, HEIGHT as u32)),
             dirty: false,
@@ -1811,7 +1816,11 @@ impl Controller {
             }
         }
         self.end_session(p);
+        let joined = self.joined_paste.take();
         let Some(key) = self.deliver(p, &target, payload) else { return PasteCheck::Done };
+        if let (Payload::Text(t), Some(n)) = (payload, joined) {
+            self.record_joined(p, t, n);
+        }
         if whole {
             let now = p.now_secs();
             let mut st = self.store.borrow_mut();
@@ -1994,7 +2003,7 @@ impl Controller {
 
     // ------------------------------------------------------------------ rendering
 
-    fn row_info(&mut self, id: i64) -> (RowKind, bool, String, String) {
+    fn row_info(&mut self, id: i64) -> (RowKind, bool, String, String, u32) {
         if !self.row_cache.contains_key(&id) {
             if self.row_cache.len() > ROW_CACHE_MAX {
                 self.row_cache.clear();
@@ -2006,6 +2015,7 @@ impl Controller {
                         pinned: i.pinned,
                         title: if i.width > 0 { format!("Image {} x {}", i.width, i.height) } else { "Image".into() },
                         meta: if i.width > 0 { format!("Image, {} x {}", i.width, i.height) } else { "Image".into() },
+                        multi: 0,
                     },
                     Kind::Files => {
                         let files: Vec<&str> = i.search.split('\n').filter(|s| !s.is_empty()).collect();
@@ -2016,21 +2026,26 @@ impl Controller {
                                 format!("{} +{} more", file_name(first), rest.len().max(i.files.saturating_sub(1)))
                             }
                         };
-                        RowInfo { kind: RowKind::Files, pinned: i.pinned, title, meta: format!("{} file(s)", i.files) }
+                        RowInfo { kind: RowKind::Files, pinned: i.pinned, title, meta: format!("{} file(s)", i.files), multi: 0 }
                     }
                     Kind::Text => RowInfo {
                         kind: RowKind::Text,
                         pinned: i.pinned,
                         title: i.search,
-                        meta: format!("Text, {} characters", thousands(i.total_chars)),
+                        meta: if i.joined > 1 {
+                            format!("Multi-paste, {} clips, {} characters", i.joined, thousands(i.total_chars))
+                        } else {
+                            format!("Text, {} characters", thousands(i.total_chars))
+                        },
+                        multi: i.joined.min(u32::MAX as usize) as u32,
                     },
                 },
-                _ => RowInfo { kind: RowKind::Text, pinned: false, title: "(unreadable)".into(), meta: String::new() },
+                _ => RowInfo { kind: RowKind::Text, pinned: false, title: "(unreadable)".into(), meta: String::new(), multi: 0 },
             };
             self.row_cache.insert(id, info);
         }
         let i = &self.row_cache[&id];
-        (i.kind, i.pinned, i.title.clone(), i.meta.clone())
+        (i.kind, i.pinned, i.title.clone(), i.meta.clone(), i.multi)
     }
 
     pub fn view_model(&mut self) -> ViewModel {
@@ -2103,14 +2118,14 @@ impl Controller {
             vm.menu = menu_state.map(|m| m.view(picks.len()));
         }
         for id in ids {
-            let (kind, pinned, title, meta) = self.row_info(id);
+            let (kind, pinned, title, meta, multi) = self.row_info(id);
             if vm.slim {
                 // the clip is drawn from `body`: its row keeps only the pin marker
-                vm.rows.push(RowView { kind, pinned, title: String::new(), meta: String::new(), highlights: Vec::new() });
+                vm.rows.push(RowView { kind, pinned, title: String::new(), meta: String::new(), highlights: Vec::new(), multi });
                 continue;
             }
             let highlights = search::highlight_ranges(&title, &words);
-            vm.rows.push(RowView { kind, pinned, title, meta, highlights });
+            vm.rows.push(RowView { kind, pinned, title, meta, highlights, multi });
         }
         vm
     }

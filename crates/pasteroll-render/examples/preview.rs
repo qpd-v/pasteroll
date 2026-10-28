@@ -16,7 +16,7 @@ fn save(r: &mut Renderer, vm: &ViewModel, scale: f32, path: &std::path::Path) {
 }
 
 fn row(kind: RowKind, title: &str, pinned: bool, hl: Vec<(usize, usize)>) -> RowView {
-    RowView { kind, pinned, title: title.into(), meta: "Text, 142 characters".into(), highlights: hl }
+    RowView { kind, pinned, title: title.into(), meta: "Text, 142 characters".into(), highlights: hl, multi: 0 }
 }
 
 fn main() {
@@ -46,6 +46,18 @@ fn main() {
         ..ViewModel::default()
     };
     save(&mut r, &vm, 1.0, &dir.join("1-text.png"));
+    // a multi-paste in the list (badge), with Multi-paste switched on (icon lit, tooltip off)
+    let mut multi = vm.clone();
+    multi.rows[0].multi = 3;
+    multi.rows[2].multi = 12;
+    multi.rows[2].pinned = true;
+    multi.multi_mode = true;
+    multi.picked = vec![false, true, true];
+    save(&mut r, &multi, 1.0, &dir.join("1b-multi.png"));
+    multi.multi_mode = false;
+    multi.active = 0;
+    multi.rows[0].meta = "Multi-paste, 3 clips, 211 characters".into();
+    save(&mut r, &multi, 2.0, &dir.join("1c-multi-active-2x.png"));
     vm.query.clear();
     vm.dropdown = Some(Dropdown {
         items: ["Everything", "Text", "Document", "Image", "Video", "Audio", "Compressed", "Pinned", "Custom..."]

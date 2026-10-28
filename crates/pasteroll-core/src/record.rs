@@ -7,7 +7,9 @@
 //! first [`SEARCH_CHARS`] characters of a text clip, the file names and paths of a files clip, or a
 //! short description of an image. `copied_at` (Unix seconds) and `source` (the program the copy
 //! came from, when known) are shown in the viewer's Info panel; like the rest of the record they are
-//! sealed, never stored in the clear.
+//! sealed, never stored in the clear. `files` is the number of files of a files clip; on a text clip
+//! it is how many clips a multi-paste joined into it (0 for an ordinary copy). Older versions ignore
+//! it for text, so they still read such a record.
 
 pub const SEARCH_CHARS: usize = 2_000;
 const VERSION: u8 = 2;
@@ -52,6 +54,11 @@ impl Record {
             text: cut(text, SEARCH_CHARS),
             ..Record::default()
         }
+    }
+
+    /// A text clip made by pasting `clips` clips together.
+    pub fn for_joined_text(text: &str, clips: usize) -> Record {
+        Record { files: clips.min(u32::MAX as usize) as u32, ..Record::for_text(text) }
     }
 
     pub fn for_files(paths: &[String]) -> Record {
@@ -145,6 +152,16 @@ mod tests {
             text: "héllo ✓".into(),
         };
         assert_eq!(Record::decode(&r.encode()), Some(r));
+    }
+
+    #[test]
+    fn a_joined_text_remembers_how_many_clips_went_into_it() {
+        let r = Record::for_joined_text("a
+b
+c", 3);
+        assert_eq!((r.files, r.total_chars), (3, 5));
+        assert_eq!(Record::decode(&r.encode()).map(|r| r.files), Some(3));
+        assert_eq!(Record::for_text("x").files, 0);
     }
 
     #[test]

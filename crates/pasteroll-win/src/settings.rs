@@ -18,6 +18,7 @@ use windows::Win32::UI::Controls::*;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
+use crate::settingsui;
 use pasteroll_core::settings::{self, fmt_age, fmt_mb, thousands, Choice};
 
 // ------------------------------------------------------------------ window
@@ -52,6 +53,7 @@ const ID_CANCEL: i32 = 2;
 struct State {
     hwnd: HWND,
     font: HFONT,
+    font_bold: HFONT,
     db: PathBuf,
     orig: Config,
     clips: Vec<u64>,
@@ -81,13 +83,6 @@ struct State {
     exclude: Vec<String>,
     filters: Vec<String>,
 }
-
-/// Height of the mode choice and the update check at the top of the window; everything below it is
-/// pushed down.
-const MODE_H: i32 = 120;
-
-/// Height of the "save pictures in this folder" row, added below the image editor key.
-const IMG_H: i32 = 60;
 
 /// A settings window is open (the one-time update question waits for it to close).
 static OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -217,6 +212,21 @@ fn ask(parent: HWND, title: &str, text: &str) -> bool {
     unsafe { MessageBoxW(Some(parent), PCWSTR(x.as_ptr()), PCWSTR(t.as_ptr()), MB_YESNO | MB_ICONWARNING) == IDYES }
 }
 
+/// Size of the window's client area, and the layout of its two columns of cards, in DIP at 96 dpi.
+const WIN_W: i32 = 720;
+const WIN_H: i32 = 568;
+const MARGIN: i32 = 16;
+const COL_W: i32 = 338;
+const COL2_X: i32 = MARGIN + COL_W + 12;
+/// Space inside a card, left and right.
+const PAD: i32 = 14;
+/// A label in the quiet colour (see `settingsui::is_muted`).
+const ID_NOTE: i32 = 160;
+const SS_NOPREFIX_: u32 = 0x80;
+const SS_CENTERIMAGE_: u32 = 0x200;
+const SS_RIGHT_: u32 = 0x2;
+const SS_ENDELLIPSIS_: u32 = 0x4000;
+
 fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
     unsafe {
         let icc = INITCOMMONCONTROLSEX {
@@ -229,17 +239,19 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
             lpfnWndProc: Some(proc),
             hInstance: hinst.into(),
             hCursor: LoadCursorW(None, IDC_ARROW)?,
-            hbrBackground: HBRUSH((COLOR_BTNFACE.0 + 1) as usize as *mut _),
+            // the background is painted by `settingsui` (theme colours and cards)
+            hbrBackground: HBRUSH::default(),
             hIcon: LoadIconW(Some(hinst.into()), PCWSTR(1usize as *const u16)).unwrap_or_default(),
             lpszClassName: w!("PasterollSettings"),
             ..Default::default()
         };
         RegisterClassW(&class);
+        let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
         let hwnd = CreateWindowExW(
             WINDOW_EX_STYLE(0),
             w!("PasterollSettings"),
             w!("Pasteroll settings"),
-            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+            style,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
             100,
@@ -251,30 +263,40 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
         )?;
         let dpi = GetDpiForWindow(hwnd).max(96);
         let s = |v: i32| (v as i64 * dpi as i64 / 96) as i32;
-        let font = CreateFontW(
-            -((9 * dpi as i32) / 72),
-            0,
-            0,
-            0,
-            400,
-            0,
-            0,
-            0,
-            DEFAULT_CHARSET,
-            OUT_DEFAULT_PRECIS,
-            CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY,
-            0,
-            w!("Segoe UI"),
-        );
-        // client area 520 x (688 + the mode choice + the picture folder) at 96 dpi
-        let (cw, ch) = (s(520), s(688 + MODE_H + IMG_H));
-        let mut r = RECT { left: 0, top: 0, right: cw, bottom: ch };
-        let _ = AdjustWindowRectEx(&mut r, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, false, WINDOW_EX_STYLE(0));
+        let make_font = |points_x10: i32, weight: i32| {
+            CreateFontW(
+                -((points_x10 * dpi as i32) / 720),
+                0,
+                0,
+                0,
+                weight,
+                0,
+                0,
+                0,
+                DEFAULT_CHARSET,
+                OUT_DEFAULT_PRECIS,
+                CLIP_DEFAULT_PRECIS,
+                CLEARTYPE_QUALITY,
+                0,
+                w!("Segoe UI"),
+            )
+        };
+        let font = make_font(90, 400);
+        let font_bold = make_font(95, 600);
+
+        // size the window so the client area is exactly the layout, centred in the work area
+        let mut r = RECT { left: 0, top: 0, right: s(WIN_W), bottom: s(WIN_H) };
+        let _ = AdjustWindowRectEx(&mut r, style, false, WINDOW_EX_STYLE(0));
         let (ww, wh) = (r.right - r.left, r.bottom - r.top);
-        let sx = GetSystemMetrics(SM_CXSCREEN);
-        let sy = GetSystemMetrics(SM_CYSCREEN);
-        let _ = SetWindowPos(hwnd, None, (sx - ww) / 2, ((sy - wh) / 2 - s(20)).max(0), ww, wh, SWP_NOZORDER);
+        let mut work = RECT { left: 0, top: 0, right: GetSystemMetrics(SM_CXSCREEN), bottom: GetSystemMetrics(SM_CYSCREEN) };
+        let _ = SystemParametersInfoW(SPI_GETWORKAREA, 0, Some(&mut work as *mut RECT as *mut _), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0));
+        let x = work.left + ((work.right - work.left) - ww) / 2;
+        let y = (work.top + ((work.bottom - work.top) - wh) / 2).max(work.top);
+        let _ = SetWindowPos(hwnd, None, x.max(work.left), y, ww, wh, SWP_NOZORDER);
+
+        let theme = settingsui::Theme::current();
+        let mut look = settingsui::Look::new(theme, font);
+        settingsui::apply_title_bar(hwnd, theme.dark);
 
         let lim = cfg.limits;
         let steps = settings::Steps::for_limits(&lim);
@@ -282,58 +304,111 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
             (steps.clips.clone(), steps.sizes_mb.clone(), steps.ages.clone(), steps.clip_mb.clone());
 
         TOP.set(0);
-        child(hwnd, w!("STATIC"), "Interface", 0, 0, (16, 12, 480, 20), 0, dpi, font);
+        let label = |text: &str, x: i32, y: i32, w: i32, h: i32, id: i32, style: u32| {
+            child(hwnd, w!("STATIC"), text, style | SS_NOPREFIX_, 0, (x, y, w, h), id, dpi, font)
+        };
+        let heading = |text: &str, x: i32, y: i32| {
+            child(hwnd, w!("STATIC"), text, SS_NOPREFIX_ | SS_CENTERIMAGE_, 0, (x + PAD, y + 10, COL_W - 2 * PAD, 22), 0, dpi, font_bold)
+        };
+        let button = |text: &str, style: u32, x: i32, y: i32, w: i32, h: i32, id: i32| {
+            child(hwnd, w!("BUTTON"), text, style | WS_TABSTOP.0, 0, (x, y, w, h), id, dpi, font)
+        };
+        let slider = |x: i32, y: i32, w: i32, id: i32| {
+            child(hwnd, w!("msctls_trackbar32"), "", TBS_NOTICKS | TBS_HORZ | WS_TABSTOP.0, 0, (x, y, w, 28), id, dpi, font)
+        };
+
+        // ---------------------------------------------------------------- left column
+        // Interface
+        let (cx, cy) = (MARGIN, MARGIN);
+        look.cards.push([cx, cy, COL_W, 128]);
+        heading("Interface", cx, cy);
         let mode_labels = ["Complete: everything on show", "No Bloat: just the clip (tools appear when used)"];
         let mut mode = [HWND::default(); 2];
         for (i, m) in UiMode::ALL.iter().enumerate() {
             let group = if i == 0 { WS_GROUP.0 } else { 0 };
-            mode[i] = child(
-                hwnd,
-                w!("BUTTON"),
-                mode_labels[i],
-                BS_AUTORADIOBUTTON as u32 | WS_TABSTOP.0 | group,
-                0,
-                (16 + 200 * i as i32, 34, 196 + 88 * i as i32, 22),
-                ID_MODE[i],
-                dpi,
-                font,
-            );
+            mode[i] = button(mode_labels[i], BS_AUTORADIOBUTTON as u32 | group, cx + PAD, cy + 36 + 24 * i as i32, COL_W - 2 * PAD, 22, ID_MODE[i]);
             SendMessageW(mode[i], BM_SETCHECK, Some(WPARAM(usize::from(*m == cfg.mode))), Some(LPARAM(0)));
         }
-        let updates = child(
-            hwnd,
-            w!("BUTTON"),
+        label("Carousel size", cx + PAD, cy + 94, 100, 22, 0, SS_CENTERIMAGE_);
+        let size_choices = settings::size_choices(cfg.size_percent);
+        let size_tb = slider(cx + PAD + 104, cy + 91, 148, ID_SIZE_TB);
+        let size_val = label("", cx + COL_W - PAD - 56, cy + 94, 56, 22, ID_SIZE_VAL, SS_CENTERIMAGE_ | SS_RIGHT_);
+        SendMessageW(size_tb, TBM_SETRANGE, Some(WPARAM(1)), Some(LPARAM(((size_choices.len() as isize - 1) << 16) | 0)));
+        SendMessageW(size_tb, TBM_SETPAGESIZE, Some(WPARAM(0)), Some(LPARAM(1)));
+        let size_pos = size_choices.iter().position(|v| *v == cfg.size_percent).unwrap_or(size_choices.len() / 2);
+        SendMessageW(size_tb, TBM_SETPOS, Some(WPARAM(1)), Some(LPARAM(size_pos as isize)));
+
+        // Updates
+        let cy = 154;
+        look.cards.push([cx, cy, COL_W, 118]);
+        heading("Updates", cx, cy);
+        let updates = button(
             "Check for updates once a day (asks GitHub; you choose whether to install)",
-            BS_AUTOCHECKBOX as u32 | WS_TABSTOP.0,
-            0,
-            (16, 62, 488, 22),
+            BS_AUTOCHECKBOX as u32,
+            cx + PAD,
+            cy + 36,
+            COL_W - 2 * PAD,
+            36,
             ID_UPDATES,
-            dpi,
-            font,
         );
         SendMessageW(updates, BM_SETCHECK, Some(WPARAM(usize::from(cfg.updates == UpdateCheck::On))), Some(LPARAM(0)));
-        let check_now = child(hwnd, w!("BUTTON"), "Check for updates now", BS_PUSHBUTTON as u32 | WS_TABSTOP.0, 0, (16, 90, 170, 26), ID_CHECK_NOW, dpi, font);
-        let last_check = child(hwnd, w!("STATIC"), "", 0, 0, (198, 95, 306, 20), ID_LAST_CHECK, dpi, font);
-        TOP.set(MODE_H);
+        let check_now = button("Check for updates now", BS_PUSHBUTTON as u32, cx + PAD, cy + 80, 170, 28, ID_CHECK_NOW);
+        // when it last checked: on the heading line, at the right
+        let last_check = label("", cx + PAD + 80, cy + 10, COL_W - 2 * PAD - 80, 22, ID_LAST_CHECK, SS_CENTERIMAGE_ | SS_RIGHT_ | SS_ENDELLIPSIS_);
 
-        child(hwnd, w!("STATIC"), "How much history to keep", 0, 0, (16, 12, 480, 20), 0, dpi, font);
-        let rows: [(&str, i32); 4] = [("Clips kept", 40), ("Total size", 76), ("Keep for", 112), ("Largest single clip", 148)];
+        // Behaviour
+        let cy = 282;
+        look.cards.push([cx, cy, COL_W, 120]);
+        heading("Behavior", cx, cy);
+        let pause = button("Pause recording", BS_AUTOCHECKBOX as u32, cx + PAD, cy + 36, COL_W - 2 * PAD, 22, ID_PAUSE);
+        let warn = button(
+            "Ask before pasting several lines into a terminal",
+            BS_AUTOCHECKBOX as u32,
+            cx + PAD,
+            cy + 62,
+            COL_W - 2 * PAD,
+            22,
+            ID_WARN,
+        );
+        let autostart = button(
+            if pasteroll_core::paths::is_portable() { pasteroll_core::paths::PORTABLE_AUTOSTART } else { "Start Pasteroll when I sign in to Windows" },
+            BS_AUTOCHECKBOX as u32,
+            cx + PAD,
+            cy + 88,
+            COL_W - 2 * PAD,
+            22,
+            ID_AUTOSTART,
+        );
+        SendMessageW(autostart, BM_SETCHECK, Some(WPARAM(usize::from(crate::setup::autostart_enabled()))), Some(LPARAM(0)));
+        if pasteroll_core::paths::is_portable() {
+            let _ = windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow(autostart, false);
+        }
+        SendMessageW(pause, BM_SETCHECK, Some(WPARAM(usize::from(cfg.paused))), Some(LPARAM(0)));
+        SendMessageW(warn, BM_SETCHECK, Some(WPARAM(usize::from(cfg.warn_multiline_in_terminals))), Some(LPARAM(0)));
+
+        // Custom filters
+        let cy = 412;
+        look.cards.push([cx, cy, COL_W, 98]);
+        heading("Custom filters", cx, cy);
+        let lb = (LBS_NOTIFY | LBS_NOINTEGRALHEIGHT) as u32 | WS_VSCROLL.0 | WS_TABSTOP.0;
+        look.fields.push([cx + PAD, cy + 38, 196, 52]);
+        let fl_list = child(hwnd, w!("LISTBOX"), "", lb, 0, (cx + PAD + 4, cy + 42, 188, 44), ID_FL_LIST, dpi, font);
+        button("Remove", BS_PUSHBUTTON as u32, cx + PAD + 206, cy + 38, 90, 28, ID_FL_REMOVE);
+        label("Add them from the filter menu", cx + PAD + 110, cy + 10, COL_W - 2 * PAD - 110, 22, ID_NOTE + 1, SS_CENTERIMAGE_ | SS_RIGHT_);
+
+        // ---------------------------------------------------------------- right column
+        // History limits
+        let (cx, cy) = (COL2_X, MARGIN);
+        look.cards.push([cx, cy, COL_W, 190]);
+        heading("How much history to keep", cx, cy);
+        let rows: [(&str, i32); 4] = [("Clips kept", 0), ("Total size", 1), ("Keep for", 2), ("Largest single clip", 3)];
         let mut tb = [HWND::default(); 4];
         let mut val = [HWND::default(); 4];
-        for (i, (label, y)) in rows.iter().enumerate() {
-            child(hwnd, w!("STATIC"), label, 0, 0, (16, *y + 4, 150, 20), 0, dpi, font);
-            tb[i] = child(
-                hwnd,
-                w!("msctls_trackbar32"),
-                "",
-                TBS_AUTOTICKS | TBS_HORZ | WS_TABSTOP.0,
-                0,
-                (170, *y, 250, 30),
-                ID_TB[i],
-                dpi,
-                font,
-            );
-            val[i] = child(hwnd, w!("STATIC"), "", 0, 0, (430, *y + 4, 84, 20), ID_VAL[i], dpi, font);
+        for (i, (text, n)) in rows.iter().enumerate() {
+            let y = cy + 36 + *n * 28;
+            label(text, cx + PAD, y + 3, 110, 22, 0, SS_CENTERIMAGE_);
+            tb[i] = slider(cx + PAD + 112, y, 128, ID_TB[i]);
+            val[i] = label("", cx + COL_W - PAD - 64, y + 3, 64, 22, ID_VAL[i], SS_CENTERIMAGE_ | SS_RIGHT_);
         }
         let lens = [clips.len(), sizes_mb.len(), ages.len(), clip_mb.len()];
         let cur = [
@@ -347,149 +422,88 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
             SendMessageW(tb[i], TBM_SETPAGESIZE, Some(WPARAM(0)), Some(LPARAM(1)));
             SendMessageW(tb[i], TBM_SETPOS, Some(WPARAM(1)), Some(LPARAM(cur[i] as isize)));
         }
-        child(
-            hwnd,
-            w!("STATIC"),
+        label(
             "When a limit is reached the oldest clips are removed first. Pinned clips are never removed.",
+            cx + PAD,
+            cy + 36 + 4 * 28 + 4,
+            COL_W - 2 * PAD,
+            32,
+            ID_NOTE,
             0,
-            0,
-            (16, 188, 490, 36),
-            0,
-            dpi,
-            font,
         );
 
-        child(hwnd, w!("STATIC"), "Carousel size", 0, 0, (16, 232, 150, 20), 0, dpi, font);
-        let size_choices = settings::size_choices(cfg.size_percent);
-        let size_tb = child(
-            hwnd,
-            w!("msctls_trackbar32"),
-            "",
-            TBS_AUTOTICKS | TBS_HORZ | WS_TABSTOP.0,
-            0,
-            (170, 228, 250, 30),
-            ID_SIZE_TB,
-            dpi,
-            font,
-        );
-        let size_val = child(hwnd, w!("STATIC"), "", 0, 0, (430, 232, 84, 20), ID_SIZE_VAL, dpi, font);
-        SendMessageW(size_tb, TBM_SETRANGE, Some(WPARAM(1)), Some(LPARAM(((size_choices.len() as isize - 1) << 16) | 0)));
-        SendMessageW(size_tb, TBM_SETPAGESIZE, Some(WPARAM(0)), Some(LPARAM(1)));
-        let size_pos = size_choices.iter().position(|v| *v == cfg.size_percent).unwrap_or(size_choices.len() / 2);
-        SendMessageW(size_tb, TBM_SETPOS, Some(WPARAM(1)), Some(LPARAM(size_pos as isize)));
-
-        let pause = child(hwnd, w!("BUTTON"), "Pause recording", BS_AUTOCHECKBOX as u32 | WS_TABSTOP.0, 0, (16, 272, 400, 22), ID_PAUSE, dpi, font);
-        let warn = child(
-            hwnd,
-            w!("BUTTON"),
-            "Ask before pasting several lines into a terminal",
-            BS_AUTOCHECKBOX as u32 | WS_TABSTOP.0,
-            0,
-            (16, 298, 400, 22),
-            ID_WARN,
-            dpi,
-            font,
-        );
-        let autostart = child(
-            hwnd,
-            w!("BUTTON"),
-            if pasteroll_core::paths::is_portable() { pasteroll_core::paths::PORTABLE_AUTOSTART } else { "Start Pasteroll when I sign in to Windows" },
-            BS_AUTOCHECKBOX as u32 | WS_TABSTOP.0,
-            0,
-            (16, 326, 488, 22),
-            ID_AUTOSTART,
-            dpi,
-            font,
-        );
-        SendMessageW(autostart, BM_SETCHECK, Some(WPARAM(usize::from(crate::setup::autostart_enabled()))), Some(LPARAM(0)));
-        if pasteroll_core::paths::is_portable() {
-            let _ = windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow(autostart, false);
-        }
-        SendMessageW(pause, BM_SETCHECK, Some(WPARAM(usize::from(cfg.paused))), Some(LPARAM(0)));
-        SendMessageW(warn, BM_SETCHECK, Some(WPARAM(usize::from(cfg.warn_multiline_in_terminals))), Some(LPARAM(0)));
-
-        child(
-            hwnd,
-            w!("STATIC"),
-            "To edit an image before it is pasted or saved, hold this key while you click where it should go (a window, or the desktop):",
+        // Pictures
+        let cy = 216;
+        look.cards.push([cx, cy, COL_W, 162]);
+        heading("Pictures", cx, cy);
+        label(
+            "To edit a picture before it is pasted or saved, hold this key while you click where it should go:",
+            cx + PAD,
+            cy + 36,
+            COL_W - 2 * PAD,
+            32,
             0,
             0,
-            (16, 358, 490, 36),
-            0,
-            dpi,
-            font,
         );
         let mut modifier = [HWND::default(); 3];
         for (i, m) in ClickModifier::ALL.iter().enumerate() {
             let group = if i == 0 { WS_GROUP.0 } else { 0 };
-            modifier[i] = child(
-                hwnd,
-                w!("BUTTON"),
-                m.label(),
-                BS_AUTORADIOBUTTON as u32 | WS_TABSTOP.0 | group,
-                0,
-                (16 + 88 * i as i32, 396, 80, 22),
-                ID_MOD[i],
-                dpi,
-                font,
-            );
+            modifier[i] = button(m.label(), BS_AUTORADIOBUTTON as u32 | group, cx + PAD + 88 * i as i32, cy + 72, 80, 22, ID_MOD[i]);
             let on = *m == cfg.advanced_image_modifier;
             SendMessageW(modifier[i], BM_SETCHECK, Some(WPARAM(usize::from(on))), Some(LPARAM(0)));
         }
-
-        child(hwnd, w!("STATIC"), "Save pictures (Paste Path and the image editor) in this folder:", 0, 0, (16, 426, 490, 20), 0, dpi, font);
+        label("Save pictures in this folder (Paste Path, image editor):", cx + PAD, cy + 102, COL_W - 2 * PAD, 18, 0, SS_CENTERIMAGE_);
+        look.fields.push([cx + PAD, cy + 124, 172, 28]);
         let img_edit = child(
             hwnd,
             w!("EDIT"),
             &cfg.image_folder,
             ES_AUTOHSCROLL as u32 | WS_TABSTOP.0,
-            WS_EX_CLIENTEDGE.0,
-            (16, 450, 360, 24),
+            0,
+            (cx + PAD + 8, cy + 129, 156, 18),
             ID_IMG_EDIT,
             dpi,
             font,
         );
         SendMessageW(img_edit, EM_SETCUEBANNER, Some(WPARAM(0)), Some(LPARAM(w!("The Desktop").as_ptr() as isize)));
-        child(hwnd, w!("BUTTON"), "Browse...", BS_PUSHBUTTON as u32 | WS_TABSTOP.0, 0, (384, 449, 72, 26), ID_IMG_BROWSE, dpi, font);
-        child(hwnd, w!("BUTTON"), "Desktop", BS_PUSHBUTTON as u32 | WS_TABSTOP.0, 0, (462, 449, 42, 26), ID_IMG_RESET, dpi, font);
-        // everything below moves down by the height of this row
-        TOP.set(MODE_H + IMG_H);
+        button("Browse...", BS_PUSHBUTTON as u32, cx + PAD + 178, cy + 124, 66, 28, ID_IMG_BROWSE);
+        button("Desktop", BS_PUSHBUTTON as u32, cx + PAD + 250, cy + 124, 60, 28, ID_IMG_RESET);
 
-        child(hwnd, w!("STATIC"), "Never record copies made in these programs", 0, 0, (16, 432, 480, 20), 0, dpi, font);
-        let lb = (LBS_NOTIFY | LBS_NOINTEGRALHEIGHT) as u32 | WS_VSCROLL.0 | WS_TABSTOP.0;
-        let ex_list = child(hwnd, w!("LISTBOX"), "", lb, WS_EX_CLIENTEDGE.0, (16, 456, 300, 84), ID_EX_LIST, dpi, font);
+        // Programs that are never recorded
+        let cy = 388;
+        look.cards.push([cx, cy, COL_W, 110]);
+        heading("Never record copies made in these programs", cx, cy);
+        look.fields.push([cx + PAD, cy + 38, 176, 64]);
+        let ex_list = child(hwnd, w!("LISTBOX"), "", lb, 0, (cx + PAD + 4, cy + 42, 168, 56), ID_EX_LIST, dpi, font);
+        look.fields.push([cx + PAD + 184, cy + 38, 126, 28]);
         let ex_edit = child(
             hwnd,
             w!("EDIT"),
             "",
             ES_AUTOHSCROLL as u32 | WS_TABSTOP.0,
-            WS_EX_CLIENTEDGE.0,
-            (330, 456, 174, 24),
+            0,
+            (cx + PAD + 192, cy + 43, 110, 18),
             ID_EX_EDIT,
             dpi,
             font,
         );
-        child(hwnd, w!("BUTTON"), "Add", BS_PUSHBUTTON as u32 | WS_TABSTOP.0, 0, (330, 488, 84, 26), ID_EX_ADD, dpi, font);
-        child(hwnd, w!("BUTTON"), "Remove", BS_PUSHBUTTON as u32 | WS_TABSTOP.0, 0, (420, 488, 84, 26), ID_EX_REMOVE, dpi, font);
-        child(hwnd, w!("STATIC"), "Program file name, for example keepass.exe", 0, 0, (330, 520, 180, 36), 0, dpi, font);
+        SendMessageW(ex_edit, EM_SETCUEBANNER, Some(WPARAM(0)), Some(LPARAM(w!("keepass.exe").as_ptr() as isize)));
+        button("Add", BS_PUSHBUTTON as u32, cx + PAD + 184, cy + 72, 60, 28, ID_EX_ADD);
+        button("Remove", BS_PUSHBUTTON as u32, cx + PAD + 250, cy + 72, 60, 28, ID_EX_REMOVE);
 
-        child(
-            hwnd,
-            w!("STATIC"),
-            "Custom filters (add them from the filter menu in the overlay)",
-            0,
-            0,
-            (16, 564, 490, 20),
-            0,
-            dpi,
-            font,
-        );
-        let fl_list = child(hwnd, w!("LISTBOX"), "", lb, WS_EX_CLIENTEDGE.0, (16, 588, 300, 48), ID_FL_LIST, dpi, font);
-        child(hwnd, w!("BUTTON"), "Remove", BS_PUSHBUTTON as u32 | WS_TABSTOP.0, 0, (330, 588, 84, 26), ID_FL_REMOVE, dpi, font);
+        // ---------------------------------------------------------------- bottom bar
+        let status_h = label("", MARGIN, 520, 490, 36, ID_STATUS, SS_CENTERIMAGE_);
+        button("Cancel", BS_PUSHBUTTON as u32, WIN_W - MARGIN - 8 - 176, 522, 84, 32, ID_CANCEL);
+        button("Save", BS_DEFPUSHBUTTON as u32, WIN_W - MARGIN - 84, 522, 84, 32, ID_SAVE);
 
-        let status_h = child(hwnd, w!("STATIC"), "", 0, 0, (16, 636, 300, 40), ID_STATUS, dpi, font);
-        child(hwnd, w!("BUTTON"), "Save", BS_DEFPUSHBUTTON as u32 | WS_TABSTOP.0, 0, (330, 644, 84, 30), ID_SAVE, dpi, font);
-        child(hwnd, w!("BUTTON"), "Cancel", BS_PUSHBUTTON as u32 | WS_TABSTOP.0, 0, (420, 644, 84, 30), ID_CANCEL, dpi, font);
+        // a little room inside the edit boxes
+        for e in [img_edit, ex_edit] {
+            SendMessageW(e, EM_SETMARGINS, Some(WPARAM(3)), Some(LPARAM(0)));
+        }
+        for l in [ex_list, fl_list] {
+            settingsui::theme_control(l, theme.dark);
+        }
+        settingsui::install(look);
 
         let exclude = cfg.exclude_apps.clone();
         let filters: Vec<String> = cfg.custom_filters.iter().map(|f| f.name.clone()).collect();
@@ -499,6 +513,7 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
         let state = State {
             hwnd,
             font,
+            font_bold,
             db,
             orig: cfg,
             clips,
@@ -653,8 +668,10 @@ fn close() {
         unsafe {
             let _ = DestroyWindow(s.hwnd);
             let _ = DeleteObject(s.font.into());
+            let _ = DeleteObject(s.font_bold.into());
         }
     }
+    settingsui::remove();
 }
 
 struct Snapshot {
@@ -858,6 +875,31 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             WM_HSCROLL => {
                 update_values();
                 LRESULT(0)
+            }
+            WM_ERASEBKGND => {
+                let painted = settingsui::with(|l| settingsui::paint_background(hwnd, HDC(wparam.0 as *mut _), l));
+                if painted.is_some() { LRESULT(1) } else { DefWindowProcW(hwnd, msg, wparam, lparam) }
+            }
+            WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX => {
+                let id = GetDlgCtrlID(HWND(lparam.0 as *mut _));
+                let kind = if msg == WM_CTLCOLORSTATIC { settingsui::ControlKind::Label } else { settingsui::ControlKind::Field };
+                settingsui::control_colors(HDC(wparam.0 as *mut _), id, kind).unwrap_or_else(|| DefWindowProcW(hwnd, msg, wparam, lparam))
+            }
+            WM_NOTIFY => settingsui::custom_draw(hwnd, lparam).unwrap_or_else(|| DefWindowProcW(hwnd, msg, wparam, lparam)),
+            WM_SETTINGCHANGE => {
+                // Windows' light/dark choice changed while the window is open
+                let name = if lparam.0 == 0 { String::new() } else { PCWSTR(lparam.0 as *const u16).to_string().unwrap_or_default() };
+                if name == "ImmersiveColorSet" {
+                    let theme = settingsui::Theme::current();
+                    settingsui::with(|l| l.retheme(theme));
+                    settingsui::apply_title_bar(hwnd, theme.dark);
+                    let lists = ST.with(|c| c.try_borrow().ok().and_then(|g| g.as_ref().map(|s| [s.ex_list, s.fl_list])));
+                    for l in lists.into_iter().flatten() {
+                        settingsui::theme_control(l, theme.dark);
+                    }
+                    let _ = RedrawWindow(Some(hwnd), None, None, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
+                }
+                DefWindowProcW(hwnd, msg, wparam, lparam)
             }
             WM_COMMAND => {
                 let id = (wparam.0 & 0xFFFF) as i32;

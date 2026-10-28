@@ -812,9 +812,10 @@ fn probe_multi_select(out: &mut Vec<Check>) -> Result<()> {
         let _ = SetWindowTextW(edit, w!(""));
         let _ = SetFocus(Some(edit));
     };
-    // rows: 0 is "multi three" (shown), 1 is "multi two", 2 is "multi one"
-    let choose_two = || {
-        for i in [1usize, 2] {
+    // First rows: 0 is "multi three" (shown), 1 is "multi two", 2 is "multi one". The first multi-paste
+    // is kept in history as a new newest clip, so afterwards 0 is that entry and the others move down.
+    let choose_two = |rows: [usize; 2]| {
+        for i in rows {
             if let Some(pt) = row_point(i) {
                 ctrl_click(pt);
                 pump(60);
@@ -828,7 +829,7 @@ fn probe_multi_select(out: &mut Vec<Check>) -> Result<()> {
     // --- Ctrl+click two rows, then click the window: both arrive, one per line
     check!("multi_session_opens", open_carousel_in_corner(), "");
     let spot = clear_spot(target);
-    choose_two();
+    choose_two([1, 2]);
     check!("multi_ctrl_click_chooses_two_rows", picked() == 2, "{} chosen", picked());
     check!("multi_choosing_types_nothing", edit_text(edit).is_empty(), "target text {:?}", edit_text(edit));
     if let Some(spot) = spot {
@@ -851,7 +852,18 @@ fn probe_multi_select(out: &mut Vec<Check>) -> Result<()> {
     // --- Ctrl+C copies without pasting; Ctrl+V afterwards proves what was copied
     clear_edit();
     if open_carousel_in_corner() {
-        choose_two();
+        // the multi-paste above is now the newest clip, with its badge
+        let kept = app::with_runtime(|rt| {
+            let vm = rt.controller.view_model();
+            vm.rows.first().map(|r| (r.multi, r.title.clone()))
+        })
+        .flatten();
+        check!(
+            "multi_paste_is_kept_in_history_with_a_badge",
+            kept.as_ref().is_some_and(|(n, t)| *n == 2 && t.starts_with("multi two")),
+            "newest row {kept:?}"
+        );
+        choose_two([2, 3]);
         let chosen = picked();
         input::send_chord(&[VK_CONTROL], VIRTUAL_KEY(b'C' as u16));
         let closed = wait_until(2_000, || !session_open());
@@ -870,7 +882,7 @@ fn probe_multi_select(out: &mut Vec<Check>) -> Result<()> {
     // --- the right-click menu: a right click chooses the clip and opens Copy
     clear_edit();
     if open_carousel_in_corner() {
-        if let Some(pt) = row_point(1) {
+        if let Some(pt) = row_point(2) {
             input::move_to(pt);
             pump(60);
             input::right_down();

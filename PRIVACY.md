@@ -76,6 +76,9 @@ the design and its limits); so are the time it was copied and the program it cam
 removed automatically when it passes the limits you set (count, total size, age); pinned clips are
 kept until you delete them.
 
+A multi-paste (several clips pasted or copied together) is kept as one more clip, encrypted the same
+way, unless recording is paused; it follows the same limits and can be deleted like any clip.
+
 A clip you delete goes to the recycle bin first, still encrypted, and is removed for good after 30
 days (or at once with *Delete permanently*, Shift+Delete, or `pasteroll clear`).
 

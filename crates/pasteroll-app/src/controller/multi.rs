@@ -292,11 +292,26 @@ impl Controller {
         Ok(out)
     }
 
+    /// Keeps a multi-paste in history as one text clip (shown with the multi-paste badge), unless
+    /// recording is paused. Failing to keep it never stops the paste.
+    pub(super) fn record_joined(&mut self, p: &mut dyn Platform, text: &str, clips: usize) {
+        if self.is_paused() {
+            return;
+        }
+        let now = p.now_secs();
+        let kept = self.store.borrow_mut().add_joined_text(text, now, clips);
+        match kept {
+            Ok(_) => p.log(&format!("kept a multi-paste of {clips} clips in history")),
+            Err(e) => p.log(&format!("could not keep the multi-paste in history: {e}")),
+        }
+    }
+
     /// Enter, or a click where the text should go, with clips chosen.
     pub(super) fn confirm_picks(&mut self, p: &mut dyn Platform) {
         let Some(open) = self.open.as_ref() else { return };
         let (picks, warned) = (open.ui.picks.clone(), open.ui.warned);
         let now = p.now_ms();
+        let mut joined = None;
         let (id, selection) = match picks.as_slice() {
             [] => return,
             // one clip: pasted as itself, so a picture stays a picture
@@ -306,6 +321,7 @@ impl Controller {
                     if j.skipped + j.unreadable > 0 {
                         p.log(&format!("{} clip(s) left out of a multiple paste", j.skipped + j.unreadable));
                     }
+                    joined = (j.used > 1).then_some(j.used);
                     (many[0], Some(j.text.clone()))
                 }
                 Ok(_) => {
@@ -318,7 +334,10 @@ impl Controller {
                 }
             },
         };
-        if let PasteCheck::Warn(lines) = self.paste_item(p, id, selection, warned) {
+        self.joined_paste = joined;
+        let checked = self.paste_item(p, id, selection, warned);
+        self.joined_paste = None;
+        if let PasteCheck::Warn(lines) = checked {
             if let Some(o) = self.open.as_mut() {
                 o.ui.warned = true;
             }
@@ -367,6 +386,11 @@ impl Controller {
             return;
         }
         p.log(&format!("copied {used} clip(s) to the clipboard without pasting"));
+        if used > 1 {
+            if let Payload::Text(t) = &payload.0 {
+                self.record_joined(p, t, used);
+            }
+        }
         let message = match (used, skipped) {
             (1, _) => "Copied".to_owned(),
             (n, 0) => format!("Copied {n} clips"),
