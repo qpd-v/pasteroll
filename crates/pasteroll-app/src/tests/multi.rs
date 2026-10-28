@@ -420,3 +420,101 @@ fn the_choice_does_not_survive_the_session() {
     h.open();
     assert!(h.chosen().is_empty());
 }
+
+impl H {
+    /// A click on the Multi-paste button.
+    fn click_multi_button(&mut self) {
+        let vm = self.vm();
+        let size = self.p.window();
+        let b = pasteroll_render::geometry(&vm, (size.0 as f32, size.1 as f32), 1.0).multi_button;
+        let at = (b.x + b.w / 2.0, b.y + b.h / 2.0);
+        self.mouse(MouseKind::Down, at);
+        self.mouse(MouseKind::Up, at);
+    }
+}
+
+#[test]
+fn the_multi_paste_button_makes_plain_clicks_choose_clips() {
+    let mut h = four();
+    let g = h.open();
+    assert!(!h.vm().multi_mode);
+    h.click_multi_button();
+    assert!(h.vm().multi_mode);
+    assert!(h.footer().starts_with("Multi-paste"), "{}", h.footer());
+    h.click_row(1, Modifiers::default());
+    h.click_row(3, Modifiers::default());
+    h.click_row(2, Modifiers::default());
+    assert_eq!(h.chosen(), vec![1, 2, 3]);
+    assert_eq!(newest_text(&mut h), "d", "the carousel did not move");
+    assert_eq!(h.p.pastes.len(), 0, "choosing pastes nothing");
+    h.click_to_paste(g);
+    assert_eq!(h.pasted_texts(), vec!["c\na\nb"], "in the order clicked");
+}
+
+#[test]
+fn shift_click_chooses_a_range_while_multi_paste_is_on() {
+    let mut h = four();
+    let g = h.open();
+    h.click_multi_button();
+    h.click_row(1, Modifiers::default());
+    h.click_row(3, Modifiers { ctrl: false, shift: true, alt: false });
+    assert_eq!(h.chosen(), vec![1, 2, 3]);
+    h.click_to_paste(g);
+    assert_eq!(h.pasted_texts(), vec!["c\nb\na"]);
+}
+
+#[test]
+fn the_active_clip_can_be_chosen_by_clicking_it_while_multi_paste_is_on() {
+    let mut h = four();
+    h.open();
+    h.click_multi_button();
+    h.click_row(0, Modifiers::default());
+    assert_eq!(h.chosen(), vec![0]);
+}
+
+#[test]
+fn pressing_the_button_again_goes_back_to_plain_clicks_and_keeps_the_choice() {
+    let mut h = four();
+    h.open();
+    h.click_multi_button();
+    h.click_row(1, Modifiers::default());
+    h.click_multi_button();
+    assert!(!h.vm().multi_mode);
+    assert_eq!(h.chosen(), vec![1]);
+    h.click_row(2, Modifiers::default());
+    assert_eq!(newest_text(&mut h), "b", "a plain click moves again");
+}
+
+#[test]
+fn ctrl_click_still_works_with_multi_paste_on_and_esc_keeps_the_mode() {
+    let mut h = four();
+    let g = h.open();
+    h.click_multi_button();
+    h.click_row(1, CTRL);
+    h.click_row(2, Modifiers::default());
+    assert_eq!(h.chosen(), vec![1, 2]);
+    h.send(Event::Key(Key::Escape, g));
+    assert!(h.chosen().is_empty());
+    assert!(h.vm().multi_mode, "Esc forgets the choice, not the mode");
+}
+
+#[test]
+fn multi_paste_starts_off_each_time_and_no_bloat_has_no_button() {
+    let mut h = four();
+    let g = h.open();
+    h.click_multi_button();
+    h.send(Event::Key(Key::Escape, g)); // closes
+    h.open();
+    assert!(!h.vm().multi_mode);
+    let vm = h.vm();
+    let size = h.p.window();
+    let g = pasteroll_render::geometry(&vm, (size.0 as f32, size.1 as f32), 1.0);
+    assert!(g.multi_button.w > 0.0);
+    let mut nb = four();
+    nb.c.init_ui_mode(UiMode::NoBloat);
+    nb.p.mode = UiMode::NoBloat;
+    nb.open();
+    let vm = nb.vm();
+    let size = nb.p.window();
+    assert_eq!(pasteroll_render::geometry(&vm, (size.0 as f32, size.1 as f32), 1.0).multi_button.w, 0.0);
+}

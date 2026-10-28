@@ -213,6 +213,8 @@ struct Ui {
     pick_anchor: Option<i64>,
     /// The right-click menu, while it is open.
     menu: Option<multi::Menu>,
+    /// Multi-paste is switched on (its button): a plain click chooses a clip.
+    multi_on: bool,
 }
 
 struct Open {
@@ -745,6 +747,7 @@ impl Controller {
                 hover: None,
                 confirm_delete: None,
                 picks: Vec::new(),
+                multi_on: false,
                 pick_anchor: None,
                 menu: None,
             },
@@ -2042,6 +2045,7 @@ impl Controller {
         let (ids, active) = self.row_ids();
         let picks = open.ui.picks.clone();
         let menu_state = open.ui.menu;
+        let multi_on = open.ui.multi_on && self.ui_mode == UiMode::Complete;
         vm.active = active;
         vm.slim = self.ui_mode == UiMode::NoBloat;
         vm.card_buttons = open.session.is_some() && !vm.slim;
@@ -2086,8 +2090,9 @@ impl Controller {
         if let Some((m, t)) = counts {
             vm.footer = format!("{} of {} clips", thousands(m), thousands(t));
         }
-        if !picks.is_empty() && !vm.slim {
-            vm.footer = multi::footer_text(picks.len());
+        vm.multi_mode = multi_on;
+        if !vm.slim && (multi_on || !picks.is_empty()) {
+            vm.footer = multi::footer_text(picks.len(), multi_on);
         }
         if let Some(st) = &self.status {
             vm.footer = st.text.clone();

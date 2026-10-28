@@ -4,19 +4,19 @@ A clipboard history you can scroll with the mouse wheel. Copy as usual; when you
 clip, press **Ctrl+Shift+middle-click**, scroll through your history right where you are working,
 and paste the whole clip, or select just a part of it and paste only that.
 
-**Status: public beta.** Windows is at `0.1.0-beta.10`; Linux is still at `0.1.0-beta.4` and
+**Status: public beta.** Windows is at `0.1.0-beta.11`; Linux is still at `0.1.0-beta.4` and
 catches up in a later release. It works and is tested, but it is young. Expect rough edges and
 please [report them](https://github.com/qpd-v/pasteroll/issues).
 
 | | Windows 10 / 11 | Linux (X11) |
 |---|---|---|
-| Download | [Setup EXE](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.10/pasteroll-0.1.0-beta.10-windows-x64-setup.exe) · [Portable ZIP](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.10/pasteroll-0.1.0-beta.10-windows-x64-portable.zip) | [Static archive](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/pasteroll-0.1.0-beta.4-linux-x86_64.tar.gz) · [Debian/Ubuntu .deb](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/pasteroll_0.1.0-beta.4_amd64.deb) |
+| Download | [Setup EXE](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.11/pasteroll-0.1.0-beta.11-windows-x64-setup.exe) · [Portable ZIP](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.11/pasteroll-0.1.0-beta.11-windows-x64-portable.zip) | [Static archive](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/pasteroll-0.1.0-beta.4-linux-x86_64.tar.gz) · [Debian/Ubuntu .deb](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/pasteroll_0.1.0-beta.4_amd64.deb) |
 | Tray icon | yes | StatusNotifier (KDE, GNOME with AppIndicator, Ubuntu) or XEmbed |
 | Wayland | n/a | experimental GNOME 46; separate packages and setup below |
 | macOS | not available | |
 
-Windows: [release notes and testing status](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.10) ·
-[SHA256SUMS](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.10/SHA256SUMS)
+Windows: [release notes and testing status](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.11) ·
+[SHA256SUMS](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.11/SHA256SUMS)
 Linux: [release notes and testing status](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.4) ·
 [SHA256SUMS](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/SHA256SUMS)
 
@@ -77,7 +77,9 @@ the experimental packages; it does not indicate broader Wayland compatibility.
   file's path, or its name. A plain click still saves (desktop) or pastes (window) the picture
   immediately. The clip itself is never changed.
 - **Several clips at once** (Complete mode): Ctrl+click clips in the list to choose them (Ctrl+Shift+click
-  chooses everything from the last one you chose), then click where they should go (or press Enter) to
+  chooses everything from the last one you chose), or press the **Multi-paste** button beside the filter
+  and simply click each clip (Shift+click for a range; press the button again to go back to normal
+  clicks). Then click where they should go (or press Enter) to
   paste them one per line, in the order you chose them. Ctrl+C, or right-click and Copy, puts them on the
   clipboard instead. Pictures cannot be joined into text and are left out. Esc clears the choice.
 - **Pin** clips (Ctrl+P) so they are never removed automatically.
@@ -103,13 +105,13 @@ the experimental packages; it does not indicate broader Wayland compatibility.
 
 ### Windows
 
-1. Download `pasteroll-0.1.0-beta.10-windows-x64-setup.exe` and `SHA256SUMS` from the
-   [beta.10 release](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.10) and
+1. Download `pasteroll-0.1.0-beta.11-windows-x64-setup.exe` and `SHA256SUMS` from the
+   [beta.11 release](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.11) and
    [verify the checksum](#verify-your-download).
 2. Run the setup wizard. **Only for me** is the default and needs no administrator rights;
    **For all users** needs UAC. Start menu is on by default; desktop shortcut and autostart are off.
 
-For portable use, extract `pasteroll-0.1.0-beta.10-windows-x64-portable.zip` and run `pasteroll.exe`.
+For portable use, extract `pasteroll-0.1.0-beta.11-windows-x64-portable.zip` and run `pasteroll.exe`.
 Its included `portable.txt` keeps application data in the adjacent `data` folder.
 
 > **"Windows protected your PC"**: the beta is **not code-signed yet**, so SmartScreen shows
@@ -258,7 +260,7 @@ Each release has a `SHA256SUMS` file.
 
 ```powershell
 # Windows
-Get-FileHash .\pasteroll-0.1.0-beta.10-windows-x64-setup.exe -Algorithm SHA256
+Get-FileHash .\pasteroll-0.1.0-beta.11-windows-x64-setup.exe -Algorithm SHA256
 ```
 ```sh
 # Linux

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-beta.11 (Windows only)
 
 - Settings has a **Save pictures in this folder** choice (with Browse and a Desktop button). Paste Path and
   the image editor save there instead of the Desktop. A folder you pick inside the editor is still
@@ -9,6 +9,9 @@
 - **Choose several clips** in the Complete carousel: Ctrl+click to choose, Ctrl+Shift+click for a
   range, then click where to paste (or Enter) to paste them one per line in the order chosen. Ctrl+C or
   right-click and Copy puts them on the clipboard without pasting. Pictures are left out; Esc clears.
+- A **Multi-paste** button beside the filter turns plain clicks into choosing: click each clip you want
+  (Shift+click for a range), then click where to paste. It starts off each time Pasteroll opens, and is
+  not in No Bloat.
 
 ## Linux, not released yet (Linux is still on beta.4)
 

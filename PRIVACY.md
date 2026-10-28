@@ -80,7 +80,7 @@ A clip you delete goes to the recycle bin first, still encrypted, and is removed
 days (or at once with *Delete permanently*, Shift+Delete, or `pasteroll clear`).
 
 *Advanced Image Paste* works on your computer only. The edited picture is written where you choose
-(the Desktop by default) and nowhere else. The presets you save (the settings, never a picture) and
+(the Desktop, or the folder chosen in Settings, by default) and nowhere else. That folder's path is kept in plain text in `config.toml`. The presets you save (the settings, never a picture) and
 the folder you last saved to are kept in a small plain-text file, `image-presets.txt`, in the data
 folder.
 

@@ -64,6 +64,8 @@ const INNER: f32 = 10.0;
 const RADIUS: f32 = 8.0;
 const BAR_H: f32 = 34.0;
 const FILTER_W: f32 = 118.0;
+/// The Multi-paste button beside the filter button (Complete only).
+const MULTI_W: f32 = 100.0;
 const ROW_H: f32 = 28.0;
 const FOOTER_H: f32 = 20.0;
 const DROPDOWN_ITEM_H: f32 = 28.0;
@@ -166,6 +168,8 @@ pub struct ViewModel {
     pub picked: Vec<bool>,
     /// The right-click menu, while it is open.
     pub menu: Option<MenuView>,
+    /// Multi-paste is on: a plain click chooses a clip (Complete only).
+    pub multi_mode: bool,
 }
 
 impl ViewModel {
@@ -207,6 +211,7 @@ impl Default for ViewModel {
             slim_bar: false,
             picked: Vec::new(),
             menu: None,
+            multi_mode: false,
         }
     }
 }
@@ -234,6 +239,8 @@ impl Rect {
 pub enum Hit {
     Query,
     FilterButton,
+    /// The Multi-paste button.
+    MultiButton,
     DropdownItem(usize),
     /// An entry of the right-click menu (index into `MenuView::items`).
     MenuItem(usize),
@@ -256,6 +263,8 @@ pub struct Geometry {
     pub surface: Rect,
     pub query_box: Rect,
     pub filter_button: Rect,
+    /// The Multi-paste button; an empty rectangle where it is not drawn (No Bloat).
+    pub multi_button: Rect,
     pub list: Rect,
     /// One rect per row in `ViewModel::rows` (rows that do not fit are `None`).
     pub rows: Vec<Option<Rect>>,
@@ -350,6 +359,7 @@ fn slim_geometry(vm: &ViewModel, size_dip: (f32, f32), scale: f32) -> Geometry {
         surface,
         query_box,
         filter_button,
+        multi_button: nothing,
         list: card,
         rows,
         body,
@@ -374,7 +384,8 @@ pub fn geometry(vm: &ViewModel, size_dip: (f32, f32), scale: f32) -> Geometry {
     let inner = surface.inset(INNER);
     let bar = Rect { x: inner.x, y: inner.y, w: inner.w, h: BAR_H };
     let filter_button = Rect { x: bar.x + bar.w - FILTER_W, y: bar.y, w: FILTER_W, h: BAR_H };
-    let query_box = Rect { x: bar.x, y: bar.y, w: bar.w - FILTER_W - 6.0, h: BAR_H };
+    let multi_button = Rect { x: filter_button.x - 6.0 - MULTI_W, y: bar.y, w: MULTI_W, h: BAR_H };
+    let query_box = Rect { x: bar.x, y: bar.y, w: (bar.w - FILTER_W - MULTI_W - 12.0).max(0.0), h: BAR_H };
     let footer = Rect { x: inner.x, y: inner.y + inner.h - FOOTER_H, w: inner.w, h: FOOTER_H };
     let list_top = bar.y + BAR_H + 8.0;
     let list = Rect { x: inner.x, y: list_top, w: inner.w, h: (footer.y - 4.0 - list_top).max(0.0) };
@@ -435,6 +446,7 @@ pub fn geometry(vm: &ViewModel, size_dip: (f32, f32), scale: f32) -> Geometry {
         surface,
         query_box,
         filter_button,
+        multi_button,
         list,
         rows,
         body,
@@ -832,6 +844,30 @@ impl Renderer {
                 cv.pm.fill_rect(r, &paint(ACCENT, 1.0), Transform::identity(), None);
             }
         }
+        if g.multi_button.w > 0.0 {
+            let m = g.multi_button;
+            let hot = vm.hover == Some(Hit::MultiButton);
+            cv.fill(m, 6.0, FIELD, 1.0);
+            if vm.multi_mode {
+                cv.fill(m, 6.0, ACCENT, 0.30);
+                cv.stroke(m, 6.0, ACCENT, 1.0, 1.2);
+            } else if hot {
+                cv.stroke(m, 6.0, MUTED, 0.8, 1.0);
+            }
+            let label = "Multi-paste";
+            let tw = self.measure(label, FONT_PX * s, 18.0 * s) / s;
+            self.draw_text(
+                cv,
+                label,
+                ((m.x + (m.w - tw) / 2.0) * s, (m.y + 8.0) * s),
+                FONT_PX * s,
+                18.0 * s,
+                None,
+                Wrap::None,
+                if vm.multi_mode { FOREGROUND } else { MUTED },
+                scaled(m, s),
+            );
+        }
         let f = g.filter_button;
         self.draw_text(
             cv,
@@ -1112,6 +1148,9 @@ impl Renderer {
         if g.filter_button.contains(x, y) {
             return Hit::FilterButton;
         }
+        if g.multi_button.contains(x, y) {
+            return Hit::MultiButton;
+        }
         if g.query_box.contains(x, y) {
             return Hit::Query;
         }
@@ -1220,6 +1259,9 @@ fn intersect(a: Rect, b: Rect) -> Option<Rect> {
 pub fn button_at(vm: &ViewModel, size_dip: (f32, f32), scale: f32, px: f32, py: f32) -> Option<Hit> {
     let g = geometry(vm, size_dip, scale);
     let (x, y) = (px / scale, py / scale);
+    if g.multi_button.contains(x, y) {
+        return Some(Hit::MultiButton);
+    }
     [(g.expand, Hit::Expand), (g.restore, Hit::Restore), (g.delete, Hit::Delete)]
         .into_iter()
         .find(|(r, _)| r.is_some_and(|r| r.contains(x, y)))

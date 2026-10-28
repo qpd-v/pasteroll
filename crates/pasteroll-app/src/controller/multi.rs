@@ -1,7 +1,8 @@
 //! Choosing several clips in the Complete carousel and pasting or copying them together.
 //!
 //! Ctrl+click chooses or un-chooses a clip, Ctrl+Shift+click chooses everything from the last clip
-//! chosen to the one clicked. The chosen text clips are joined, one per line, in the order they were
+//! chosen to the one clicked. The Multi-paste button switches on the same thing for plain clicks
+//! (Shift+click for a range). The chosen text clips are joined, one per line, in the order they were
 //! chosen. Clicking where the text should go pastes it, Ctrl+C (or Copy in the right-click menu)
 //! puts it on the clipboard instead. Pictures cannot be joined into text and are left out. No Bloat
 //! has none of this: it shows one clip at a time.
@@ -32,11 +33,12 @@ impl Menu {
 }
 
 /// The footer while clips are chosen.
-pub(super) fn footer_text(n: usize) -> String {
-    if n == 1 {
-        "1 chosen. Ctrl+click more. Click where to paste, Ctrl+C copies.".to_owned()
-    } else {
-        format!("{n} chosen. Click where to paste, Ctrl+C copies.")
+pub(super) fn footer_text(n: usize, multi_on: bool) -> String {
+    match (n, multi_on) {
+        (0, _) => "Multi-paste: click the clips to choose, then click where to paste.".to_owned(),
+        (1, true) => "1 chosen. Click more. Click where to paste, Ctrl+C copies.".to_owned(),
+        (1, false) => "1 chosen. Ctrl+click more. Click where to paste, Ctrl+C copies.".to_owned(),
+        _ => format!("{n} chosen. Click where to paste, Ctrl+C copies."),
     }
 }
 
@@ -161,8 +163,14 @@ impl Controller {
                     // a click that only closes the menu does nothing else
                     return true;
                 }
+                if hit == Hit::MultiButton {
+                    self.toggle_multi_mode();
+                    return true;
+                }
                 let mods = p.modifiers_now();
-                if !mods.ctrl || mods.alt {
+                let multi_on = self.open.as_ref().is_some_and(|o| o.ui.multi_on);
+                // with Multi-paste on a plain click chooses; otherwise it takes Ctrl
+                if mods.alt || !(mods.ctrl || multi_on) {
                     return false;
                 }
                 let Some(id) = row_id(self) else { return false };
@@ -175,6 +183,17 @@ impl Controller {
             }
             _ => false,
         }
+    }
+
+    /// The Multi-paste button: plain clicks choose clips until it is pressed again. The clips
+    /// already chosen stay chosen.
+    fn toggle_multi_mode(&mut self) {
+        if let Some(o) = self.open.as_mut() {
+            o.ui.multi_on = !o.ui.multi_on;
+            o.ui.dropdown_open = false;
+            self.dirty = true;
+        }
+        self.withdraw_warning();
     }
 
     /// Ctrl+click: chooses the clip, or takes it out again.
