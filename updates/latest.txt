@@ -1,5 +1,5 @@
 pasteroll-update-latest 1
-version 0.1.0-beta.12
-note The Settings window is new: compact, two columns, and it follows the Windows light or dark mode.
-note A multi-paste is now kept in history as one clip, with a small badge showing how many clips it joins.
-note The Multi-paste button in the carousel is now an icon.
+version 0.1.0-beta.13
+note Updating has its own window now, with a progress bar while it downloads and a Cancel button.
+note The update window follows the Windows light or dark mode and looks like the new Settings window.
+note Far fewer notifications: none while checking or updating, and one announcement per new version.
