@@ -75,7 +75,7 @@ impl Controller {
         let Some(s) = self.open.as_ref().and_then(|o| o.session.as_ref()) else { return (Vec::new(), 0) };
         let (items, cur) = s.window_items();
         // No Bloat shows the one clip, not the list around it
-        let (before, after) = if self.ui_mode == UiMode::NoBloat { (0, 0) } else { (ROWS_BEFORE, ROWS_AFTER) };
+        let (before, after) = if self.ui_mode == UiMode::NoBloat { (0, 0) } else { self.rows_span() };
         let lo = cur.saturating_sub(before);
         let hi = (cur + 1 + after).min(items.len());
         (items[lo..hi].iter().map(|i| i.id).collect(), cur - lo)

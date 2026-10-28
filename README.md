@@ -89,6 +89,9 @@ the experimental packages; it does not indicate broader Wayland compatibility.
   (plain, numbered, bulleted) and the order, with a preview; Enter or Paste pastes, Copy copies, Esc goes
   back. Ctrl+C, or right-click and Copy, puts them on the
   clipboard instead. Pictures cannot be joined into text and are left out. Esc clears the choice.
+  While Multi-paste is on, or any clip is chosen, the tall card of the clip shown collapses into a
+  one-line row so the whole list is rows (it opens again when the choice is cleared). A picture clip's
+  one-line row ends in a small picture of it.
 - **Pin** clips (Ctrl+P) so they are never removed automatically. Settings has a **Clear history**
   button (it keeps pinned clips and asks first).
 - **Recycle bin**: deleted clips can be brought back (Ctrl+Z, or the Recycle bin filter) for 30

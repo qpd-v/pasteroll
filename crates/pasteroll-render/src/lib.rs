@@ -79,6 +79,10 @@ const FONT_PX: f32 = 14.0;
 const SMALL_PX: f32 = 12.0;
 const BODY_LINE: f32 = 19.0;
 
+/// Height of the small picture at the end of a one-line picture row, and the widest it gets.
+const THUMB_ROW_H: f32 = 22.0;
+const THUMB_ROW_W: f32 = 40.0;
+
 type Rgb = (u8, u8, u8);
 const BACKGROUND: Rgb = (28, 28, 32);
 const SURFACE: Rgb = (37, 37, 43);
@@ -115,6 +119,12 @@ pub struct RowView {
     /// A text clip made by a multi-paste: how many clips were joined into it (0 = an ordinary clip).
     /// Drawn as a small badge on the row.
     pub multi: u32,
+    /// A picture clip: its width over its height (0 = not known), so the small picture that ends
+    /// its one-line row has the right shape before it has arrived.
+    pub ratio: f32,
+    /// A small picture of an image clip (about 80 x 44 px at most) for its one-line row. `None`
+    /// while it is still being fetched, and for clips that are not pictures.
+    pub thumb: Option<std::sync::Arc<Rgba>>,
 }
 
 #[derive(Debug, Clone)]
@@ -178,6 +188,9 @@ pub struct ViewModel {
     pub multi_mode: bool,
     /// The multi-paste options card, while it is open (modal).
     pub panel: Option<PanelView>,
+    /// 0 = the active clip is the tall card, 1 = it has collapsed to a one-line row like the rest
+    /// (Complete, while clips are being chosen for a multiple paste). In between it is moving.
+    pub collapse: f32,
 }
 
 impl ViewModel {
@@ -226,6 +239,7 @@ impl Default for ViewModel {
             menu: None,
             multi_mode: false,
             panel: None,
+            collapse: 0.0,
         }
     }
 }
@@ -273,6 +287,53 @@ pub enum Hit {
 
 /// Side of a card button, in DIP.
 pub const CARD_BUTTON: f32 = 24.0;
+
+/// How `slots` one-line rows are split above and below the active row: roughly evenly, and what
+/// one side cannot use goes to the other.
+fn split_slots(slots: usize, want_above: usize, want_below: usize) -> (usize, usize) {
+    let mut above = want_above.min(slots / 2);
+    let below = want_below.min(slots - above);
+    above = want_above.min(slots - below);
+    (above, below)
+}
+
+/// The size in DIP of the small picture ending a one-line picture row, in the picture's own shape.
+fn thumb_box(row: &RowView) -> (f32, f32) {
+    let ratio = match &row.thumb {
+        Some(t) if t.width > 0 && t.height > 0 => t.width as f32 / t.height as f32,
+        _ if row.ratio > 0.0 => row.ratio,
+        _ => 1.4,
+    };
+    let w = (THUMB_ROW_H * ratio).clamp(8.0, THUMB_ROW_W);
+    (w, (w / ratio).min(THUMB_ROW_H))
+}
+
+fn premultiplied(img: &Rgba) -> Option<Pixmap> {
+    let mut src = Pixmap::new(img.width, img.height)?;
+    let d = src.data_mut();
+    for (i, p) in img.pixels.chunks_exact(4).enumerate() {
+        let a = p[3] as u32;
+        d[i * 4] = ((p[0] as u32 * a + 127) / 255) as u8;
+        d[i * 4 + 1] = ((p[1] as u32 * a + 127) / 255) as u8;
+        d[i * 4 + 2] = ((p[2] as u32 * a + 127) / 255) as u8;
+        d[i * 4 + 3] = p[3];
+    }
+    Some(src)
+}
+
+/// A small picture in a row: the picture stretched over `rect` (which has its shape), or a quiet
+/// box while it has not arrived, with a thin edge.
+fn draw_thumb(cv: &mut Canvas, img: Option<&Rgba>, rect: Rect, s: f32) {
+    cv.fill(rect, 3.0, FIELD, 1.0);
+    if let Some(img) = img.filter(|i| i.width > 0 && i.height > 0) {
+        if let Some(src) = premultiplied(img) {
+            let (kx, ky) = (rect.w * s / img.width as f32, rect.h * s / img.height as f32);
+            let pp = PixmapPaint { opacity: 1.0, blend_mode: BlendMode::SourceOver, quality: FilterQuality::Bilinear };
+            cv.pm.draw_pixmap(0, 0, src.as_ref(), &pp, Transform::from_row(kx, 0.0, 0.0, ky, rect.x * s, rect.y * s), None);
+        }
+    }
+    cv.stroke(rect, 3.0, MUTED, 0.45, 1.0);
+}
 
 #[derive(Debug, Clone)]
 pub struct Geometry {
@@ -412,17 +473,43 @@ pub fn geometry(vm: &ViewModel, size_dip: (f32, f32), scale: f32) -> Geometry {
     if !vm.rows.is_empty() {
         let active = vm.active.min(vm.rows.len() - 1);
         // The active row takes about 55% of the list, never less than 110 DIP; neighbours are
-        // condensed one-liners placed above and below it.
-        let active_h = (list.h * 0.55).clamp(110.0, 260.0).min(list.h);
-        let slots = ((list.h - active_h).max(0.0) / ROW_H).floor() as usize;
+        // condensed one-liners placed above and below it. While clips are being chosen for a
+        // multiple paste it collapses into a one-liner too (`collapse` runs from 0 to 1).
+        let full_h = (list.h * 0.55).clamp(110.0, 260.0).min(list.h);
+        let one_line = ROW_H.min(list.h);
+        let t = vm.collapse.clamp(0.0, 1.0);
+        let active_h = full_h + (one_line - full_h) * t;
+        let space = (list.h - active_h).max(0.0);
         let want_above = active;
         let want_below = vm.rows.len() - 1 - active;
-        // Split the slots roughly evenly; whatever one side cannot use goes to the other.
-        let mut above = want_above.min(slots / 2);
-        let mut below = want_below.min(slots - above);
-        above = want_above.min(slots - below);
-        let block_h = (above + below) as f32 * ROW_H + active_h;
+        let (above, below, partial) = if t <= 0.0 || t >= 1.0 {
+            let (above, below) = split_slots((space / ROW_H).floor() as usize, want_above, want_below);
+            (above, below, None)
+        } else {
+            // On the way, rows join one at a time, each growing from nothing, and the margin left
+            // over at the two ends is blended: nothing jumps while the card shrinks.
+            let rest = |h: f32| (list.h - h).max(0.0) % ROW_H;
+            let room = (space - rest(full_h) * (1.0 - t) - rest(one_line) * t).max(0.0);
+            let whole = (room / ROW_H).floor() as usize;
+            let (above, below) = split_slots(whole, want_above, want_below);
+            let (above_next, below_next) = split_slots(whole + 1, want_above, want_below);
+            let grown = (room - whole as f32 * ROW_H).clamp(0.0, ROW_H);
+            let partial = if above_next > above {
+                Some((true, grown))
+            } else if below_next > below {
+                Some((false, grown))
+            } else {
+                None
+            };
+            (above, below, partial)
+        };
+        let growing_h = partial.map_or(0.0, |(_, h)| h);
+        let block_h = (above + below) as f32 * ROW_H + growing_h + active_h;
         let mut y = list.y + (list.h - block_h).max(0.0) / 2.0;
+        if let Some((true, h)) = partial {
+            rows[active - above - 1] = Some(Rect { x: list.x, y, w: list.w, h });
+            y += h;
+        }
         for slot in rows.iter_mut().take(active).skip(active - above) {
             *slot = Some(Rect { x: list.x, y, w: list.w, h: ROW_H });
             y += ROW_H;
@@ -437,7 +524,8 @@ pub fn geometry(vm: &ViewModel, size_dip: (f32, f32), scale: f32) -> Geometry {
             w: active_rect.w - 20.0 - gutter,
             h: (active_rect.h - ROW_H + 4.0 - 8.0).max(0.0),
         });
-        if vm.card_buttons && !vm.lifted {
+        // (a collapsed card is a one-liner: no room for them)
+        if vm.card_buttons && !vm.lifted && active_h >= 2.0 * CARD_BUTTON + 16.0 {
             let bx = active_rect.x + active_rect.w - 4.0 - CARD_BUTTON;
             expand = Some(Rect { x: bx, y: active_rect.y + 2.0, w: CARD_BUTTON, h: CARD_BUTTON });
             let by = active_rect.y + active_rect.h - 4.0 - CARD_BUTTON;
@@ -451,8 +539,9 @@ pub fn geometry(vm: &ViewModel, size_dip: (f32, f32), scale: f32) -> Geometry {
             *slot = Some(Rect { x: list.x, y, w: list.w, h: ROW_H });
             y += ROW_H;
         }
-        below = below.min(want_below);
-        let _ = below;
+        if let Some((false, h)) = partial {
+            rows[active + below + 1] = Some(Rect { x: list.x, y, w: list.w, h });
+        }
     }
 
     let (dropdown, dropdown_items) = dropdown_geometry(vm, filter_button, size_dip);
@@ -916,6 +1005,10 @@ impl Renderer {
         for (i, row) in vm.rows.iter().enumerate() {
             let Some(r) = g.rows[i] else { continue };
             let is_active = i == active;
+            // The tall card shows its details line; once it is (turning into) a one-liner it reads
+            // like the rest. A row still growing into place is cut off, not squeezed.
+            let condensed = !is_active || vm.collapse >= 0.5;
+            let whole = r.h >= ROW_H - 2.0;
             if is_active && vm.lifted {
                 // the card is out in the viewer: leave its place empty
                 cv.fill(r, 8.0, (22, 22, 26), 1.0);
@@ -933,14 +1026,19 @@ impl Renderer {
                 if !is_active {
                     cv.stroke(r, 8.0, ACCENT, 0.55, 1.0);
                 }
-                draw_check(cv, r.x + 18.0, r.y + ROW_H / 2.0);
-            } else {
+                if whole {
+                    draw_check(cv, r.x + 18.0, r.y + ROW_H / 2.0);
+                }
+            } else if whole {
                 self.draw_icon(cv, row.kind, r.x + 12.0, r.y + (ROW_H - 12.0) / 2.0, if is_active { ACCENT } else { MUTED });
             }
             let title_x = r.x + 32.0;
             // the active card's Expand button sits at the right of its title line
-            let buttons = if is_active && vm.card_buttons { CARD_BUTTON + 6.0 } else { 0.0 };
-            let edge = buttons + if row.pinned { 28.0 } else { 12.0 };
+            let buttons = if is_active && g.expand.is_some() { CARD_BUTTON + 6.0 } else { 0.0 };
+            // a one-line picture row ends in a small picture
+            let pic = (whole && condensed && r.h < 40.0 && row.kind == RowKind::Image).then(|| thumb_box(row));
+            let shift = pic.map_or(0.0, |(w, _)| w + 8.0);
+            let edge = buttons + shift + if row.pinned { 28.0 } else { 12.0 };
             // a multi-paste carries a small badge with the number of clips joined into it
             let badge_w = if row.multi > 1 {
                 self.measure(&row.multi.to_string(), SMALL_PX * s, 16.0 * s) / s + 30.0
@@ -948,12 +1046,12 @@ impl Renderer {
                 0.0
             };
             let right_pad = edge + if badge_w > 0.0 { badge_w + 6.0 } else { 0.0 };
-            let clip = scaled(Rect { x: title_x, y: r.y, w: (r.w - 32.0 - right_pad).max(0.0), h: ROW_H }, s);
+            let clip = scaled(Rect { x: title_x, y: r.y, w: (r.w - 32.0 - right_pad).max(0.0), h: r.h.min(ROW_H) }, s);
             let col = if is_active { FOREGROUND } else { MUTED };
-            let title = if is_active && !row.meta.is_empty() { row.meta.clone() } else { first_line(&row.title) };
+            let title = if !condensed && !row.meta.is_empty() { row.meta.clone() } else { first_line(&row.title) };
             // query matches are highlighted behind the title text (condensed rows only)
             let chars: Vec<char> = title.chars().collect();
-            let highlights: &[(usize, usize)] = if is_active && !row.meta.is_empty() { &[] } else { &row.highlights };
+            let highlights: &[(usize, usize)] = if !condensed && !row.meta.is_empty() { &[] } else { &row.highlights };
             for &(a, b) in highlights {
                 let (a, b) = (a.min(chars.len()), b.min(chars.len()));
                 if b <= a {
@@ -981,7 +1079,7 @@ impl Renderer {
                 col,
                 clip,
             );
-            if badge_w > 0.0 {
+            if badge_w > 0.0 && whole {
                 let pill = Rect { x: r.x + r.w - edge - badge_w, y: r.y + (ROW_H - 18.0) / 2.0, w: badge_w, h: 18.0 };
                 cv.fill(pill, 9.0, ACCENT, 0.24);
                 cv.stroke(pill, 9.0, ACCENT, 0.7, 1.0);
@@ -998,12 +1096,19 @@ impl Renderer {
                     scaled(pill, s),
                 );
             }
-            if row.pinned {
-                draw_star(cv, r.x + r.w - 18.0 - buttons, r.y + ROW_H / 2.0, 6.0, ACCENT);
+            if row.pinned && whole {
+                draw_star(cv, r.x + r.w - 18.0 - buttons - shift, r.y + ROW_H / 2.0, 6.0, ACCENT);
+            }
+            if let Some((w, h)) = pic {
+                let at = Rect { x: r.x + r.w - 10.0 - w, y: r.y + (ROW_H - h) / 2.0, w, h };
+                draw_thumb(cv, row.thumb.as_deref(), at, s);
             }
         }
         if let (Some(b), false) = (g.body, vm.lifted) {
-            self.draw_body(cv, vm, b, s);
+            // (a card that has collapsed to a one-liner has no body left)
+            if b.h > 2.0 {
+                self.draw_body(cv, vm, b, s);
+            }
         }
     }
 
@@ -1145,15 +1250,7 @@ impl Renderer {
                 let k = (b.w * s / img.width as f32).min(b.h * s / img.height as f32).min(s.max(1.0));
                 let (dw, dh) = (img.width as f32 * k, img.height as f32 * k);
                 let (dx, dy) = (b.x * s + (b.w * s - dw) / 2.0, b.y * s + (b.h * s - dh) / 2.0);
-                if let Some(mut src) = Pixmap::new(img.width, img.height) {
-                    let d = src.data_mut();
-                    for (i, p) in img.pixels.chunks_exact(4).enumerate() {
-                        let a = p[3] as u32;
-                        d[i * 4] = ((p[0] as u32 * a + 127) / 255) as u8;
-                        d[i * 4 + 1] = ((p[1] as u32 * a + 127) / 255) as u8;
-                        d[i * 4 + 2] = ((p[2] as u32 * a + 127) / 255) as u8;
-                        d[i * 4 + 3] = p[3];
-                    }
+                if let Some(src) = premultiplied(img) {
                     let pp = PixmapPaint { opacity: 1.0, blend_mode: BlendMode::SourceOver, quality: FilterQuality::Bilinear };
                     cv.pm.draw_pixmap(0, 0, src.as_ref(), &pp, Transform::from_row(k, 0.0, 0.0, k, dx, dy), None);
                 }

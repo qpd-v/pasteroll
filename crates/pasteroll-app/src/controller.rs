@@ -12,6 +12,7 @@
 //! - capture and image decoding run on worker threads, never here;
 //! - what is pasted is the real text, even where the preview shows hidden characters as tokens.
 
+mod collapse;
 mod editor;
 mod joinpanel;
 mod multi;
@@ -33,7 +34,7 @@ use pasteroll_render::{geometry, window_dip, Body, Dropdown, Hit, Renderer, RowK
 use editor::{EditMsg, Editor};
 use viewer::Viewer;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -54,6 +55,11 @@ const ROW_CACHE_MAX: usize = 512;
 const QUERY_MAX_CHARS: usize = 120;
 /// Decoded preview pictures kept while the overlay is open (about 1.2 MB each).
 const THUMB_CACHE: usize = 24;
+/// Small pictures for the one-line picture rows kept while the overlay is open (about 14 KB each).
+const ROW_THUMB_CACHE: usize = 96;
+/// The most pixels such a picture needs: twice its size on screen, at a 200% display scale.
+const ROW_THUMB_W: u32 = 80;
+const ROW_THUMB_H: u32 = 44;
 /// How many clips either side of the candidate are fetched ahead.
 const PREFETCH_REACH: usize = 3;
 /// The search index covers at most this many of the newest clips.
@@ -171,6 +177,8 @@ struct RowInfo {
     meta: String,
     /// Clips joined into this text clip by a multi-paste (0 = an ordinary clip).
     multi: u32,
+    /// A picture's width over its height (0 = not a picture, or not known).
+    ratio: f32,
 }
 
 impl Drop for RowInfo {
@@ -220,6 +228,8 @@ struct Ui {
     join: Option<joinpanel::JoinPanel>,
     /// Multi-paste is switched on (its button): a plain click chooses a clip.
     multi_on: bool,
+    /// The tall card turning into a one-line row while clips are being chosen, and back.
+    collapse: collapse::Collapse,
 }
 
 struct Open {
@@ -302,6 +312,10 @@ pub struct Controller {
     pending_copy_refresh: bool,
     /// Decoded preview pictures of image clips, newest use last (cleared when the overlay closes).
     thumbs: Vec<(i64, Arc<core_image::Rgba>)>,
+    /// Shrunk pictures for the one-line picture rows, newest use last (cleared when the overlay closes).
+    row_thumbs: Vec<(i64, Arc<core_image::Rgba>)>,
+    /// Picture clips whose small picture has been asked for and has not arrived yet.
+    row_thumbs_asked: HashSet<i64>,
     paused: Arc<std::sync::atomic::AtomicBool>,
     last_activity_ms: u64,
     last_maintain_ms: Option<u64>,
@@ -429,6 +443,8 @@ impl Controller {
             seen_copied: 0,
             pending_copy_refresh: false,
             thumbs: Vec::new(),
+            row_thumbs: Vec::new(),
+            row_thumbs_asked: HashSet::new(),
             paused,
             last_activity_ms: 0,
             last_maintain_ms: None,
@@ -682,6 +698,7 @@ impl Controller {
                 self.on_new_clips(p);
             }
         }
+        self.sync_collapse(p, now);
         if self.dirty {
             self.dirty = false;
             self.present(p);
@@ -766,6 +783,7 @@ impl Controller {
                 confirm_delete: None,
                 picks: Vec::new(),
                 multi_on: false,
+                collapse: collapse::Collapse::default(),
                 pick_anchor: None,
                 menu: None,
                 join: None,
@@ -784,15 +802,21 @@ impl Controller {
 
     fn end_session(&mut self, p: &mut dyn Platform) {
         self.pending_copy_refresh = false;
+        let collapsing = self.open.as_ref().is_some_and(|o| o.ui.collapse.running());
         self.drop_editor(p);
         self.drop_viewer(p);
         if self.open.take().is_some() {
             p.input_active(false);
             p.overlay_hide();
         }
+        if collapsing {
+            self.animation_over(p);
+        }
         // Cached row titles are the first part of recent clips: do not keep them between sessions.
         self.row_cache.clear();
         self.thumbs.clear();
+        self.row_thumbs.clear();
+        self.row_thumbs_asked.clear();
         // A footer message (a terminal warning, say) belongs to the session that raised it.
         self.status = None;
     }
@@ -954,6 +978,7 @@ impl Controller {
     fn forget_clip(&mut self, id: i64) {
         self.row_cache.remove(&id);
         self.thumbs.retain(|(k, _)| *k != id);
+        self.row_thumbs.retain(|(k, _)| *k != id);
         if let Some(idx) = self.open.as_mut().and_then(|o| o.index.as_mut()) {
             idx.remove(id);
         }
@@ -1330,6 +1355,10 @@ impl Controller {
         let img = r.image.take().map(Arc::new);
         if let (Some(i), false) = (&img, r.full) {
             self.remember_thumb(r.id, i.clone());
+            // a one-line picture row was waiting for it
+            if self.row_thumbs_asked.remove(&r.id) {
+                self.dirty = true;
+            }
         }
         if self.viewer.is_some() {
             self.viewer_on_preview(&r, img.clone());
@@ -1357,6 +1386,45 @@ impl Controller {
         let img = entry.1.clone();
         self.thumbs.push(entry);
         Some(img)
+    }
+
+    /// The small picture for the one-line row of picture clip `id`: at hand, made from the bigger
+    /// preview, or asked for from the preview worker (the row shows a plain box until it arrives).
+    fn row_thumb(&mut self, id: i64) -> Option<Arc<core_image::Rgba>> {
+        if let Some((_, img)) = self.row_thumbs.iter().find(|(k, _)| *k == id) {
+            return Some(img.clone());
+        }
+        if let Some(big) = self.thumbs.iter().find(|(k, _)| *k == id).map(|(_, i)| i.clone()) {
+            let small = Arc::new(core_image::downscale(&big, ROW_THUMB_W, ROW_THUMB_H));
+            self.row_thumbs.push((id, small.clone()));
+            while self.row_thumbs.len() > ROW_THUMB_CACHE {
+                let (gone, _) = self.row_thumbs.remove(0);
+                self.row_thumbs_asked.remove(&gone);
+            }
+            return Some(small);
+        }
+        if self.row_thumbs_asked.insert(id) {
+            self.workers.request_prefetch(id);
+        }
+        None
+    }
+
+    /// Gives the one-line picture rows their small pictures.
+    fn attach_row_thumbs(&mut self, vm: &mut ViewModel, ids: &[i64]) {
+        if !vm.rows.iter().any(|r| r.kind == RowKind::Image) {
+            return;
+        }
+        let g = geometry(vm, self.size_dip(), self.overlay.scale);
+        for (i, &id) in ids.iter().enumerate() {
+            if vm.rows.get(i).is_none_or(|r| r.kind != RowKind::Image) {
+                continue;
+            }
+            // the tall card shows the picture itself
+            if !g.rows.get(i).copied().flatten().is_some_and(|r| r.h < 40.0) {
+                continue;
+            }
+            vm.rows[i].thumb = self.row_thumb(id);
+        }
     }
 
     fn remember_thumb(&mut self, id: i64, img: Arc<core_image::Rgba>) {
@@ -1915,6 +1983,7 @@ impl Controller {
     fn tick(&mut self, p: &mut dyn Platform, now: u64) {
         p.heartbeat();
         self.on_new_clips(p);
+        self.collapse_tick(p, now);
         if self.viewer.is_some() {
             self.viewer_tick(p, now);
         }
@@ -2060,6 +2129,7 @@ impl Controller {
                         title: if i.width > 0 { format!("Image {} x {}", i.width, i.height) } else { "Image".into() },
                         meta: if i.width > 0 { format!("Image, {} x {}", i.width, i.height) } else { "Image".into() },
                         multi: 0,
+                        ratio: if i.width > 0 && i.height > 0 { i.width as f32 / i.height as f32 } else { 0.0 },
                     },
                     Kind::Files => {
                         let files: Vec<&str> = i.search.split('\n').filter(|s| !s.is_empty()).collect();
@@ -2070,7 +2140,7 @@ impl Controller {
                                 format!("{} +{} more", file_name(first), rest.len().max(i.files.saturating_sub(1)))
                             }
                         };
-                        RowInfo { kind: RowKind::Files, pinned: i.pinned, title, meta: format!("{} file(s)", i.files), multi: 0 }
+                        RowInfo { kind: RowKind::Files, pinned: i.pinned, title, meta: format!("{} file(s)", i.files), multi: 0, ratio: 0.0 }
                     }
                     Kind::Text => RowInfo {
                         kind: RowKind::Text,
@@ -2082,9 +2152,10 @@ impl Controller {
                             format!("Text, {} characters", thousands(i.total_chars))
                         },
                         multi: i.joined.min(u32::MAX as usize) as u32,
+                        ratio: 0.0,
                     },
                 },
-                _ => RowInfo { kind: RowKind::Text, pinned: false, title: "(unreadable)".into(), meta: String::new(), multi: 0 },
+                _ => RowInfo { kind: RowKind::Text, pinned: false, title: "(unreadable)".into(), meta: String::new(), multi: 0, ratio: 0.0 },
             };
             self.row_cache.insert(id, info);
         }
@@ -2150,6 +2221,7 @@ impl Controller {
             vm.footer = format!("{} of {} clips", thousands(m), thousands(t));
         }
         vm.multi_mode = multi_on;
+        vm.collapse = if vm.slim { 0.0 } else { open.ui.collapse.value() };
         if !vm.slim && (multi_on || !picks.is_empty()) {
             vm.footer = multi::footer_text(picks.len(), multi_on);
         }
@@ -2162,15 +2234,28 @@ impl Controller {
             vm.menu = menu_state.map(|m| m.view(picks.len()));
             vm.panel = open.ui.join.as_ref().map(joinpanel::JoinPanel::view);
         }
-        for id in ids {
+        for &id in &ids {
             let (kind, pinned, title, meta, multi) = self.row_info(id);
             if vm.slim {
                 // the clip is drawn from `body`: its row keeps only the pin marker
-                vm.rows.push(RowView { kind, pinned, title: String::new(), meta: String::new(), highlights: Vec::new(), multi });
+                vm.rows.push(RowView {
+                    kind,
+                    pinned,
+                    title: String::new(),
+                    meta: String::new(),
+                    highlights: Vec::new(),
+                    multi,
+                    ratio: 0.0,
+                    thumb: None,
+                });
                 continue;
             }
             let highlights = search::highlight_ranges(&title, &words);
-            vm.rows.push(RowView { kind, pinned, title, meta, highlights, multi });
+            let ratio = self.row_cache.get(&id).map_or(0.0, |i| i.ratio);
+            vm.rows.push(RowView { kind, pinned, title, meta, highlights, multi, ratio, thumb: None });
+        }
+        if !vm.slim {
+            self.attach_row_thumbs(&mut vm, &ids);
         }
         vm
     }

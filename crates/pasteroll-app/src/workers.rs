@@ -91,7 +91,7 @@ fn queue(
         if !prefetch.iter().any(|j| j.id == job.id) {
             prefetch.push_back(job);
         }
-        while prefetch.len() > 6 {
+        while prefetch.len() > 24 {
             prefetch.pop_front();
         }
     } else {

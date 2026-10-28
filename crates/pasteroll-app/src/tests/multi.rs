@@ -887,3 +887,193 @@ fn a_terminal_asks_on_the_card_before_a_multi_line_paste() {
     h.enter(g);
     assert_eq!(h.pasted_texts(), vec!["d\nc"]);
 }
+
+// ---------------------------------------------------------------- the card collapsing into a row
+
+impl H {
+    /// Runs the timer until the card has stopped moving.
+    fn settle_card(&mut self) {
+        for _ in 0..60 {
+            self.p.now_ms += 16;
+            self.send(Event::Tick);
+            if !self.p.animating {
+                return;
+            }
+        }
+        panic!("the card kept moving");
+    }
+
+    /// The height of the active row, in DIP.
+    fn active_height(&mut self) -> f32 {
+        let vm = self.vm();
+        let size = self.p.window();
+        let g = pasteroll_render::geometry(&vm, (size.0 as f32, size.1 as f32), 1.0);
+        g.rows[vm.active].expect("the active row is on show").h
+    }
+}
+
+#[test]
+fn multi_paste_collapses_the_tall_card_into_a_row_and_back() {
+    let mut h = four();
+    let g = h.open();
+    assert_eq!(h.vm().collapse, 0.0);
+    let tall = h.active_height();
+    assert!(tall > 100.0, "{tall}");
+    h.key_ev(g, Key::CtrlM);
+    assert!(h.p.animating, "the timer speeds up while the card moves");
+    h.settle_card();
+    assert_eq!(h.vm().collapse, 1.0);
+    assert_eq!(h.active_height(), 28.0, "a row like the others");
+    h.key_ev(g, Key::CtrlM);
+    h.settle_card();
+    assert_eq!(h.vm().collapse, 0.0);
+    assert_eq!(h.active_height(), tall, "and the card opens again");
+}
+
+#[test]
+fn the_card_is_part_way_while_it_moves() {
+    let mut h = four();
+    let g = h.open();
+    let tall = h.active_height();
+    h.key_ev(g, Key::CtrlM);
+    let mut last = tall;
+    for _ in 0..4 {
+        h.p.now_ms += 40;
+        h.send(Event::Tick);
+        let now = h.active_height();
+        assert!(now <= last, "it only shrinks: {now} after {last}");
+        last = now;
+    }
+    let c = h.vm().collapse;
+    assert!(c > 0.0 && c < 1.0, "{c}");
+    assert!(last < tall && last > 28.0, "{last}");
+}
+
+#[test]
+fn choosing_clips_any_way_collapses_the_card_and_clearing_opens_it() {
+    let mut h = four();
+    let g = h.open();
+    h.click_row(2, CTRL);
+    h.settle_card();
+    assert_eq!(h.vm().collapse, 1.0, "a Ctrl+click is enough, without the button");
+    assert_eq!(h.chosen().len(), 1);
+    h.key_ev(g, Key::Escape);
+    h.settle_card();
+    assert!(h.chosen().is_empty());
+    assert_eq!(h.vm().collapse, 0.0, "nothing chosen: the card is back");
+}
+
+#[test]
+fn the_card_stays_while_multi_paste_is_on_with_nothing_chosen_and_in_no_bloat_it_never_moves() {
+    let mut h = four();
+    let g = h.open();
+    h.key_ev(g, Key::CtrlM);
+    h.settle_card();
+    assert!(h.chosen().is_empty());
+    assert_eq!(h.vm().collapse, 1.0, "the button being on is enough");
+
+    let mut b = four();
+    b.c.init_ui_mode(UiMode::NoBloat);
+    b.p.mode = UiMode::NoBloat;
+    let g = b.open();
+    b.key_ev(g, Key::CtrlM);
+    b.p.now_ms += 400;
+    b.send(Event::Tick);
+    assert_eq!(b.vm().collapse, 0.0);
+    assert!(!b.p.animating);
+}
+
+#[test]
+fn closing_the_carousel_mid_move_lets_the_timer_slow_down_again() {
+    let mut h = four();
+    let g = h.open();
+    h.key_ev(g, Key::CtrlM);
+    assert!(h.p.animating);
+    h.key_ev(g, Key::Escape); // the first Escape turns nothing off, the second closes
+    h.key_ev(g, Key::Escape);
+    if h.c.is_open() {
+        h.key_ev(g, Key::Escape);
+    }
+    assert!(!h.c.is_open());
+    assert!(!h.p.animating);
+}
+
+#[test]
+fn more_rows_are_loaded_once_the_list_is_all_rows() {
+    let names: Vec<String> = (0..30).map(|i| format!("clip {i}")).collect();
+    let clips: Vec<Clip<'_>> = names.iter().map(|n| Clip::Text(n.as_str())).collect();
+    let mut h = H::new(&clips);
+    let g = h.open();
+    let tall = h.vm().rows.len();
+    h.key_ev(g, Key::CtrlM);
+    h.settle_card();
+    let vm = h.vm();
+    assert!(vm.rows.len() > tall, "{} rows, was {tall}", vm.rows.len());
+    let size = h.p.window();
+    let geo = pasteroll_render::geometry(&vm, (size.0 as f32, size.1 as f32), 1.0);
+    assert!(geo.rows.iter().filter(|r| r.is_some()).count() >= 11, "the list is full of rows");
+    h.key_ev(g, Key::CtrlM);
+    h.settle_card();
+    assert_eq!(h.vm().rows.len(), tall);
+}
+
+// ---------------------------------------------------------------- small pictures in the rows
+
+#[test]
+fn picture_rows_get_a_small_picture_and_the_tall_card_does_not() {
+    use pasteroll_render::RowKind;
+    // newest first: d, picture B, c, picture A, a
+    let mut h = H::new(&[Clip::Text("a"), Clip::Gradient(60, 40), Clip::Text("c"), Clip::Gradient(40, 60), Clip::Text("d")]);
+    h.open();
+    let pictures = [1usize, 3];
+    let mut got = false;
+    for _ in 0..300 {
+        h.send(Event::Wake);
+        let vm = h.vm();
+        if pictures.iter().all(|&i| vm.rows[i].thumb.is_some()) {
+            got = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(got, "the small pictures never arrived");
+    let vm = h.vm();
+    for (i, row) in vm.rows.iter().enumerate() {
+        match row.kind {
+            RowKind::Image => {
+                let t = row.thumb.as_ref().unwrap();
+                assert!(t.width <= 80 && t.height <= 44, "{} x {}", t.width, t.height);
+                assert!(row.ratio > 0.0);
+            }
+            _ => assert!(row.thumb.is_none(), "row {i} is not a picture"),
+        }
+    }
+}
+
+#[test]
+fn the_card_that_collapses_over_a_picture_gets_one_too() {
+    let mut h = H::new(&[Clip::Text("a"), Clip::Gradient(60, 40)]);
+    let g = h.open();
+    assert!(h.vm().rows[0].thumb.is_none(), "the tall card shows the picture itself");
+    h.key_ev(g, Key::CtrlM);
+    h.settle_card();
+    let mut got = false;
+    for _ in 0..300 {
+        h.send(Event::Wake);
+        if h.vm().rows[0].thumb.is_some() {
+            got = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(got, "the collapsed card never got its picture");
+}
+
+#[test]
+fn no_bloat_rows_carry_no_small_pictures() {
+    let mut h = H::new(&[Clip::Text("a"), Clip::Gradient(60, 40), Clip::Text("c")]);
+    h.c.init_ui_mode(UiMode::NoBloat);
+    h.p.mode = UiMode::NoBloat;
+    h.open();
+    assert!(h.vm().rows.iter().all(|r| r.thumb.is_none()));
+}

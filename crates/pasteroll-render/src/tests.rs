@@ -14,6 +14,8 @@ fn text_vm(display: &str, selection: Option<(usize, usize)>) -> ViewModel {
                 meta: format!("Text, {i} characters"),
                 highlights: vec![],
                 multi: 0,
+                ratio: 0.0,
+                thumb: None,
             })
             .collect(),
         active: 3,
@@ -440,6 +442,8 @@ fn slim_vm(display: &str) -> ViewModel {
             meta: "Text, 4 characters".into(),
             highlights: vec![],
             multi: 0,
+            ratio: 0.0,
+            thumb: None,
         }],
         active: 0,
         body: Body::Text { display: display.to_owned(), selection: None, scroll: 0.0 },
@@ -590,4 +594,163 @@ fn no_bloat_marks_a_pinned_clip_and_leaves_a_lifted_card_empty() {
     let (a, b) = (r.render(&plain, SLIM, 1.0), r.render(&lifted, SLIM, 1.0));
     assert!(region_differs(&a, &b, body, 1.0));
     assert_ne!(b.pixel(body.x as u32 + 40, body.y as u32 + 40), SURFACE, "the card's place is drawn dark");
+}
+
+// ---------------------------------------------------------------- the card collapsing, pictures in rows
+
+fn long_vm(collapse: f32) -> ViewModel {
+    let mut vm = text_vm("x", None);
+    vm.rows = (0..20)
+        .map(|i| RowView {
+            kind: RowKind::Text,
+            pinned: false,
+            title: format!("clip number {i}"),
+            meta: format!("Text, {i} characters"),
+            highlights: vec![],
+            multi: 0,
+            ratio: 0.0,
+            thumb: None,
+        })
+        .collect();
+    vm.active = 8;
+    vm.card_buttons = true;
+    vm.collapse = collapse;
+    vm
+}
+
+#[test]
+fn collapsed_the_active_row_is_a_one_liner_with_no_body_or_buttons() {
+    let vm = long_vm(1.0);
+    let g = geometry(&vm, SIZE, 1.0);
+    let r = g.rows[vm.active].unwrap();
+    assert_eq!(r.h, ROW_H);
+    assert!(g.body.is_none_or(|b| b.h <= 0.0), "{:?}", g.body);
+    assert!(g.expand.is_none() && g.delete.is_none(), "no room for the card buttons");
+    // every row on show has the same height and none overlap
+    let shown: Vec<Rect> = g.rows.iter().flatten().copied().collect();
+    assert!(shown.len() >= 11, "{} rows", shown.len());
+    assert!(shown.iter().all(|r| r.h == ROW_H));
+    for w in shown.windows(2) {
+        assert!(w[1].y >= w[0].y + w[0].h - 0.01, "{w:?}");
+    }
+}
+
+#[test]
+fn tall_stays_as_it_was_and_clicking_a_collapsed_card_hits_the_row() {
+    let tall = long_vm(0.0);
+    let g = geometry(&tall, SIZE, 1.0);
+    assert!(g.rows[tall.active].unwrap().h > 100.0);
+    assert!(g.body.is_some_and(|b| b.h > 50.0));
+    assert!(g.expand.is_some());
+    let mut r = Renderer::new();
+    let collapsed = long_vm(1.0);
+    let g = geometry(&collapsed, SIZE, 1.0);
+    let at = g.rows[collapsed.active].unwrap();
+    let hit = r.hit_test(&collapsed, SIZE, 1.0, at.x + at.w / 2.0, at.y + at.h / 2.0);
+    assert_eq!(hit, Hit::Row(collapsed.active));
+}
+
+#[test]
+fn while_collapsing_the_active_row_shrinks_and_nothing_overlaps_or_leaves_the_list() {
+    let mut last = f32::MAX;
+    let mut last_block = None;
+    for step in 0..=40 {
+        let t = step as f32 / 40.0;
+        let vm = long_vm(t);
+        let g = geometry(&vm, SIZE, 1.0);
+        let h = g.rows[vm.active].unwrap().h;
+        assert!(h <= last + 0.01, "t={t}: {h} after {last}");
+        last = h;
+        let shown: Vec<Rect> = g.rows.iter().flatten().copied().collect();
+        for w in shown.windows(2) {
+            assert!(w[1].y >= w[0].y + w[0].h - 0.01, "t={t}: {w:?}");
+        }
+        let (top, bottom) = (shown.first().unwrap().y, shown.last().map(|r| r.y + r.h).unwrap());
+        assert!(top >= g.list.y - 0.01 && bottom <= g.list.y + g.list.h + 0.01, "t={t}: {top}..{bottom} in {:?}", g.list);
+        // the rows hold together: the stretch from the first row to the last never jumps
+        if let Some((pt, pb)) = last_block {
+            assert!(((top - pt) as f32).abs() <= 12.0 && ((bottom - pb) as f32).abs() <= 12.0, "t={t}: block jumped {pt}..{pb} to {top}..{bottom}");
+        }
+        last_block = Some((top, bottom));
+    }
+}
+
+fn pic(w: u32, h: u32) -> Arc<Rgba> {
+    Arc::new(Rgba { width: w, height: h, pixels: [220u8, 40, 90, 255].repeat((w * h) as usize) })
+}
+
+#[test]
+fn a_picture_row_ends_in_a_small_picture_and_the_title_leaves_room() {
+    let mut vm = long_vm(1.0);
+    vm.rows[3].kind = RowKind::Image;
+    vm.rows[3].title = "Image 80 x 44".into();
+    let mut r = Renderer::new();
+    let without = r.render(&vm, SIZE, 1.0);
+    vm.rows[3].thumb = Some(pic(80, 44));
+    let with = r.render(&vm, SIZE, 1.0);
+    let g = geometry(&vm, SIZE, 1.0);
+    let row = g.rows[3].unwrap();
+    let right = Rect { x: row.x + row.w - 60.0, y: row.y, w: 60.0, h: row.h };
+    assert!(region_differs(&without, &with, right, 1.0), "the picture is drawn at the right");
+    // 22 DIP tall, at the right edge, in the picture's shape
+    let (w, h) = thumb_box(&vm.rows[3]);
+    assert_eq!(h, THUMB_ROW_H);
+    assert!(w > h && w <= THUMB_ROW_W);
+    let inside = (row.x + row.w - 10.0 - w / 2.0, row.y + ROW_H / 2.0);
+    assert_eq!(with.pixel(inside.0 as u32, inside.1 as u32), (220, 40, 90));
+    // the left part of the row is not touched
+    let left = Rect { x: row.x, y: row.y, w: row.w - 120.0, h: row.h };
+    assert!(!region_differs(&without, &with, left, 1.0));
+}
+
+#[test]
+fn a_picture_row_without_its_picture_yet_still_has_the_box() {
+    let mut vm = long_vm(1.0);
+    vm.rows[3].kind = RowKind::Image;
+    vm.rows[3].ratio = 2.0;
+    let mut r = Renderer::new();
+    let plain = {
+        let mut other = vm.clone();
+        other.rows[3].kind = RowKind::Text;
+        r.render(&other, SIZE, 1.0)
+    };
+    let boxed = r.render(&vm, SIZE, 1.0);
+    let row = geometry(&vm, SIZE, 1.0).rows[3].unwrap();
+    assert!(region_differs(&plain, &boxed, Rect { x: row.x + row.w - 60.0, y: row.y, w: 60.0, h: row.h }, 1.0));
+    let (w, h) = thumb_box(&vm.rows[3]);
+    assert!((w / h - 2.0).abs() < 0.05, "{w} x {h}");
+}
+
+#[test]
+fn the_tall_card_over_a_picture_has_no_small_one() {
+    let mut vm = long_vm(0.0);
+    vm.rows[vm.active].kind = RowKind::Image;
+    vm.rows[vm.active].thumb = Some(pic(80, 44));
+    let mut r = Renderer::new();
+    let with = r.render(&vm, SIZE, 1.0);
+    vm.rows[vm.active].thumb = None;
+    let without = r.render(&vm, SIZE, 1.0);
+    let row = geometry(&vm, SIZE, 1.0).rows[vm.active].unwrap();
+    assert!(!region_differs(&without, &with, row, 1.0));
+}
+
+#[test]
+fn thumb_boxes_keep_the_shape_within_limits() {
+    let row = |w: u32, h: u32| RowView {
+        kind: RowKind::Image,
+        pinned: false,
+        title: String::new(),
+        meta: String::new(),
+        highlights: vec![],
+        multi: 0,
+        ratio: 0.0,
+        thumb: Some(pic(w, h)),
+    };
+    let (w, h) = thumb_box(&row(100, 100));
+    assert_eq!((w, h), (22.0, 22.0));
+    let (w, h) = thumb_box(&row(800, 100));
+    assert_eq!(w, THUMB_ROW_W);
+    assert!(h < 10.0, "{h}");
+    let (w, h) = thumb_box(&row(10, 400));
+    assert!(w >= 8.0 && h <= THUMB_ROW_H);
 }

@@ -187,6 +187,8 @@ fn seed(db: &Path, args: &[String]) -> i32 {
                 meta: String::new(),
                 highlights: vec![],
                 multi: 0,
+                ratio: 0.0,
+                thumb: None,
             })
             .collect(),
         active: 0,

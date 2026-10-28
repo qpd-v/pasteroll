@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **Choosing several clips collapses the list to rows.** While Multi-paste is on, or any clip is chosen
+  (by Ctrl+click, Shift+click or the keyboard), the tall card of the clip shown shrinks, with a short
+  animation, into a one-line row like the others, so about a dozen rows are on screen and easy to choose
+  from. Clear the choice and turn Multi-paste off and the card opens again. (Ctrl+E still opens the
+  expanded view.)
+- **Small pictures in the rows.** A picture clip's one-line row (the neighbours of the clip shown, and
+  every row while the list is collapsed) ends in a small picture of it at the right edge.
+
 ## 0.1.0-beta.14 (Windows only)
 
 - **Multi-paste from the keyboard.** Ctrl+M turns Multi-paste on or off. With it on, Shift+Down (or Up)

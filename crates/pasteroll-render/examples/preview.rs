@@ -16,7 +16,7 @@ fn save(r: &mut Renderer, vm: &ViewModel, scale: f32, path: &std::path::Path) {
 }
 
 fn row(kind: RowKind, title: &str, pinned: bool, hl: Vec<(usize, usize)>) -> RowView {
-    RowView { kind, pinned, title: title.into(), meta: "Text, 142 characters".into(), highlights: hl, multi: 0 }
+    RowView { kind, pinned, title: title.into(), meta: "Text, 142 characters".into(), highlights: hl, multi: 0, ratio: 0.0, thumb: None }
 }
 
 fn main() {
@@ -96,6 +96,41 @@ fn main() {
     let empty = ViewModel { query: "zzzz".into(), body: Body::Message("No clips match \"zzzz\"".into()), ..ViewModel::default() };
     save(&mut r, &empty, 1.0, &dir.join("4-empty.png"));
     save(&mut r, &vm, 2.0, &dir.join("5-image-2x.png"));
+    // picture clips among the one-line rows end in a small picture; Multi-paste collapses the card
+    let pic = |w: u32, h: u32, tint: u8| {
+        let mut px = Vec::new();
+        for y in 0..h {
+            for x in 0..w {
+                px.extend_from_slice(&[(x * 255 / w) as u8, tint, (y * 255 / h) as u8, 255]);
+            }
+        }
+        Arc::new(Rgba { width: w, height: h, pixels: px })
+    };
+    let mut pics = ViewModel { rows: (0..14).map(|i| row(RowKind::Text, &format!("clip number {i}, some text that goes on"), false, vec![])).collect(), ..vm.clone() };
+    for (i, (w, h)) in [(1, (80, 44)), (3, (44, 44)), (4, (80, 30)), (6, (30, 44)), (7, (80, 44)), (9, (80, 44))] {
+        pics.rows[i] = RowView {
+            kind: RowKind::Image,
+            title: format!("Image {} x {}", w * 10, h * 10),
+            ratio: w as f32 / h as f32,
+            thumb: (i != 7).then(|| pic(w, h, (i * 25) as u8)),
+            pinned: i == 6,
+            ..pics.rows[i].clone()
+        };
+    }
+    pics.active = 5;
+    pics.body = Body::Text { display: "The clip on show".into(), selection: None, scroll: 0.0 };
+    save(&mut r, &pics, 1.0, &dir.join("9a-pictures-in-rows.png"));
+    for (name, t) in [("9b-collapsing-25", 0.25), ("9c-collapsing-50", 0.5), ("9d-collapsing-75", 0.75), ("9e-collapsed", 1.0)] {
+        let mut m = pics.clone();
+        m.collapse = t;
+        m.multi_mode = true;
+        m.picked = (0..14).map(|i| i == 3 || i == 5).collect();
+        save(&mut r, &m, 1.0, &dir.join(format!("{name}.png")));
+    }
+    let mut m = pics.clone();
+    m.collapse = 1.0;
+    m.multi_mode = true;
+    save(&mut r, &m, 2.0, &dir.join("9f-collapsed-2x.png"));
     // No Bloat: the clip alone, in its smaller window
     let slim = |body: Body, footer: &str| ViewModel {
         rows: vec![row(RowKind::Text, "", false, vec![])],
@@ -113,5 +148,5 @@ fn main() {
         2.0,
         &dir.join("8-no-bloat-warning-2x.png"),
     );
-    println!("wrote 8 frames to {}", dir.display());
+    println!("wrote the frames to {}", dir.display());
 }
