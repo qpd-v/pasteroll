@@ -1,5 +1,5 @@
 pasteroll-update-latest 1
-version 0.1.0-beta.11
-note Paste several clips at once: press the new Multi-paste button, click each clip, then click where it should go.
-note Ctrl+click and Ctrl+Shift+click also choose clips. Ctrl+C or right-click Copy copies them without pasting.
-note Settings has a Save pictures in this folder choice, used by Paste Path and the image editor.
+version 0.1.0-beta.12
+note The Settings window is new: compact, two columns, and it follows the Windows light or dark mode.
+note A multi-paste is now kept in history as one clip, with a small badge showing how many clips it joins.
+note The Multi-paste button in the carousel is now an icon.
