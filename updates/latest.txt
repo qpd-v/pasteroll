@@ -1,7 +1,5 @@
 pasteroll-update-latest 1
-version 0.1.0-beta.10
-note Settings has a Check for updates now button and shows when Pasteroll last checked.
-note The install window shows what is new in the version, and has a Skip this version button.
-note If an update's installer fails, your previous Pasteroll is started again and tells you so.
-note Which version is the newest is now signed with the Pasteroll release key, not read from GitHub's list.
-note After an update, Pasteroll says which version you now have.
+version 0.1.0-beta.11
+note Paste several clips at once: press the new Multi-paste button, click each clip, then click where it should go.
+note Ctrl+click and Ctrl+Shift+click also choose clips. Ctrl+C or right-click Copy copies them without pasting.
+note Settings has a Save pictures in this folder choice, used by Paste Path and the image editor.
