@@ -19,7 +19,7 @@ use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::HiDpi::GetDpiForWindow;
+use windows::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -407,6 +407,29 @@ fn make_child(parent: HWND, class: PCWSTR, text: &str, style: u32, id: i32, font
     }
 }
 
+/// The three fonts of the window at `dpi`: the text, the small heading and the big heading.
+fn make_fonts(dpi: u32) -> [HFONT; 3] {
+    let make = |tenths: i32, weight: i32| unsafe {
+        CreateFontW(
+            -((tenths * dpi as i32) / 720),
+            0,
+            0,
+            0,
+            weight,
+            0,
+            0,
+            0,
+            DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY,
+            0,
+            w!("Segoe UI"),
+        )
+    };
+    [make(90, 400), make(95, 600), make(140, 600)]
+}
+
 fn run(start: Start, tray: isize, db: Option<PathBuf>) -> windows::core::Result<()> {
     CLOSING.store(false, Ordering::Release);
     unsafe {
@@ -437,25 +460,7 @@ fn run(start: Start, tray: isize, db: Option<PathBuf>) -> windows::core::Result<
             None,
         )?;
         let dpi = GetDpiForWindow(hwnd).max(96);
-        let make_font = |tenths: i32, weight: i32| {
-            CreateFontW(
-                -((tenths * dpi as i32) / 720),
-                0,
-                0,
-                0,
-                weight,
-                0,
-                0,
-                0,
-                DEFAULT_CHARSET,
-                OUT_DEFAULT_PRECIS,
-                CLIP_DEFAULT_PRECIS,
-                CLEARTYPE_QUALITY,
-                0,
-                w!("Segoe UI"),
-            )
-        };
-        let (font, bold, big) = (make_font(90, 400), make_font(95, 600), make_font(140, 600));
+        let [font, bold, big] = make_fonts(dpi);
         let theme = settingsui::Theme::current();
         settingsui::apply_title_bar(hwnd, theme.dark);
         settingsui::install(settingsui::Look::new(theme, font));
@@ -537,7 +542,7 @@ fn place_window(hwnd: HWND, dpi: u32, height: i32) {
     unsafe {
         let style = WINDOW_STYLE(GetWindowLongW(hwnd, GWL_STYLE) as u32);
         let mut r = RECT { left: 0, top: 0, right: s(WIDTH, dpi), bottom: s(height, dpi) };
-        let _ = AdjustWindowRectEx(&mut r, style, false, WINDOW_EX_STYLE(0));
+        let _ = AdjustWindowRectExForDpi(&mut r, style, false, WINDOW_EX_STYLE(0), dpi);
         let (ww, wh) = (r.right - r.left, r.bottom - r.top);
         let mut now = RECT::default();
         let first = GetWindowRect(hwnd, &mut now).is_err() || (now.right - now.left) <= 120;
@@ -915,6 +920,48 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                     let _ = RedrawWindow(Some(hwnd), None, None, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
                 }
                 DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
+            WM_DPICHANGED => {
+                // moved to a monitor with another scale: new fonts, everything laid out again
+                let new = (wparam.0 & 0xFFFF) as u32;
+                let suggested = *(lparam.0 as *const RECT);
+                let changed = with_ctx(|c| {
+                    if new == 0 || new == c.dpi {
+                        return None;
+                    }
+                    c.dpi = new;
+                    let fresh = make_fonts(new);
+                    let ct = &c.controls;
+                    let set = |h: HWND, f: HFONT| {
+                        SendMessageW(h, WM_SETFONT, Some(WPARAM(f.0 as usize)), Some(LPARAM(1)));
+                    };
+                    for h in [ct.sub, ct.note, ct.size, ct.percent, ct.news, ct.primary, ct.close, ct.notes, ct.skip] {
+                        set(h, fresh[0]);
+                    }
+                    set(ct.news_head, fresh[1]);
+                    set(ct.heading, fresh[2]);
+                    let old = std::mem::replace(&mut c.fonts, fresh);
+                    for f in old {
+                        let _ = DeleteObject(f.into());
+                    }
+                    Some((fresh[0], c.view.height))
+                })
+                .flatten();
+                if let Some((font, height)) = changed {
+                    settingsui::with(|l| l.font = font);
+                    let _ = SetWindowPos(
+                        hwnd,
+                        None,
+                        suggested.left,
+                        suggested.top,
+                        suggested.right - suggested.left,
+                        suggested.bottom - suggested.top,
+                        SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
+                    apply_view(hwnd, true);
+                    place_window(hwnd, new, height);
+                }
+                LRESULT(0)
             }
             WM_CLOSE => {
                 close_request(hwnd);

@@ -119,6 +119,11 @@ fn to_event(cmd: Command, gen: u64) -> Event {
         Command::CtrlS => Event::Key(Key::CtrlS, gen),
         Command::CtrlZ => Event::Key(Key::CtrlZ, gen),
         Command::CtrlY => Event::Key(Key::CtrlY, gen),
+        Command::CtrlM => Event::Key(Key::CtrlM, gen),
+        Command::CtrlUp => Event::Key(Key::CtrlUp, gen),
+        Command::CtrlDown => Event::Key(Key::CtrlDown, gen),
+        Command::ShiftUp => Event::Key(Key::ShiftUp, gen),
+        Command::ShiftDown => Event::Key(Key::ShiftDown, gen),
     }
 }
 

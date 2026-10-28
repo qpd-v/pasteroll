@@ -54,6 +54,21 @@ fn main() {
     multi.multi_mode = true;
     multi.picked = vec![false, true, true];
     save(&mut r, &multi, 1.0, &dir.join("1b-multi.png"));
+    // the options card over the carousel
+    let mut card = multi.clone();
+    card.panel = Some(PanelView {
+        title: "Paste 3 clips together".into(),
+        groups: vec![
+            PanelGroup { label: "Join with".into(), options: ["New line", "Space", "Comma", "Tab", "None"].map(String::from).to_vec(), selected: 2 },
+            PanelGroup { label: "List style".into(), options: ["Plain", "Numbered", "Bulleted"].map(String::from).to_vec(), selected: 1 },
+            PanelGroup { label: "Order".into(), options: ["As chosen", "Newest first", "Oldest first"].map(String::from).to_vec(), selected: 0 },
+        ],
+        preview: "1. Meeting notes: ship the spike, 2. invoice-2026-10.pdf, 3. https://example.com/docs".into(),
+        note: String::new(),
+        focus: 1,
+        hover: Some(PanelHit::Option(0, 3)),
+    });
+    save(&mut r, &card, 2.0, &dir.join("1d-options-card-2x.png"));
     multi.multi_mode = false;
     multi.active = 0;
     multi.rows[0].meta = "Multi-paste, 3 clips, 211 characters".into();

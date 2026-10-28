@@ -87,6 +87,12 @@ pub enum Command {
     ClickOutside,
     /// Redo in the image editor.
     CtrlY,
+    /// Multi-paste on or off, and its keyboard choosing.
+    CtrlM,
+    CtrlUp,
+    CtrlDown,
+    ShiftUp,
+    ShiftDown,
 }
 
 impl Command {
@@ -95,7 +101,8 @@ impl Command {
         [
             Activate, Older, Newer, Confirm, Cancel, PageUp, PageDown, Delete, CtrlDelete, TogglePin, Backspace,
             CtrlBackspace, Tab, ClickPaste, ClickCancel, Left, Right, Home, End, F3, ShiftF3, F11, ShiftDelete,
-            CtrlA, CtrlC, CtrlE, CtrlF, CtrlI, CtrlS, CtrlZ, ClickOutside, CtrlY,
+            CtrlA, CtrlC, CtrlE, CtrlF, CtrlI, CtrlS, CtrlZ, ClickOutside, CtrlY, CtrlM, CtrlUp, CtrlDown, ShiftUp,
+            ShiftDown,
         ]
         .into_iter()
             .find(|c| *c as usize == v)
@@ -632,6 +639,11 @@ fn classify(vk: usize, scan: u32) -> Option<Out> {
         VK_RETURN => Some(Command::Confirm),
         VK_UP if plain => Some(Command::Newer),
         VK_DOWN if plain => Some(Command::Older),
+        VK_UP if ctrl_only => Some(Command::CtrlUp),
+        VK_DOWN if ctrl_only => Some(Command::CtrlDown),
+        VK_UP if shift && !ctrl && !alt && !win => Some(Command::ShiftUp),
+        VK_DOWN if shift && !ctrl && !alt && !win => Some(Command::ShiftDown),
+        VIRTUAL_KEY(0x4D) if ctrl_only => Some(Command::CtrlM),
         VK_PRIOR if plain => Some(Command::PageUp),
         VK_NEXT if plain => Some(Command::PageDown),
         VK_DELETE if plain => Some(Command::Delete),
@@ -699,6 +711,10 @@ fn key_event(msg: u32, ev: &KBDLLHOOKSTRUCT) -> bool {
                 Some(Out::Cmd(
                     c @ (Command::Newer
                     | Command::Older
+                    | Command::CtrlUp
+                    | Command::CtrlDown
+                    | Command::ShiftUp
+                    | Command::ShiftDown
                     | Command::Backspace
                     | Command::CtrlBackspace
                     | Command::Left

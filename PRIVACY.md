@@ -80,7 +80,8 @@ A multi-paste (several clips pasted or copied together) is kept as one more clip
 way, unless recording is paused; it follows the same limits and can be deleted like any clip.
 
 A clip you delete goes to the recycle bin first, still encrypted, and is removed for good after 30
-days (or at once with *Delete permanently*, Shift+Delete, or `pasteroll clear`).
+days (or at once with *Delete permanently*, Shift+Delete, the **Clear history** button in Settings, or
+`pasteroll clear`).
 
 *Advanced Image Paste* works on your computer only. The edited picture is written where you choose
 (the Desktop, or the folder chosen in Settings, by default) and nowhere else. That folder's path is kept in plain text in `config.toml`. The presets you save (the settings, never a picture) and

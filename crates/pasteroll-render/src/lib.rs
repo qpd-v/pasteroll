@@ -21,6 +21,7 @@
 
 mod editor;
 mod icons;
+mod panel;
 mod textmap;
 mod viewer;
 pub mod widgets;
@@ -30,6 +31,7 @@ pub use editor::{
     ItemKind, Placed, PopupAnchor, PopupView, Top, TopView,
 };
 pub use icons::Icon;
+pub use panel::{panel_geometry, panel_hit_at, PanelGeometry, PanelGroup, PanelHit, PanelView};
 pub use viewer::{
     fit_zoom, viewer_geometry, ConfirmView, FindView, Morph, MenuItemView, Tool, ToolView, VGeom, VHit, ViewerBody, ViewerView, OcrSelectionView,
 };
@@ -174,6 +176,8 @@ pub struct ViewModel {
     pub menu: Option<MenuView>,
     /// Multi-paste is on: a plain click chooses a clip (Complete only).
     pub multi_mode: bool,
+    /// The multi-paste options card, while it is open (modal).
+    pub panel: Option<PanelView>,
 }
 
 impl ViewModel {
@@ -192,6 +196,11 @@ impl ViewModel {
             Body::Image(_) => {}
         }
         self.footer.zeroize();
+        if let Some(p) = &mut self.panel {
+            p.title.zeroize();
+            p.preview.zeroize();
+            p.note.zeroize();
+        }
     }
 }
 
@@ -216,6 +225,7 @@ impl Default for ViewModel {
             picked: Vec::new(),
             menu: None,
             multi_mode: false,
+            panel: None,
         }
     }
 }
@@ -248,6 +258,8 @@ pub enum Hit {
     DropdownItem(usize),
     /// An entry of the right-click menu (index into `MenuView::items`).
     MenuItem(usize),
+    /// Something on the multi-paste options card.
+    Panel(PanelHit),
     /// Index into `ViewModel::rows`.
     Row(usize),
     /// The active item's body. `pos` is a UTF-16 offset into the displayed text.
@@ -768,6 +780,10 @@ impl Renderer {
             }
         }
 
+        if let Some(pg) = panel::panel_geometry(vm, size_dip) {
+            self.draw_panel(&mut cv, vm, &pg, size_dip);
+        }
+
         // tiny-skia holds premultiplied RGBA; the frame is opaque, so swizzle to BGRA directly.
         let mut bgra = cv.pm.take();
         for px in bgra.chunks_exact_mut(4) {
@@ -1019,9 +1035,9 @@ impl Renderer {
             Some(Hit::Delete) if vm.in_trash => (g.delete, "Delete permanently (Del)"),
             Some(Hit::Delete) => (g.delete, "Move to recycle bin (Del). Shift+click deletes permanently"),
             Some(Hit::MultiButton) if vm.multi_mode => {
-                (Some(g.multi_button), "Multi-paste is on. Click clips to choose, then click where to paste")
+                (Some(g.multi_button), "Multi-paste is on (Ctrl+M). Click clips, or Shift+Down, then click where to paste")
             }
-            Some(Hit::MultiButton) => (Some(g.multi_button), "Multi-paste: click several clips, then click where to paste"),
+            Some(Hit::MultiButton) => (Some(g.multi_button), "Multi-paste (Ctrl+M): click several clips, then click where to paste"),
             _ => return,
         };
         let Some(r) = rect else { return };
@@ -1147,6 +1163,10 @@ impl Renderer {
 
     /// What is under `(px, py)` (pixels, frame coordinates).
     pub fn hit_test(&mut self, vm: &ViewModel, size_dip: (f32, f32), scale: f32, px: f32, py: f32) -> Hit {
+        // the options card is modal: nothing behind it can be hit
+        if vm.panel.is_some() {
+            return panel_hit_at(vm, size_dip, scale, px, py).map_or(Hit::Nothing, Hit::Panel);
+        }
         let g = geometry(vm, size_dip, scale);
         let (x, y) = (px / scale, py / scale);
         // an open menu covers whatever is under it

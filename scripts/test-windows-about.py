@@ -76,7 +76,7 @@ def main():
                 contents.append(text(handle))
                 return True
             u.EnumChildWindows(hwnd, read_child, 0)
-            assert any(f"Pasteroll {VERSION}" in t and "Installed (Windows Setup)" in t for t in contents)
+            assert any(f"Pasteroll {VERSION}" in t for t in contents) and any("Installed (Windows Setup)" in t for t in contents)
             checks.append("native About dialog shows version and installation mode")
             u.PostMessageW(hwnd, 0x10, 0, 0)  # Close only this test process's dialog.
             assert process.wait(timeout=5) == 0

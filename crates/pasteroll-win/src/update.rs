@@ -509,39 +509,19 @@ enum Answer {
 }
 
 fn ask() -> Answer {
-    use windows::Win32::UI::Controls::*;
-    const YES: i32 = 101;
-    const NO: i32 = 102;
-    let (title, heading, body) = (wide("Pasteroll updates"), wide("Let Pasteroll check for updates?"), wide(QUESTION));
-    // buttons with no keyboard shortcuts: a stray key typed while this appears cannot say yes
-    let (yes_text, no_text) = (wide("Check for updates"), wide("Never check"));
-    let buttons = [
-        TASKDIALOG_BUTTON { nButtonID: YES, pszButtonText: PCWSTR(yes_text.as_ptr()) },
-        TASKDIALOG_BUTTON { nButtonID: NO, pszButtonText: PCWSTR(no_text.as_ptr()) },
-    ];
-    let config = TASKDIALOGCONFIG {
-        cbSize: size_of::<TASKDIALOGCONFIG>() as u32,
-        dwFlags: TDF_ALLOW_DIALOG_CANCELLATION,
-        pszWindowTitle: PCWSTR(title.as_ptr()),
-        pszMainInstruction: PCWSTR(heading.as_ptr()),
-        pszContent: PCWSTR(body.as_ptr()),
-        cButtons: buttons.len() as u32,
-        pButtons: buttons.as_ptr(),
-        // "Never check" is the default: the answer that uses no network is one Enter away
-        nDefaultButton: NO,
-        ..Default::default()
+    // "Never check" has the keyboard: the answer that uses no network is one Enter away, and a stray
+    // key typed while this appears cannot say yes
+    let spec = crate::themeddlg::Spec {
+        title: "Pasteroll updates",
+        heading: "Let Pasteroll check for updates?",
+        body: QUESTION,
+        buttons: &["Check for updates", "Never check"],
+        focus: 1,
     };
-    let mut pressed = 0i32;
-    match unsafe { TaskDialogIndirect(&config, Some(&mut pressed), None, None) } {
-        Ok(()) => match pressed {
-            YES => Answer::Yes,
-            NO => Answer::No,
-            _ => Answer::Undecided,
-        },
-        Err(e) => {
-            eprintln!("[pasteroll] could not show the update question: {}", e.message());
-            Answer::Undecided
-        }
+    match crate::themeddlg::show(&spec) {
+        Some(0) => Answer::Yes,
+        Some(1) => Answer::No,
+        _ => Answer::Undecided,
     }
 }
 

@@ -1745,7 +1745,8 @@ impl Controller {
                     self.scroll_text(0.0, d * line);
                 }
             }
-            Key::Tab => {}
+            // the keys for choosing several clips belong to the carousel
+            Key::Tab | Key::CtrlM | Key::CtrlUp | Key::CtrlDown | Key::ShiftUp | Key::ShiftDown => {}
         }
     }
 

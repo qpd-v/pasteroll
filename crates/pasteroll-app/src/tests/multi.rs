@@ -595,3 +595,295 @@ b"]);
     assert_eq!(h.badges().iter().filter(|b| **b == 2).count(), 1);
     assert_eq!(h.c.store().borrow().count().unwrap(), 5);
 }
+
+// ---------------------------------------------------------------- the keyboard
+
+impl H {
+    fn key_ev(&mut self, g: u64, k: Key) {
+        self.send(Event::Key(k, g));
+    }
+
+    /// Clicks where to paste and returns what was pasted so far.
+    fn pasted_after_click(&mut self, g: u64) -> Vec<String> {
+        self.click_to_paste(g);
+        self.pasted_texts()
+    }
+}
+
+#[test]
+fn ctrl_m_turns_multi_paste_on_and_off() {
+    let mut h = four();
+    let g = h.open();
+    assert!(!h.vm().multi_mode);
+    h.key_ev(g, Key::CtrlM);
+    assert!(h.vm().multi_mode);
+    assert!(h.footer().starts_with("Multi-paste"), "{}", h.footer());
+    h.key_ev(g, Key::CtrlM);
+    assert!(!h.vm().multi_mode);
+}
+
+#[test]
+fn ctrl_m_does_nothing_in_no_bloat() {
+    let mut h = four();
+    h.c.init_ui_mode(UiMode::NoBloat);
+    h.p.mode = UiMode::NoBloat;
+    let g = h.open();
+    h.key_ev(g, Key::CtrlM);
+    assert!(!h.vm().multi_mode);
+}
+
+#[test]
+fn ctrl_a_chooses_every_clip_in_the_list() {
+    let mut h = four();
+    let g = h.open();
+    h.key_ev(g, Key::CtrlA);
+    assert_eq!(h.chosen(), vec![0, 1, 2, 3]);
+    assert!(h.footer().starts_with("4 chosen"), "{}", h.footer());
+    assert_eq!(h.pasted_after_click(g), vec!["d\nc\nb\na"]);
+}
+
+#[test]
+fn ctrl_a_follows_the_search() {
+    let mut h = H::new(&[Clip::Text("apple one"), Clip::Text("pear"), Clip::Text("apple two")]);
+    let g = h.open();
+    type_text(&mut h, g, "apple");
+    h.key_ev(g, Key::CtrlA);
+    assert_eq!(h.pasted_after_click(g), vec!["apple two\napple one"], "only what matches the search");
+}
+
+#[test]
+fn shift_down_chooses_the_clip_shown_and_each_one_it_walks_to() {
+    let mut h = four();
+    let g = h.open();
+    h.key_ev(g, Key::CtrlM);
+    h.key_ev(g, Key::ShiftDown);
+    h.key_ev(g, Key::ShiftDown);
+    assert_eq!(newest_text(&mut h), "b", "the carousel moved with the keys");
+    assert_eq!(h.pasted_after_click(g), vec!["d\nc\nb"]);
+}
+
+#[test]
+fn walking_back_with_shift_takes_the_clips_out_again() {
+    let mut h = four();
+    let g = h.open();
+    h.key_ev(g, Key::CtrlM);
+    h.key_ev(g, Key::ShiftDown);
+    h.key_ev(g, Key::ShiftDown);
+    h.key_ev(g, Key::ShiftUp);
+    assert_eq!(h.pasted_after_click(g), vec!["d\nc"]);
+}
+
+#[test]
+fn ctrl_down_adds_every_clip_it_lands_on() {
+    let mut h = four();
+    let g = h.open();
+    h.key_ev(g, Key::CtrlM);
+    h.key_ev(g, Key::CtrlDown);
+    h.key_ev(g, Key::CtrlDown);
+    h.key_ev(g, Key::CtrlUp);
+    assert_eq!(h.pasted_after_click(g), vec!["d\nc\nb"], "walking back keeps what was chosen");
+}
+
+#[test]
+fn without_multi_paste_the_shift_and_ctrl_arrows_are_just_arrows() {
+    let mut h = four();
+    let g = h.open();
+    h.key_ev(g, Key::ShiftDown);
+    h.key_ev(g, Key::CtrlDown);
+    assert_eq!(newest_text(&mut h), "b");
+    assert!(h.chosen().is_empty());
+}
+
+#[test]
+fn space_chooses_the_shown_clip_but_still_types_into_the_search() {
+    let mut h = four();
+    let g = h.open();
+    h.key_ev(g, Key::CtrlM);
+    h.key_ev(g, Key::Char(' '));
+    assert_eq!(h.chosen(), vec![0]);
+    h.key_ev(g, Key::Char(' '));
+    assert!(h.chosen().is_empty(), "again takes it out");
+    h.key_ev(g, Key::Char('x'));
+    h.key_ev(g, Key::Char(' '));
+    assert_eq!(h.c.query(), Some("x "), "with text in the box a space is text");
+}
+
+// ---------------------------------------------------------------- the options card
+
+impl H {
+    fn card(&mut self) -> Option<pasteroll_render::PanelView> {
+        self.vm().panel
+    }
+
+    fn card_geometry(&mut self) -> pasteroll_render::PanelGeometry {
+        let vm = self.vm();
+        let size = self.p.window();
+        pasteroll_render::panel_geometry(&vm, (size.0 as f32, size.1 as f32)).expect("the card is open")
+    }
+
+    fn click_at(&mut self, r: pasteroll_render::Rect) {
+        let at = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+        self.mouse(MouseKind::Move, at);
+        self.mouse(MouseKind::Down, at);
+        self.mouse(MouseKind::Up, at);
+    }
+}
+
+fn two_chosen_with_card() -> (H, u64) {
+    let mut h = four();
+    let g = h.open();
+    h.click_row(1, CTRL); // c
+    h.click_row(3, CTRL); // a
+    h.click_window(g, CTRL);
+    (h, g)
+}
+
+#[test]
+fn ctrl_clicking_where_to_paste_opens_the_options_instead_of_pasting() {
+    let (mut h, _) = two_chosen_with_card();
+    let card = h.card().expect("the card is open");
+    assert!(h.p.pastes.is_empty() && h.pasted_texts().is_empty(), "nothing was pasted yet");
+    assert_eq!(card.title, "Paste 2 clips together");
+    assert_eq!(card.preview, "c\na");
+    assert_eq!(card.groups.len(), 3);
+    assert_eq!(card.groups[0].selected, 0, "new line to start with");
+}
+
+#[test]
+fn enter_on_the_card_pastes_with_what_was_chosen_there() {
+    let (mut h, g) = two_chosen_with_card();
+    h.key_ev(g, Key::Down); // Space
+    h.key_ev(g, Key::Down); // Comma
+    assert_eq!(h.card().unwrap().preview, "c, a");
+    h.enter(g);
+    assert_eq!(h.pasted_texts(), vec!["c, a"]);
+    assert!(!h.c.is_open(), "the paste ends the session");
+}
+
+#[test]
+fn a_list_style_and_an_order_change_the_result() {
+    let (mut h, g) = two_chosen_with_card();
+    h.key_ev(g, Key::Tab); // List style
+    h.key_ev(g, Key::Down); // Numbered
+    h.key_ev(g, Key::Tab); // Order
+    h.key_ev(g, Key::Down); // Newest first
+    assert_eq!(h.card().unwrap().preview, "1. c\n2. a");
+    h.key_ev(g, Key::Down); // Oldest first
+    assert_eq!(h.card().unwrap().preview, "1. a\n2. c");
+    h.enter(g);
+    assert_eq!(h.pasted_texts(), vec!["1. a\n2. c"]);
+}
+
+#[test]
+fn the_buttons_and_chips_work_with_the_mouse() {
+    let (mut h, _) = two_chosen_with_card();
+    let g = h.card_geometry();
+    h.click_at(g.chips[0][3]); // Tab
+    assert_eq!(h.card().unwrap().groups[0].selected, 3);
+    assert_eq!(h.card().unwrap().preview, "c    a", "a tab shows as spaces in the preview");
+    h.click_at(g.chips[1][2]); // Bulleted
+    assert_eq!(h.card().unwrap().groups[1].selected, 2);
+    h.click_at(g.paste);
+    assert_eq!(h.pasted_texts(), vec!["- c\t- a"]);
+}
+
+#[test]
+fn copy_on_the_card_copies_the_joined_text_and_pastes_nothing() {
+    let (mut h, g) = two_chosen_with_card();
+    h.key_ev(g, Key::Down); // Space
+    h.key_ev(g, Key::CtrlC);
+    assert_eq!(h.pasted_texts(), vec!["c a"]);
+    assert!(h.p.pastes.is_empty(), "nothing is pasted");
+    assert!(!h.c.is_open());
+}
+
+#[test]
+fn esc_goes_back_to_the_carousel_with_the_clips_still_chosen() {
+    let (mut h, g) = two_chosen_with_card();
+    h.key_ev(g, Key::Escape);
+    assert!(h.card().is_none() && h.c.is_open());
+    assert_eq!(h.chosen().len(), 2);
+    h.key_ev(g, Key::Escape);
+    assert!(h.chosen().is_empty(), "the next Esc forgets the choice");
+}
+
+#[test]
+fn the_card_is_modal() {
+    let (mut h, g) = two_chosen_with_card();
+    // a click on the carousel behind it does nothing, and nor does an outside click
+    let before = h.chosen();
+    let at = (30.0, 400.0);
+    h.mouse(MouseKind::Down, at);
+    h.mouse(MouseKind::Up, at);
+    h.click_window(g, Modifiers::default());
+    assert!(h.card().is_some(), "still open");
+    assert_eq!(h.chosen(), before);
+    assert!(h.pasted_texts().is_empty(), "an outside click does not paste while the card is up");
+    // typing does not reach the search box
+    h.key_ev(g, Key::Char('z'));
+    assert_eq!(h.c.query(), Some(""));
+}
+
+#[test]
+fn the_card_remembers_its_choices_for_next_time() {
+    let (mut h, g) = two_chosen_with_card();
+    h.key_ev(g, Key::Down);
+    h.key_ev(g, Key::Down); // Comma
+    h.enter(g);
+    // the first multi-paste is now the top row, so c and a are one row further down
+    let g = h.open();
+    h.click_row(2, CTRL);
+    h.click_row(4, CTRL);
+    h.click_window(g, CTRL);
+    assert_eq!(h.card().unwrap().groups[0].selected, 2, "comma again");
+    // a plain paste is still one per line
+    h.key_ev(g, Key::Escape);
+    assert_eq!(h.pasted_after_click(g).last().map(String::as_str), Some("c\na"));
+}
+
+#[test]
+fn ctrl_e_with_multi_paste_on_opens_the_options() {
+    let mut h = four();
+    let g = h.open();
+    h.key_ev(g, Key::CtrlM);
+    h.click_row(1, Modifiers::default());
+    h.click_row(2, Modifiers::default());
+    h.key_ev(g, Key::CtrlE);
+    assert!(h.card().is_some() && !h.c.viewer_is_open());
+    h.enter(g);
+    assert_eq!(h.pasted_texts(), vec!["c\nb"]);
+}
+
+#[test]
+fn ctrl_e_with_multi_paste_on_and_too_few_chosen_says_so() {
+    let mut h = four();
+    let g = h.open();
+    h.key_ev(g, Key::CtrlM);
+    h.click_row(1, Modifiers::default());
+    h.key_ev(g, Key::CtrlE);
+    assert!(h.card().is_none() && !h.c.viewer_is_open());
+    assert!(h.footer().contains("Choose two or more"), "{}", h.footer());
+}
+
+#[test]
+fn ctrl_e_without_multi_paste_is_still_the_expanded_viewer() {
+    let mut h = four();
+    let g = h.open();
+    h.key_ev(g, Key::CtrlE);
+    assert!(h.c.viewer_is_open());
+}
+
+#[test]
+fn a_terminal_asks_on_the_card_before_a_multi_line_paste() {
+    let mut h = four();
+    h.p.foreground = Some(target(1, "windowsterminal.exe"));
+    let g = h.open();
+    h.click_row(0, CTRL);
+    h.click_row(1, CTRL);
+    h.click_window(g, CTRL);
+    h.enter(g);
+    assert!(h.p.pastes.is_empty(), "a second Enter is needed");
+    assert!(h.card().is_some_and(|c| c.note.contains("terminal")), "the question is on the card");
+    h.enter(g);
+    assert_eq!(h.pasted_texts(), vec!["d\nc"]);
+}

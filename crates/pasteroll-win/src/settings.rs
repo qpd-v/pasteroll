@@ -15,7 +15,7 @@ use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::*;
-use windows::Win32::UI::HiDpi::GetDpiForWindow;
+use windows::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::settingsui;
@@ -38,6 +38,7 @@ const ID_LAST_CHECK: i32 = 134;
 const ID_IMG_EDIT: i32 = 135;
 const ID_IMG_BROWSE: i32 = 136;
 const ID_IMG_RESET: i32 = 137;
+const ID_CLEAR_HISTORY: i32 = 138;
 const ID_EX_LIST: i32 = 130;
 const ID_EX_EDIT: i32 = 131;
 const ID_EX_ADD: i32 = 132;
@@ -286,7 +287,7 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
 
         // size the window so the client area is exactly the layout, centred in the work area
         let mut r = RECT { left: 0, top: 0, right: s(WIN_W), bottom: s(WIN_H) };
-        let _ = AdjustWindowRectEx(&mut r, style, false, WINDOW_EX_STYLE(0));
+        let _ = AdjustWindowRectExForDpi(&mut r, style, false, WINDOW_EX_STYLE(0), dpi);
         let (ww, wh) = (r.right - r.left, r.bottom - r.top);
         let mut work = RECT { left: 0, top: 0, right: GetSystemMetrics(SM_CXSCREEN), bottom: GetSystemMetrics(SM_CYSCREEN) };
         let _ = SystemParametersInfoW(SPI_GETWORKAREA, 0, Some(&mut work as *mut RECT as *mut _), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0));
@@ -296,6 +297,7 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
 
         let theme = settingsui::Theme::current();
         let mut look = settingsui::Look::new(theme, font);
+        look.dpi = dpi;
         settingsui::apply_title_bar(hwnd, theme.dark);
 
         let lim = cfg.limits;
@@ -492,7 +494,9 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
         button("Remove", BS_PUSHBUTTON as u32, cx + PAD + 250, cy + 72, 60, 28, ID_EX_REMOVE);
 
         // ---------------------------------------------------------------- bottom bar
-        let status_h = label("", MARGIN, 520, 490, 36, ID_STATUS, SS_CENTERIMAGE_);
+        // Clear history sits apart from the cards, at the left of the bottom bar
+        button("Clear history...", BS_PUSHBUTTON as u32, MARGIN, 522, 128, 32, ID_CLEAR_HISTORY);
+        let status_h = label("", MARGIN + 138, 520, 350, 36, ID_STATUS, SS_CENTERIMAGE_);
         button("Cancel", BS_PUSHBUTTON as u32, WIN_W - MARGIN - 8 - 176, 522, 84, 32, ID_CANCEL);
         button("Save", BS_DEFPUSHBUTTON as u32, WIN_W - MARGIN - 84, 522, 84, 32, ID_SAVE);
 
@@ -619,6 +623,41 @@ fn refresh_last_check() {
             let _ = windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow(s.check_now, !checking);
         }
     });
+}
+
+/// "Clear history...": after asking, deletes every clip that is not pinned (the recycle bin included).
+/// Pinned clips stay. This acts at once; it does not wait for Save.
+fn clear_history(hwnd: HWND) {
+    let counts = app::with_runtime(|rt| {
+        let store = rt.controller.store();
+        let st = store.borrow();
+        (st.stats(), st.trash_count().unwrap_or(0))
+    });
+    let Some((stats, trashed)) = counts else {
+        return status("Pasteroll is not ready yet. Try again in a moment.");
+    };
+    let n = stats.clips + trashed;
+    if n == 0 {
+        return status("There is no history to clear.");
+    }
+    let pinned = if stats.pins > 0 { format!(" The {} pinned clip(s) are kept.", stats.pins) } else { String::new() };
+    let msg = format!("Delete {n} clip(s) from history, the recycle bin included?{pinned}\n\nThis cannot be undone.");
+    if !ask(hwnd, "Clear history", &msg) {
+        return;
+    }
+    let removed = app::with_runtime(|rt| {
+        let store = rt.controller.store();
+        let mut st = store.borrow_mut();
+        let n = st.clear(true).unwrap_or(0);
+        if n > 0 {
+            // deleted data stays decryptable under the old key until it is replaced
+            let _ = st.request_rotation();
+        }
+        n
+    })
+    .unwrap_or(0);
+    eprintln!("[pasteroll] history cleared from settings; {removed} clip(s) removed");
+    status(&format!("Cleared {removed} clip(s)."));
 }
 
 /// "Check for updates now": the result is shown by the notification icon, like the menu entry's.
@@ -876,6 +915,47 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                 update_values();
                 LRESULT(0)
             }
+            WM_DPICHANGED => {
+                // the window moved to a monitor with another scale: controls and fonts follow
+                let new = (wparam.0 & 0xFFFF) as u32;
+                let suggested = *(lparam.0 as *const RECT);
+                let old = settingsui::with(|l| l.dpi).unwrap_or(96);
+                if new != old && new > 0 {
+                    let fonts = settingsui::rescale_children(hwnd, old, new);
+                    ST.with(|c| {
+                        if let Ok(mut g) = c.try_borrow_mut() {
+                            if let Some(s) = g.as_mut() {
+                                for (o, n) in &fonts {
+                                    if s.font == *o {
+                                        s.font = *n;
+                                    }
+                                    if s.font_bold == *o {
+                                        s.font_bold = *n;
+                                    }
+                                }
+                            }
+                        }
+                    });
+                    settingsui::with(|l| {
+                        l.dpi = new;
+                        for (o, n) in &fonts {
+                            if l.font == *o {
+                                l.font = *n;
+                            }
+                        }
+                    });
+                }
+                let _ = SetWindowPos(
+                    hwnd,
+                    None,
+                    suggested.left,
+                    suggested.top,
+                    suggested.right - suggested.left,
+                    suggested.bottom - suggested.top,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+                LRESULT(0)
+            }
             WM_ERASEBKGND => {
                 let painted = settingsui::with(|l| settingsui::paint_background(hwnd, HDC(wparam.0 as *mut _), l));
                 if painted.is_some() { LRESULT(1) } else { DefWindowProcW(hwnd, msg, wparam, lparam) }
@@ -907,6 +987,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                     ID_SAVE => save(),
                     ID_CANCEL => close(),
                     ID_CHECK_NOW => check_now(),
+                    ID_CLEAR_HISTORY => clear_history(hwnd),
                     ID_IMG_BROWSE => browse_image_folder(hwnd),
                     ID_IMG_RESET => ST.with(|c| {
                         if let Ok(g) = c.try_borrow() {

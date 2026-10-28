@@ -41,6 +41,25 @@ pub enum Key {
     CtrlZ,
     /// Redo (Ctrl+Y, Ctrl+Shift+Z) in the image editor.
     CtrlY,
+    /// Multi-paste on or off.
+    CtrlM,
+    /// With Multi-paste on: move to the next clip up and add it to the choice (Ctrl), or grow or
+    /// shrink the chosen range (Shift).
+    CtrlUp,
+    CtrlDown,
+    ShiftUp,
+    ShiftDown,
+}
+
+impl Key {
+    /// Shift or Ctrl with Up or Down as the plain arrow (where choosing several clips has no meaning).
+    pub fn plain_arrow(self) -> Key {
+        match self {
+            Key::CtrlUp | Key::ShiftUp => Key::Up,
+            Key::CtrlDown | Key::ShiftDown => Key::Down,
+            k => k,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

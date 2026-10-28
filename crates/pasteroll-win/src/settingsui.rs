@@ -123,6 +123,8 @@ pub struct Look {
     /// Frames of edit boxes and lists, in DIP.
     pub fields: Vec<[i32; 4]>,
     pub font: HFONT,
+    /// The scale the window's controls were laid out for (changes when it moves to another monitor).
+    pub dpi: u32,
 }
 
 impl Look {
@@ -136,6 +138,7 @@ impl Look {
             cards: Vec::new(),
             fields: Vec::new(),
             font,
+            dpi: 96,
         }
     }
 
@@ -472,6 +475,62 @@ fn is_muted(id: i32) -> bool {
     matches!(id, 111..=115 | 134 | 150 | 160..=169 | 1011..=1019)
 }
 
+/// `v` pixels at `old` dpi as pixels at `new` dpi.
+pub fn rescale(v: i32, old: u32, new: u32) -> i32 {
+    (v as i64 * new as i64 / old.max(1) as i64) as i32
+}
+
+/// The monitor's scale changed from `old_dpi` to `new_dpi`: moves and resizes every control of `hwnd`
+/// to match, gives each its font again at the new size, and returns the fonts replaced as (old, new)
+/// so the caller can update what it holds. The old fonts are deleted.
+pub fn rescale_children(hwnd: HWND, old_dpi: u32, new_dpi: u32) -> Vec<(HFONT, HFONT)> {
+    unsafe extern "system" fn collect(h: HWND, l: LPARAM) -> windows::core::BOOL {
+        unsafe { (*(l.0 as *mut Vec<HWND>)).push(h) };
+        windows::core::BOOL(1)
+    }
+    let mut children: Vec<HWND> = Vec::new();
+    let font_of = |c: HWND| HFONT(unsafe { SendMessageW(c, WM_GETFONT, None, None) }.0 as *mut _);
+    let mut map: Vec<(HFONT, HFONT)> = Vec::new();
+    unsafe {
+        let _ = EnumChildWindows(Some(hwnd), Some(collect), LPARAM(&mut children as *mut Vec<HWND> as isize));
+        for &c in &children {
+            let old = font_of(c);
+            if old.is_invalid() || map.iter().any(|(o, _)| *o == old) {
+                continue;
+            }
+            let mut lf = LOGFONTW::default();
+            if GetObjectW(old.into(), size_of::<LOGFONTW>() as i32, Some(&mut lf as *mut LOGFONTW as *mut _)) > 0 {
+                lf.lfHeight = rescale(lf.lfHeight, old_dpi, new_dpi);
+                map.push((old, CreateFontIndirectW(&lf)));
+            }
+        }
+        for &c in &children {
+            let old = font_of(c);
+            if let Some((_, new)) = map.iter().find(|(o, _)| *o == old) {
+                SendMessageW(c, WM_SETFONT, Some(WPARAM(new.0 as usize)), Some(LPARAM(0)));
+            }
+            let mut r = RECT::default();
+            let _ = GetWindowRect(c, &mut r);
+            let mut top_left = POINT { x: r.left, y: r.top };
+            let _ = ScreenToClient(hwnd, &mut top_left);
+            let (w, h) = (r.right - r.left, r.bottom - r.top);
+            let _ = SetWindowPos(
+                c,
+                None,
+                rescale(top_left.x, old_dpi, new_dpi),
+                rescale(top_left.y, old_dpi, new_dpi),
+                rescale(w, old_dpi, new_dpi),
+                rescale(h, old_dpi, new_dpi),
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+        for (old, _) in &map {
+            let _ = DeleteObject((*old).into());
+        }
+    }
+    map
+}
+
 /// A picture (PNG bytes) of the window as it is drawn now: a debugging aid for looking at the windows.
 pub fn capture_window(hwnd: HWND) -> Result<Vec<u8>, String> {
     use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
@@ -538,6 +597,14 @@ mod tests {
             assert!(ratio(t.on_accent, t.accent) >= 4.5, "text on the accent colour");
             assert!(ratio(t.text, t.field) >= 7.0, "text in edit boxes");
         }
+    }
+
+    #[test]
+    fn pixels_rescale_between_dpis() {
+        assert_eq!(rescale(100, 96, 144), 150);
+        assert_eq!(rescale(150, 144, 96), 100);
+        assert_eq!(rescale(-12, 96, 192), -24, "a font height keeps its sign");
+        assert_eq!(rescale(33, 96, 96), 33);
     }
 
     #[test]

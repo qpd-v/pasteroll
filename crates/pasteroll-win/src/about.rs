@@ -1,10 +1,8 @@
 //! Version and installation information, without opening clipboard history.
 
-use crate::setup;
-use windows::core::{w, PCWSTR};
+use crate::{setup, themeddlg};
+use std::sync::atomic::{AtomicBool, Ordering};
 use windows::Win32::Foundation::HWND;
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::WindowsAndMessaging::*;
 
 pub fn text() -> String {
     let installation = if pasteroll_core::paths::is_portable() {
@@ -26,19 +24,34 @@ pub fn text() -> String {
     )
 }
 
+/// The window's heading.
+pub fn heading() -> String {
+    format!("Pasteroll {}", env!("CARGO_PKG_VERSION"))
+}
+
+/// What the window says under the heading.
+pub fn body() -> String {
+    text().splitn(2, "\n\n").nth(1).unwrap_or_default().to_owned()
+}
+
+/// Whether an About window is open already (a second one is not opened).
+static OPEN: AtomicBool = AtomicBool::new(false);
+
+fn show_window() {
+    if OPEN.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let (heading, body) = (heading(), body());
+    themeddlg::show(&themeddlg::Spec { title: "About Pasteroll", heading: &heading, body: &body, buttons: &["OK"], focus: 0 });
+    OPEN.store(false, Ordering::Release);
+}
+
+/// The About window. From the tray (`owner` given) it opens on a thread of its own and returns at
+/// once; from the command line it waits until it is closed.
 pub fn show(owner: Option<HWND>) {
-    let content: Vec<u16> = text().encode_utf16().chain(Some(0)).collect();
-    unsafe {
-        let params = MSGBOXPARAMSW {
-            cbSize: size_of::<MSGBOXPARAMSW>() as u32,
-            hwndOwner: owner.unwrap_or_default(),
-            hInstance: GetModuleHandleW(None).unwrap_or_default().into(),
-            lpszText: PCWSTR(content.as_ptr()),
-            lpszCaption: w!("About Pasteroll"),
-            dwStyle: MB_OK | MB_USERICON,
-            lpszIcon: PCWSTR(1usize as *const u16),
-            ..Default::default()
-        };
-        MessageBoxIndirectW(&params);
+    if owner.is_some() {
+        let _ = std::thread::Builder::new().name("pasteroll-about".into()).spawn(show_window);
+    } else {
+        show_window();
     }
 }

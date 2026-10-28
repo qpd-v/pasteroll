@@ -1,6 +1,6 @@
 # Beta.4 download filenames
 
-Beta.13 is a Windows-only release: tag v0.1.0-beta.13 carries only Windows files (Setup, portable ZIP, program file, update manifest and signature) and a
+Beta.14 is a Windows-only release: tag v0.1.0-beta.14 carries only Windows files (Setup, portable ZIP, program file, update manifest and signature) and a
 SHA256SUMS that covers the three Windows packages. The X11 and GNOME downloads below stay on v0.1.0-beta.4.
 
 Use release tag v0.1.0-beta.4 for all six packages and SHA256SUMS after publication.

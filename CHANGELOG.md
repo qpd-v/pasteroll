@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.0-beta.14 (Windows only)
+
+- **Multi-paste from the keyboard.** Ctrl+M turns Multi-paste on or off. With it on, Shift+Down (or Up)
+  chooses the clip shown and each one you walk to, and walking back takes them out again; Ctrl+Down (or Up)
+  adds each clip you land on; Space chooses the clip shown (while the search box is empty); Ctrl+A chooses
+  every clip in the list. The footer and the button's tooltip say so.
+- **Options for pasting several clips together.** With several clips chosen, hold Ctrl (the image editor
+  key) while you click where they should go, or press Ctrl+E while Multi-paste is on, and a small card
+  opens over the carousel: what joins the clips (new line, space, comma, tab or nothing), a list style
+  (plain, numbered, bulleted), the order (as chosen, newest first, oldest first) and a preview. Enter or
+  Paste pastes (a terminal still asks first, on the card), Copy copies, Esc goes back with the clips still
+  chosen. The last choices are remembered until Pasteroll restarts; a plain paste is still one per line.
+- Settings has a **Clear history** button (pinned clips are kept; it asks first and cannot be undone).
+- The Settings and update windows follow the window to a monitor with a different scale (size, fonts
+  and controls), instead of staying the size they opened at.
+- **About** and the one-time question about update checks use the new light/dark window style instead of
+  the plain Windows dialogs. About opens without holding up the tray.
+
 ## 0.1.0-beta.13 (Windows only)
 
 - Checking for updates, downloading and installing now happen in one **update window**: it shows what

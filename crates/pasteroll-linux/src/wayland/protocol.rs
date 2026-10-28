@@ -247,8 +247,20 @@ pub fn event(
             let key = match a as u32 {
                 0xff0d => Some(Key::Enter),
                 0xff1b => Some(Key::Escape),
-                0xff52 => Some(Key::Up),
-                0xff54 => Some(Key::Down),
+                0xff52 => Some(if ctrl {
+                    Key::CtrlUp
+                } else if shift {
+                    Key::ShiftUp
+                } else {
+                    Key::Up
+                }),
+                0xff54 => Some(if ctrl {
+                    Key::CtrlDown
+                } else if shift {
+                    Key::ShiftDown
+                } else {
+                    Key::Down
+                }),
                 0xff55 => Some(Key::PageUp),
                 0xff56 => Some(Key::PageDown),
                 0xff51 => Some(Key::Left),
@@ -277,6 +289,7 @@ pub fn event(
                     0x66 | 0x46 => Some(Key::CtrlF),
                     0x69 | 0x49 => Some(Key::CtrlI),
                     0x70 | 0x50 => Some(Key::CtrlP),
+                    0x6d | 0x4d => Some(Key::CtrlM),
                     0x73 | 0x53 => Some(Key::CtrlS),
                     0x79 | 0x59 => Some(Key::CtrlY),
                     0x7a | 0x5a => Some(if shift { Key::CtrlY } else { Key::CtrlZ }),

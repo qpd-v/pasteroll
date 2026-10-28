@@ -48,6 +48,7 @@ mod setup;
 mod sigcheck;
 #[cfg(test)]
 mod testsupport;
+mod themeddlg;
 mod tray;
 mod update;
 mod updatewin;
@@ -615,6 +616,21 @@ fn main() {
         }
         #[cfg(feature = "e2e-test-server")]
         "update-window-e2e" => updatewin::e2e(&db),
+        // debug aid: a picture of the About window or the update question
+        "dialog-snapshot" => {
+            unsafe {
+                let _ = windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
+                    windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+                );
+            }
+            match (value(&args, "--what"), value(&args, "--out")) {
+                (Some(what), Some(out)) => match themeddlg::snapshot(&what, Path::new(&out)) {
+                    Ok(()) => 0,
+                    Err(e) => fail(e),
+                },
+                _ => fail("usage: dialog-snapshot --what about|question --out FILE.png"),
+            }
+        }
         // debug aid: a picture of the update window on one of its pages (no network)
         "update-window-snapshot" => {
             unsafe {

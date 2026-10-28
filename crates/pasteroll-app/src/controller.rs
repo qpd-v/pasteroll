@@ -13,6 +13,7 @@
 //! - what is pasted is the real text, even where the preview shows hidden characters as tokens.
 
 mod editor;
+mod joinpanel;
 mod multi;
 mod viewer;
 
@@ -215,6 +216,8 @@ struct Ui {
     pick_anchor: Option<i64>,
     /// The right-click menu, while it is open.
     menu: Option<multi::Menu>,
+    /// The options card for pasting several clips together, while it is open.
+    join: Option<joinpanel::JoinPanel>,
     /// Multi-paste is switched on (its button): a plain click chooses a clip.
     multi_on: bool,
 }
@@ -305,6 +308,8 @@ pub struct Controller {
     row_cache: HashMap<i64, RowInfo>,
     /// Set while a multi-paste is being pasted: how many clips went into the text (see `multi.rs`).
     joined_paste: Option<usize>,
+    /// The choices last made on the multi-paste options card (kept until Pasteroll restarts).
+    join_last: joinpanel::JoinOptions,
     preview_gen: u64,
     overlay: OverlayInfo,
     dirty: bool,
@@ -429,6 +434,7 @@ impl Controller {
             last_maintain_ms: None,
             row_cache: HashMap::new(),
             joined_paste: None,
+            join_last: joinpanel::JoinOptions::default(),
             preview_gen: 0,
             overlay: OverlayInfo::new(1.0, (WIDTH as u32, HEIGHT as u32)),
             dirty: false,
@@ -587,10 +593,17 @@ impl Controller {
             p.heartbeat();
         }
         let viewing = self.viewer.is_some();
+        // Ctrl or Shift with Up or Down choose clips in the carousel only; elsewhere they are the arrows
+        let ev = match ev {
+            Event::Key(k, g) if viewing || self.editor.is_some() => Event::Key(k.plain_arrow(), g),
+            other => other,
+        };
         // the image editor is modal: it takes every event meant for the carousel
         let consumed = self.editor.is_some() && self.editor_event(p, ev, now);
+        // so is the multi-paste options card
+        let card = !consumed && self.open.as_ref().is_some_and(|o| o.ui.join.is_some()) && self.join_event(p, ev, now);
         match ev {
-            _ if consumed => {}
+            _ if consumed || card => {}
             Event::Activate => {
                 self.last_activity_ms = now;
                 self.activate(p, now);
@@ -755,6 +768,7 @@ impl Controller {
                 multi_on: false,
                 pick_anchor: None,
                 menu: None,
+                join: None,
             },
         });
         p.input_active(true);
@@ -1412,6 +1426,7 @@ impl Controller {
         // While the dropdown is open the arrows and Enter drive it.
         if dropdown {
             let n = filters::labels(&self.custom_filters).len();
+            let key = key.plain_arrow();
             match key {
                 Key::Up | Key::Down => {
                     if let Some(o) = self.open.as_mut() {
@@ -1472,10 +1487,26 @@ impl Controller {
                     self.dirty = true;
                 }
             }
+            Key::Char(' ') if self.space_chooses() => self.pick_current(now),
             Key::Char(c) => self.type_char(p, c),
             Key::Backspace => self.erase(p, false),
             Key::CtrlBackspace => self.erase(p, true),
-            Key::CtrlA => {}
+            // chooses every clip in the list (Complete only)
+            Key::CtrlA => {
+                if !adding {
+                    self.pick_all(now);
+                }
+            }
+            Key::CtrlM => {
+                if !adding {
+                    self.toggle_multi_key();
+                }
+            }
+            Key::CtrlUp | Key::CtrlDown | Key::ShiftUp | Key::ShiftDown => {
+                if !adding {
+                    self.pick_key(p, key, now);
+                }
+            }
             // copies the chosen clips (or the one shown) without pasting them anywhere
             Key::CtrlC => {
                 if !adding {
@@ -1508,7 +1539,12 @@ impl Controller {
             Key::CtrlY => {}
             Key::CtrlE => {
                 if !adding {
-                    self.open_viewer(p, now);
+                    // with Multi-paste on, Ctrl+E opens the options for pasting the chosen clips together
+                    if self.open.as_ref().is_some_and(|o| o.ui.multi_on) && self.ui_mode == UiMode::Complete {
+                        self.open_join_panel(p, now);
+                    } else {
+                        self.open_viewer(p, now);
+                    }
                 }
             }
             // keys for the viewer; the carousel has no use for them
@@ -1953,16 +1989,20 @@ impl Controller {
             self.cancel(p, "click paste timed out");
             return;
         }
-        // Ctrl+click (by default) on a picture opens the editor, which types nothing yet
+        // Ctrl+click (by default) on a picture opens the editor, which types nothing yet; with several
+        // clips chosen it opens their options card. Neither types anything yet.
         let editor_click = self.current_is_image()
             && self.picks_allow_editor()
             && p.click_modifiers().has(self.advanced_modifier);
-        let polled = if editor_click { p.poll_click_editor(first) } else { p.poll_click(first) };
+        let join_click = self.multi_picks_two() && p.click_modifiers().has(self.advanced_modifier);
+        let polled = if editor_click || join_click { p.poll_click_editor(first) } else { p.poll_click(first) };
         match polled {
             ClickPoll::Pending => {}
             ClickPoll::Rejected(why) => self.cancel(p, why),
             ClickPoll::Desktop => {
-                if self.current_is_image() {
+                if join_click {
+                    self.cancel(p, "several clips can only be pasted into a window");
+                } else if self.current_is_image() {
                     if p.click_modifiers().has(self.advanced_modifier) {
                         // Ctrl+click (by default): the editor, instead of saving at once
                         self.open_editor(p, now, None);
@@ -1991,7 +2031,11 @@ impl Controller {
                     o.ui.click = None;
                 }
                 self.status = None;
-                self.confirm(p);
+                if join_click {
+                    self.open_join_panel(p, now);
+                } else {
+                    self.confirm(p);
+                }
             }
         }
     }
@@ -2116,6 +2160,7 @@ impl Controller {
         if !vm.slim {
             vm.picked = ids.iter().map(|id| picks.contains(id)).collect();
             vm.menu = menu_state.map(|m| m.view(picks.len()));
+            vm.panel = open.ui.join.as_ref().map(joinpanel::JoinPanel::view);
         }
         for id in ids {
             let (kind, pinned, title, meta, multi) = self.row_info(id);

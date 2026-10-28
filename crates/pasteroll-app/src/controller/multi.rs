@@ -7,13 +7,12 @@
 //! puts it on the clipboard instead. Pictures cannot be joined into text and are left out. No Bloat
 //! has none of this: it shows one clip at a time.
 
+use super::joinpanel::{compose, JoinOptions};
 use super::*;
 use pasteroll_render::MenuView;
 
 /// At most this many clips can be chosen at once.
 const PICKS_MAX: usize = 500;
-/// The most text that is joined and pasted (or copied) at once.
-const JOINED_MAX_BYTES: usize = 16 * 1024 * 1024;
 
 const MENU_COPY: usize = 0;
 const MENU_CLEAR: usize = 1;
@@ -35,10 +34,10 @@ impl Menu {
 /// The footer while clips are chosen.
 pub(super) fn footer_text(n: usize, multi_on: bool) -> String {
     match (n, multi_on) {
-        (0, _) => "Multi-paste: click the clips to choose, then click where to paste.".to_owned(),
-        (1, true) => "1 chosen. Click more. Click where to paste, Ctrl+C copies.".to_owned(),
+        (0, _) => "Multi-paste: click clips, or hold Shift and press Down. Ctrl+A chooses all.".to_owned(),
+        (1, true) => "1 chosen. Click or Shift+Down for more. Click where to paste.".to_owned(),
         (1, false) => "1 chosen. Ctrl+click more. Click where to paste, Ctrl+C copies.".to_owned(),
-        _ => format!("{n} chosen. Click where to paste, Ctrl+C copies."),
+        _ => format!("{n} chosen. Click where to paste (hold Ctrl for options), Ctrl+C copies."),
     }
 }
 
@@ -63,6 +62,11 @@ impl Drop for Joined {
 impl Controller {
     fn multi_allowed(&self) -> bool {
         self.ui_mode == UiMode::Complete && self.viewer.is_none() && self.editor.is_none()
+    }
+
+    /// Two or more clips are chosen (for the options card).
+    pub(super) fn multi_picks_two(&self) -> bool {
+        self.multi_allowed() && self.open.as_ref().is_some_and(|o| o.ui.picks.len() >= 2)
     }
 
     /// Ids of the rows drawn (the loaded stretch of history around the shown clip), and the index
@@ -196,6 +200,118 @@ impl Controller {
         self.withdraw_warning();
     }
 
+    /// Ctrl+M: Multi-paste on or off. Switching it on starts the keyboard choosing from the clip shown:
+    /// Shift+Down then chooses it and the next one, and so on.
+    pub(super) fn toggle_multi_key(&mut self) {
+        if !self.multi_allowed() || self.open.is_none() {
+            return;
+        }
+        self.toggle_multi_mode();
+        if let Some(o) = self.open.as_mut() {
+            if o.ui.multi_on && o.ui.pick_anchor.is_none() {
+                o.ui.pick_anchor = o.current_id();
+            }
+        }
+    }
+
+    /// Ctrl+A: chooses every clip in the list (the loaded stretch of history that matches the search).
+    pub(super) fn pick_all(&mut self, now: u64) {
+        if !self.multi_allowed() || self.open.is_none() {
+            return;
+        }
+        let ids = self.history_ids();
+        let mut full = false;
+        if let Some(o) = self.open.as_mut() {
+            for id in ids {
+                if o.ui.picks.contains(&id) {
+                    continue;
+                }
+                if o.ui.picks.len() >= PICKS_MAX {
+                    full = true;
+                    break;
+                }
+                o.ui.picks.push(id);
+            }
+            if o.ui.pick_anchor.is_none() {
+                o.ui.pick_anchor = o.ui.picks.first().copied();
+            }
+            self.dirty = true;
+        }
+        self.withdraw_warning();
+        if full {
+            self.flash(&format!("At most {PICKS_MAX} clips can be chosen at once"), now);
+        }
+    }
+
+    /// Space, with Multi-paste on and nothing typed in the search box: chooses the clip shown, or takes
+    /// it out again.
+    pub(super) fn space_chooses(&self) -> bool {
+        self.multi_allowed() && self.open.as_ref().is_some_and(|o| o.ui.multi_on && o.query.is_empty() && !o.adding_filter)
+    }
+
+    pub(super) fn pick_current(&mut self, now: u64) {
+        if let Some(id) = self.current_id() {
+            self.pick_toggle(id, now);
+        }
+    }
+
+    /// Ctrl or Shift with Up or Down. With Multi-paste on they move to the neighbouring clip and choose:
+    /// Ctrl adds each clip it lands on, Shift grows the chosen stretch from where it started, and
+    /// walking back shrinks it. Otherwise they are the plain arrows.
+    pub(super) fn pick_key(&mut self, p: &mut dyn Platform, key: Key, now: u64) {
+        let down = matches!(key, Key::CtrlDown | Key::ShiftDown);
+        let on = self.multi_allowed() && self.open.as_ref().is_some_and(|o| o.ui.multi_on);
+        let before = self.current_id();
+        self.step(p, down);
+        if !on {
+            return;
+        }
+        let (Some(before), Some(after)) = (before, self.current_id()) else { return };
+        if before == after {
+            return; // the end of the list
+        }
+        let ids = self.history_ids();
+        let mut full = false;
+        if let Some(o) = self.open.as_mut() {
+            let add = |o: &mut Open, id: i64, full: &mut bool| {
+                if o.ui.picks.contains(&id) {
+                    return;
+                }
+                if o.ui.picks.len() >= PICKS_MAX {
+                    *full = true;
+                } else {
+                    o.ui.picks.push(id);
+                }
+            };
+            if matches!(key, Key::CtrlUp | Key::CtrlDown) {
+                if o.ui.picks.is_empty() {
+                    add(o, before, &mut full);
+                }
+                add(o, after, &mut full);
+                o.ui.pick_anchor = Some(after);
+            } else {
+                let anchor = o.ui.pick_anchor.filter(|a| ids.contains(a)).unwrap_or(before);
+                o.ui.pick_anchor = Some(anchor);
+                let pos = |id: i64| ids.iter().position(|k| *k == id);
+                let away = match (pos(anchor), pos(before), pos(after)) {
+                    (Some(a), Some(b), Some(c)) => c.abs_diff(a) > b.abs_diff(a),
+                    _ => true,
+                };
+                if away {
+                    add(o, before, &mut full);
+                    add(o, after, &mut full);
+                } else if before != anchor {
+                    o.ui.picks.retain(|k| *k != before);
+                }
+            }
+            self.dirty = true;
+        }
+        self.withdraw_warning();
+        if full {
+            self.flash(&format!("At most {PICKS_MAX} clips can be chosen at once"), now);
+        }
+    }
+
     /// Ctrl+click: chooses the clip, or takes it out again.
     fn pick_toggle(&mut self, id: i64, now: u64) {
         let Some(o) = self.open.as_mut() else { return };
@@ -257,39 +373,9 @@ impl Controller {
 
     /// The text of `picks`, one clip per line.
     fn join_picks(&self, picks: &[i64], line_break: &str) -> Result<Joined, &'static str> {
-        use zeroize::Zeroize;
-        let st = self.store.borrow();
-        let mut out = Joined { text: String::new(), used: 0, skipped: 0, unreadable: 0 };
-        for &id in picks {
-            let piece = match st.kind(id) {
-                Ok(Some(Kind::Text)) => st.text(id).ok().flatten(),
-                Ok(Some(Kind::Files)) => st.files(id).ok().flatten().map(|f| f.join(line_break)),
-                Ok(Some(Kind::Image)) => {
-                    out.skipped += 1;
-                    continue;
-                }
-                _ => None,
-            };
-            match piece {
-                Some(mut t) => {
-                    // each clip is one line: its own trailing line breaks would leave blank lines
-                    let trimmed = t.trim_end_matches(['\r', '\n']);
-                    let extra = trimmed.len() + if out.used > 0 { line_break.len() } else { 0 };
-                    if out.text.len() + extra > JOINED_MAX_BYTES {
-                        t.zeroize();
-                        return Err("Too much text to join at once");
-                    }
-                    if out.used > 0 {
-                        out.text.push_str(line_break);
-                    }
-                    out.text.push_str(trimmed);
-                    out.used += 1;
-                    t.zeroize();
-                }
-                None => out.unreadable += 1,
-            }
-        }
-        Ok(out)
+        let pieces = self.load_pieces(picks, line_break)?;
+        let text = compose(&pieces.items, &JoinOptions::default(), &[], line_break);
+        Ok(Joined { text, used: pieces.items.len(), skipped: pieces.skipped, unreadable: pieces.unreadable })
     }
 
     /// Keeps a multi-paste in history as one text clip (shown with the multi-paste badge), unless
@@ -379,6 +465,13 @@ impl Controller {
                 }
             },
         };
+        self.finish_copy(p, payload, used, skipped, now);
+    }
+
+    /// Puts `payload` (what `used` clips made, with `skipped` left out) on the clipboard, records a
+    /// multi-paste in history, and closes the carousel with a word about it. Pasteroll's own writes are
+    /// not recorded again by the clipboard monitor.
+    pub(super) fn finish_copy(&mut self, p: &mut dyn Platform, payload: Payload, used: usize, skipped: usize, now: u64) {
         let payload = WipeOnDrop(payload);
         if let Err(e) = p.write_clipboard(&payload.0) {
             p.log(&format!("could not write clipboard: {e}"));

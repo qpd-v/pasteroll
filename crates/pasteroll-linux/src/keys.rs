@@ -41,8 +41,12 @@ pub fn classify(km: &Keymap, code: u8, state: u16) -> Option<Key> {
     let named = if keypad_text { None } else { match base {
         0xff0d | 0xff8d => Some(Key::Enter),
         0xff1b => Some(Key::Escape),
-        0xff52 | 0xff97 if !ctrl => Some(Key::Up),
-        0xff54 | 0xff99 if !ctrl => Some(Key::Down),
+        0xff52 | 0xff97 if !ctrl && !shift => Some(Key::Up),
+        0xff54 | 0xff99 if !ctrl && !shift => Some(Key::Down),
+        0xff52 | 0xff97 if ctrl && !shift => Some(Key::CtrlUp),
+        0xff54 | 0xff99 if ctrl && !shift => Some(Key::CtrlDown),
+        0xff52 | 0xff97 if shift && !ctrl => Some(Key::ShiftUp),
+        0xff54 | 0xff99 if shift && !ctrl => Some(Key::ShiftDown),
         0xff55 | 0xff9a if !ctrl => Some(Key::PageUp),
         0xff56 | 0xff9b if !ctrl => Some(Key::PageDown),
         0xff09 | 0xfe20 if !ctrl => Some(Key::Tab),
@@ -74,6 +78,7 @@ pub fn classify(km: &Keymap, code: u8, state: u16) -> Option<Key> {
             return match base | 0x20 {
                 0x79 => Some(Key::CtrlY),
                 0x70 => Some(Key::CtrlP),
+                0x6d => Some(Key::CtrlM),
                 0x61 => Some(Key::CtrlA),
                 0x63 => Some(Key::CtrlC),
                 0x65 => Some(Key::CtrlE),
@@ -183,6 +188,14 @@ mod tests {
         assert_eq!(classify(&k, 15, CONTROL), Some(Key::CtrlC));
         assert_eq!(classify(&k, 16, CONTROL), Some(Key::CtrlZ));
         assert_eq!(classify(&k, 16, CONTROL | SHIFT), Some(Key::CtrlY), "Ctrl+Shift+Z redoes");
+    }
+
+    #[test]
+    fn shift_and_ctrl_with_the_arrows_choose_clips_and_plain_arrows_move() {
+        let k = km();
+        assert_eq!(classify(&k, 15, 0), Some(Key::Up));
+        assert_eq!(classify(&k, 15, SHIFT), Some(Key::ShiftUp));
+        assert_eq!(classify(&k, 15, CONTROL), Some(Key::CtrlUp));
     }
 
     #[test]

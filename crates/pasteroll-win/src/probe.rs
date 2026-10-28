@@ -909,6 +909,35 @@ fn probe_multi_select(out: &mut Vec<Check>) -> Result<()> {
         check!("multi_menu_session_opens", false, "");
     }
 
+    // --- the keyboard: Ctrl+M turns Multi-paste on, Shift+Down chooses, Ctrl+A chooses everything and
+    // Ctrl+E opens the options for pasting the chosen clips together
+    clear_edit();
+    if open_carousel_in_corner() {
+        let mode = || app::with_runtime(|rt| rt.controller.view_model().multi_mode).unwrap_or(false);
+        let card = || app::with_runtime(|rt| rt.controller.view_model().panel.is_some()).unwrap_or(false);
+        let rows = || app::with_runtime(|rt| rt.controller.view_model().rows.len()).unwrap_or(0);
+        input::send_chord(&[VK_CONTROL], VIRTUAL_KEY(b'M' as u16));
+        pump(200);
+        check!("multi_ctrl_m_turns_multi_paste_on", mode(), "");
+        input::send_chord(&[VK_SHIFT], VK_DOWN);
+        pump(200);
+        check!("multi_shift_down_chooses_the_shown_clip_and_the_next", picked() == 2, "{} chosen", picked());
+        input::send_chord(&[VK_CONTROL], VIRTUAL_KEY(b'A' as u16));
+        pump(200);
+        check!("multi_ctrl_a_chooses_every_clip", picked() >= rows() && rows() > 2, "{} chosen of {} rows", picked(), rows());
+        input::send_chord(&[VK_CONTROL], VIRTUAL_KEY(b'E' as u16));
+        pump(200);
+        check!("multi_ctrl_e_opens_the_options_card", card(), "");
+        input::send_chord(&[], VK_ESCAPE); // the card
+        pump(150);
+        input::send_chord(&[], VK_ESCAPE); // the choice
+        pump(150);
+        input::send_chord(&[], VK_ESCAPE); // the carousel
+        pump(300);
+    } else {
+        check!("multi_keyboard_session_opens", false, "");
+    }
+
     ctrl_key(true);
     unsafe {
         let _ = DestroyWindow(target);
