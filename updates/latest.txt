@@ -1,4 +1,5 @@
 pasteroll-update-latest 1
-version 0.1.0-beta.15
-note Choosing several clips now collapses the tall card into a row, so the whole list is easy to choose from.
-note Picture clips show a small picture at the right end of their row.
+version 0.1.0-beta.16
+note Pinned clips now show as small square tiles above the list: click one to paste, hover for a popup, right-click to colour it.
+note The image editor can draw on a picture: pen, brush, circle and arrow in any colour.
+note The image editor can write text on a picture, with a font picker and a colour for each part of the text.
