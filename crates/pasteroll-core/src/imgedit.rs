@@ -118,8 +118,53 @@ pub struct CropRect {
     pub h: f32,
 }
 
+/// What a mark drawn on the picture is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkKind {
+    /// A thin freehand line.
+    Pen,
+    /// A thick, soft freehand stroke.
+    Brush,
+    /// An empty circle (or oval), from two opposite corners of its box.
+    Ellipse,
+    /// A line from the first point with its head at the second.
+    Arrow,
+    /// Text whose top left is the first point.
+    Text,
+}
+
+/// One thing drawn over the picture, in pixels of the original picture. Marks are drawn before the
+/// crop, turn, resize and the rest, so they follow the picture through those.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Mark {
+    pub kind: MarkKind,
+    /// Straight RGBA of the line (and of text typed without its own colour).
+    pub color: [u8; 4],
+    /// Line width, or the height of the text, in pixels of the original.
+    pub size: f32,
+    pub pts: Vec<(f32, f32)>,
+    pub text: String,
+    /// One colour per character of `text`.
+    pub colors: Vec<[u8; 4]>,
+    /// The font family of the text ("" = the program's own).
+    pub font: String,
+}
+
+impl Mark {
+    pub fn new(kind: MarkKind, color: [u8; 4], size: f32) -> Mark {
+        Mark { kind, color, size, pts: Vec::new(), text: String::new(), colors: Vec::new(), font: String::new() }
+    }
+}
+
+/// At most this many marks, points in one stroke, and characters in one text.
+pub const MARKS_MAX: usize = 300;
+pub const MARK_POINTS_MAX: usize = 6000;
+pub const MARK_TEXT_MAX: usize = 2000;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct EditParams {
+    /// Pen strokes, shapes and text drawn on the picture (never part of a preset).
+    pub marks: Vec<Mark>,
     pub crop: Option<CropRect>,
     pub flip_h: bool,
     pub flip_v: bool,
@@ -162,6 +207,7 @@ pub struct EditParams {
 impl Default for EditParams {
     fn default() -> Self {
         EditParams {
+            marks: Vec::new(),
             crop: None,
             flip_h: false,
             flip_v: false,
@@ -227,6 +273,15 @@ impl EditParams {
         self.shadow_distance = clampf(self.shadow_distance, 0.0, 1000.0);
         self.shadow_angle = clampf(self.shadow_angle, -360.0, 360.0);
         self.quality = self.quality.clamp(1, 100);
+        self.marks.truncate(MARKS_MAX);
+        for m in &mut self.marks {
+            m.size = clampf(m.size, 0.5, 4000.0);
+            m.pts.truncate(MARK_POINTS_MAX);
+            if m.text.chars().count() > MARK_TEXT_MAX {
+                m.text = m.text.chars().take(MARK_TEXT_MAX).collect();
+            }
+            m.colors.resize(m.text.chars().count(), m.color);
+        }
         if let Some(c) = &mut self.crop {
             c.x = clampf(c.x, 0.0, 1.0e6);
             c.y = clampf(c.y, 0.0, 1.0e6);
@@ -247,6 +302,13 @@ impl EditParams {
         if p.resize_mode == ResizeMode::Pixels {
             p.resize_w *= k;
             p.resize_h *= k;
+        }
+        for m in &mut p.marks {
+            m.size = (m.size * k).max(0.5);
+            for pt in &mut m.pts {
+                pt.0 *= k;
+                pt.1 *= k;
+            }
         }
         p.radius *= k;
         p.outline_width = if p.outline_width > 0.0 { (p.outline_width * k).max(1.0) } else { 0.0 };
@@ -274,6 +336,7 @@ impl EditParams {
     /// Is the picture left as it is (only the file format may differ)?
     pub fn is_identity(&self) -> bool {
         self.crop.is_none()
+            && self.marks.is_empty()
             && !self.flip_h
             && !self.flip_v
             && self.angle == 0.0

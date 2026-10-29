@@ -114,7 +114,7 @@ fn a_menu_is_drawn_inside_the_window_and_catches_clicks() {
     let mut vm = text_vm("x", None);
     let plain = r.render(&vm, SIZE, 1.0);
     // opened at the bottom right corner: moved inward so all of it shows
-    vm.menu = Some(MenuView { items: vec!["Copy".into(), "Clear selection".into()], at: (SIZE.0 - 3.0, SIZE.1 - 3.0), hover: Some(1) });
+    vm.menu = Some(MenuView { items: vec!["Copy".into(), "Clear selection".into()], at: (SIZE.0 - 3.0, SIZE.1 - 3.0), hover: Some(1), dots: Vec::new() });
     let g = geometry(&vm, SIZE, 1.0);
     let menu = g.menu.expect("a menu");
     assert!(menu.x >= 0.0 && menu.y >= 0.0 && menu.x + menu.w <= SIZE.0 && menu.y + menu.h <= SIZE.1, "{menu:?}");

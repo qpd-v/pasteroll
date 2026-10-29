@@ -1,6 +1,6 @@
 [package]
 name = "pasteroll-linux"
-version = "0.1.0-beta.15"
+version = "0.1.0-beta.16"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
@@ -17,9 +17,9 @@ name = "pasteroll-input"
 path = "src/input/main.rs"
 
 [dependencies]
-pasteroll-app = { version = "0.1.0-beta.15", path = "../pasteroll-app" }
-pasteroll-core = { version = "0.1.0-beta.15", path = "../pasteroll-core" }
-pasteroll-render = { version = "0.1.0-beta.15", path = "../pasteroll-render" }
+pasteroll-app = { version = "0.1.0-beta.16", path = "../pasteroll-app" }
+pasteroll-core = { version = "0.1.0-beta.16", path = "../pasteroll-core" }
+pasteroll-render = { version = "0.1.0-beta.16", path = "../pasteroll-render" }
 zeroize = "1.9.1"
 
 [target.'cfg(unix)'.dependencies]

@@ -21,6 +21,7 @@
 
 mod editor;
 mod icons;
+mod markup;
 mod panel;
 mod textmap;
 mod viewer;
@@ -31,6 +32,7 @@ pub use editor::{
     ItemKind, Placed, PopupAnchor, PopupView, Top, TopView,
 };
 pub use icons::Icon;
+pub use markup::MarkEdit;
 pub use panel::{panel_geometry, panel_hit_at, PanelGeometry, PanelGroup, PanelHit, PanelView};
 pub use viewer::{
     fit_zoom, viewer_geometry, ConfirmView, FindView, Morph, MenuItemView, Tool, ToolView, VGeom, VHit, ViewerBody, ViewerView, OcrSelectionView,
@@ -78,6 +80,10 @@ const SLIM_DROPDOWN_COL_W: f32 = 124.0;
 const FONT_PX: f32 = 14.0;
 const SMALL_PX: f32 = 12.0;
 const BODY_LINE: f32 = 19.0;
+
+/// A pinned clip's tile above the list: its side and the gap between tiles.
+const PIN_TILE: f32 = 40.0;
+const PIN_GAP: f32 = 6.0;
 
 /// Height of the small picture at the end of a one-line picture row, and the widest it gets.
 const THUMB_ROW_H: f32 = 22.0;
@@ -127,6 +133,37 @@ pub struct RowView {
     pub thumb: Option<std::sync::Arc<Rgba>>,
 }
 
+/// What a pinned clip's tile shows when it has no picture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PinKind {
+    Text,
+    Image,
+    File,
+    Video,
+    Audio,
+}
+
+/// A pinned clip, shown as a small square tile above the list.
+#[derive(Debug, Clone)]
+pub struct PinView {
+    pub kind: PinKind,
+    /// The colour of the tile's edge and symbol (`None` = the plain look).
+    pub color: Option<Rgb>,
+    /// A picture clip's small picture (shown cropped to a square); `None` while it is on its way.
+    pub thumb: Option<std::sync::Arc<Rgba>>,
+}
+
+/// The popup that follows the pointer after it has rested on a pinned clip's tile.
+#[derive(Debug, Clone)]
+pub struct PinTip {
+    /// The pointer, in DIP: the popup sits beside it.
+    pub at: (f32, f32),
+    /// The clip's text (cut when long), or the names of its files; empty for a picture.
+    pub text: String,
+    /// A picture clip's picture.
+    pub image: Option<std::sync::Arc<Rgba>>,
+}
+
 #[derive(Debug, Clone)]
 pub enum Body {
     /// `display` is what is drawn. `selection` is a UTF-16 range into it. `scroll` is in px.
@@ -150,6 +187,8 @@ pub struct MenuView {
     /// Where the click was, in DIP; the menu opens there, moved inward where it would stick out.
     pub at: (f32, f32),
     pub hover: Option<usize>,
+    /// A colour dot at the start of an entry (an entry past the end of the list has none).
+    pub dots: Vec<Option<Rgb>>,
 }
 
 #[derive(Debug, Clone)]
@@ -188,6 +227,10 @@ pub struct ViewModel {
     pub multi_mode: bool,
     /// The multi-paste options card, while it is open (modal).
     pub panel: Option<PanelView>,
+    /// Pinned clips, drawn as tiles between the search bar and the list (Complete only).
+    pub pins: Vec<PinView>,
+    /// The popup for the pinned clip the pointer rests on.
+    pub pin_tip: Option<PinTip>,
     /// 0 = the active clip is the tall card, 1 = it has collapsed to a one-line row like the rest
     /// (Complete, while clips are being chosen for a multiple paste). In between it is moving.
     pub collapse: f32,
@@ -209,6 +252,9 @@ impl ViewModel {
             Body::Image(_) => {}
         }
         self.footer.zeroize();
+        if let Some(t) = &mut self.pin_tip {
+            t.text.zeroize();
+        }
         if let Some(p) = &mut self.panel {
             p.title.zeroize();
             p.preview.zeroize();
@@ -239,6 +285,8 @@ impl Default for ViewModel {
             menu: None,
             multi_mode: false,
             panel: None,
+            pins: Vec::new(),
+            pin_tip: None,
             collapse: 0.0,
         }
     }
@@ -274,6 +322,8 @@ pub enum Hit {
     MenuItem(usize),
     /// Something on the multi-paste options card.
     Panel(PanelHit),
+    /// A pinned clip's tile (index into `ViewModel::pins`).
+    Pin(usize),
     /// Index into `ViewModel::rows`.
     Row(usize),
     /// The active item's body. `pos` is a UTF-16 offset into the displayed text.
@@ -321,6 +371,75 @@ fn premultiplied(img: &Rgba) -> Option<Pixmap> {
     Some(src)
 }
 
+/// A pinned picture clip's tile: the picture cropped to a square from its middle (not stretched),
+/// with the tile's rounded corners.
+fn draw_tile_picture(cv: &mut Canvas, img: &Rgba, r: Rect) {
+    let s = cv.s;
+    let Some(src) = premultiplied(img) else { return };
+    let side = r.w * s;
+    let k = side / img.width.min(img.height).max(1) as f32;
+    let (tx, ty) = (r.x * s - (img.width as f32 * k - side) / 2.0, r.y * s - (img.height as f32 * k - side) / 2.0);
+    let Some(mut mask) = tiny_skia::Mask::new(cv.pm.width(), cv.pm.height()) else { return };
+    if let Some(path) = rounded(scaled(r, s), 6.0 * s) {
+        mask.fill_path(&path, FillRule::Winding, true, Transform::identity());
+    }
+    let pp = PixmapPaint { opacity: 1.0, blend_mode: BlendMode::SourceOver, quality: FilterQuality::Bilinear };
+    cv.pm.draw_pixmap(0, 0, src.as_ref(), &pp, Transform::from_row(k, 0.0, 0.0, k, tx, ty), Some(&mask));
+}
+
+/// The symbol of a pinned clip that has no picture: text lines, a page, a film, a music note.
+fn draw_pin_glyph(cv: &mut Canvas, kind: PinKind, r: Rect, rgb: Rgb) {
+    let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+    let u = r.w / 40.0;
+    let w = 2.0 * u.max(0.8);
+    match kind {
+        PinKind::Text => {
+            for k in 0..4 {
+                let y = cy - 9.0 * u + k as f32 * 6.0 * u;
+                let half = if k == 3 { 5.0 * u } else { 10.0 * u };
+                let x0 = cx - 10.0 * u;
+                cv.line(&[(x0, y), (x0 + half * if k == 3 { 1.0 } else { 2.0 }, y)], rgb, w);
+            }
+        }
+        PinKind::Image => {
+            cv.stroke(Rect { x: cx - 12.0 * u, y: cy - 9.0 * u, w: 24.0 * u, h: 18.0 * u }, 3.0, rgb, 1.0, w);
+            cv.line(
+                &[(cx - 9.0 * u, cy + 6.0 * u), (cx - 3.0 * u, cy - 1.0 * u), (cx + 1.0 * u, cy + 3.0 * u), (cx + 4.0 * u, cy), (cx + 9.0 * u, cy + 6.0 * u)],
+                rgb,
+                w,
+            );
+        }
+        PinKind::File => {
+            let (l, t, rr, b) = (cx - 8.0 * u, cy - 11.0 * u, cx + 8.0 * u, cy + 11.0 * u);
+            let fold = 6.0 * u;
+            cv.line(&[(l, t), (rr - fold, t), (rr, t + fold), (rr, b), (l, b), (l, t)], rgb, w);
+            cv.line(&[(rr - fold, t), (rr - fold, t + fold), (rr, t + fold)], rgb, w);
+        }
+        PinKind::Video => {
+            cv.stroke(Rect { x: cx - 13.0 * u, y: cy - 9.0 * u, w: 26.0 * u, h: 18.0 * u }, 3.0, rgb, 1.0, w);
+            let s = cv.s;
+            let mut pb = PathBuilder::new();
+            pb.move_to((cx - 3.0 * u) * s, (cy - 5.0 * u) * s);
+            pb.line_to((cx + 5.0 * u) * s, cy * s);
+            pb.line_to((cx - 3.0 * u) * s, (cy + 5.0 * u) * s);
+            pb.close();
+            if let Some(p) = pb.finish() {
+                cv.pm.fill_path(&p, &paint(rgb, 1.0), FillRule::Winding, Transform::identity(), None);
+            }
+        }
+        PinKind::Audio => {
+            let s = cv.s;
+            let (hx, hy) = (cx - 4.0 * u, cy + 7.0 * u);
+            let mut pb = PathBuilder::new();
+            pb.push_circle(hx * s, hy * s, 4.5 * u * s);
+            if let Some(p) = pb.finish() {
+                cv.pm.fill_path(&p, &paint(rgb, 1.0), FillRule::Winding, Transform::identity(), None);
+            }
+            cv.line(&[(hx + 4.0 * u, hy), (hx + 4.0 * u, cy - 10.0 * u), (cx + 9.0 * u, cy - 6.0 * u)], rgb, w);
+        }
+    }
+}
+
 /// A small picture in a row: the picture stretched over `rect` (which has its shape), or a quiet
 /// box while it has not arrived, with a thin edge.
 fn draw_thumb(cv: &mut Canvas, img: Option<&Rgba>, rect: Rect, s: f32) {
@@ -343,6 +462,8 @@ pub struct Geometry {
     /// The Multi-paste button; an empty rectangle where it is not drawn (No Bloat).
     pub multi_button: Rect,
     pub list: Rect,
+    /// One rect per pinned clip's tile that fits (the first ones of `ViewModel::pins`).
+    pub pins: Vec<Rect>,
     /// One rect per row in `ViewModel::rows` (rows that do not fit are `None`).
     pub rows: Vec<Option<Rect>>,
     /// The body area inside the active row.
@@ -438,6 +559,7 @@ fn slim_geometry(vm: &ViewModel, size_dip: (f32, f32), scale: f32) -> Geometry {
         filter_button,
         multi_button: nothing,
         list: card,
+        pins: Vec::new(),
         rows,
         body,
         expand: None,
@@ -464,7 +586,12 @@ pub fn geometry(vm: &ViewModel, size_dip: (f32, f32), scale: f32) -> Geometry {
     let multi_button = Rect { x: filter_button.x - 6.0 - MULTI_W, y: bar.y, w: MULTI_W, h: BAR_H };
     let query_box = Rect { x: bar.x, y: bar.y, w: (bar.w - FILTER_W - MULTI_W - 12.0).max(0.0), h: BAR_H };
     let footer = Rect { x: inner.x, y: inner.y + inner.h - FOOTER_H, w: inner.w, h: FOOTER_H };
-    let list_top = bar.y + BAR_H + 8.0;
+    let pin_top = bar.y + BAR_H + 8.0;
+    let fit = ((inner.w + PIN_GAP) / (PIN_TILE + PIN_GAP)).floor().max(0.0) as usize;
+    let pins: Vec<Rect> = (0..vm.pins.len().min(fit))
+        .map(|i| Rect { x: inner.x + i as f32 * (PIN_TILE + PIN_GAP), y: pin_top, w: PIN_TILE, h: PIN_TILE })
+        .collect();
+    let list_top = if pins.is_empty() { pin_top } else { pin_top + PIN_TILE + 8.0 };
     let list = Rect { x: inner.x, y: list_top, w: inner.w, h: (footer.y - 4.0 - list_top).max(0.0) };
 
     let mut rows: Vec<Option<Rect>> = vec![None; vm.rows.len()];
@@ -553,6 +680,7 @@ pub fn geometry(vm: &ViewModel, size_dip: (f32, f32), scale: f32) -> Geometry {
         filter_button,
         multi_button,
         list,
+        pins,
         rows,
         body,
         expand,
@@ -802,6 +930,7 @@ impl Renderer {
             self.draw_slim(&mut cv, vm, &g);
         } else {
             self.draw_search_bar(&mut cv, vm, &g);
+            self.draw_pins(&mut cv, vm, &g);
             self.draw_rows(&mut cv, vm, &g);
             self.draw_card_buttons(&mut cv, vm, &g);
         }
@@ -823,6 +952,7 @@ impl Renderer {
         }
 
         self.draw_card_tooltip(&mut cv, vm, &g, size_dip);
+        self.draw_pin_tip(&mut cv, vm, size_dip);
 
         if let (Some(rect), Some(dd)) = (g.dropdown, &vm.dropdown) {
             cv.fill(rect, 6.0, (52, 52, 62), 1.0);
@@ -855,10 +985,14 @@ impl Renderer {
                 if menu.hover == Some(i) {
                     cv.fill(r, 4.0, ACCENT, 0.28);
                 }
+                let dot = menu.dots.get(i).copied().flatten();
+                if let Some(rgb) = dot {
+                    cv.fill(Rect { x: r.x + 10.0, y: r.y + 8.0, w: 12.0, h: 12.0 }, 6.0, rgb, 1.0);
+                }
                 self.draw_text(
                     &mut cv,
                     item,
-                    ((r.x + 10.0) * s, (r.y + 6.0) * s),
+                    ((r.x + if dot.is_some() { 30.0 } else { 10.0 }) * s, (r.y + 6.0) * s),
                     FONT_PX * s,
                     18.0 * s,
                     None,
@@ -1133,6 +1267,74 @@ impl Renderer {
     }
 
     /// A short explanation next to the card button under the pointer.
+    /// The pinned clips: square tiles in a row above the list.
+    fn draw_pins(&mut self, cv: &mut Canvas, vm: &ViewModel, g: &Geometry) {
+        for (i, r) in g.pins.iter().enumerate() {
+            let pin = &vm.pins[i];
+            let hot = vm.hover == Some(Hit::Pin(i));
+            cv.fill(*r, 6.0, if hot { (62, 66, 78) } else { FIELD }, 1.0);
+            let ink = pin.color.unwrap_or(if hot { FOREGROUND } else { (196, 196, 206) });
+            match (&pin.thumb, pin.kind) {
+                (Some(img), PinKind::Image) if img.width > 0 && img.height > 0 => draw_tile_picture(cv, img, *r),
+                _ => draw_pin_glyph(cv, pin.kind, *r, ink),
+            }
+            match pin.color {
+                Some(c) => cv.stroke(*r, 6.0, c, 1.0, 2.0),
+                None => cv.stroke(*r, 6.0, MUTED, if hot { 0.8 } else { 0.45 }, 1.0),
+            }
+        }
+    }
+
+    /// The popup beside the pointer: the clip's text, or its picture.
+    fn draw_pin_tip(&mut self, cv: &mut Canvas, vm: &ViewModel, size_dip: (f32, f32)) {
+        let Some(tip) = &vm.pin_tip else { return };
+        let s = cv.s;
+        const PAD: f32 = 10.0;
+        const MAX_W: f32 = 330.0;
+        const MAX_H: f32 = 230.0;
+        let (w, h) = if let Some(img) = tip.image.as_ref().filter(|i| i.width > 0 && i.height > 0) {
+            let k = ((MAX_W - 2.0 * PAD) / img.width as f32).min((MAX_H - 2.0 * PAD) / img.height as f32).min(4.0);
+            (img.width as f32 * k + 2.0 * PAD, img.height as f32 * k + 2.0 * PAD)
+        } else {
+            let width = (size_dip.0 - 16.0).min(MAX_W);
+            let wrap_w = (width - 2.0 * PAD) * s;
+            let buf = self.shape(&tip.text, SMALL_PX * s, 16.0 * s, Some(wrap_w), Wrap::WordOrGlyph);
+            let lines = buf.layout_runs().count().max(1) as f32;
+            let used = buf.layout_runs().map(|r| r.line_w).fold(0.0, f32::max) / s;
+            (width.min(used + 2.0 * PAD + 2.0).max(60.0), (lines * 16.0 + 2.0 * PAD).min(MAX_H))
+        };
+        let x = (tip.at.0 + 14.0).clamp(4.0, (size_dip.0 - w - 4.0).max(4.0));
+        let below = tip.at.1 + 20.0;
+        let y = if below + h <= size_dip.1 - 4.0 { below } else { (tip.at.1 - h - 10.0).max(4.0) };
+        let rect = Rect { x, y, w, h };
+        cv.fill(rect, 6.0, (16, 16, 20), 0.97);
+        cv.stroke(rect, 6.0, MENU_BORDER, 1.0, 1.0);
+        match tip.image.as_ref().filter(|i| i.width > 0 && i.height > 0) {
+            Some(img) => {
+                let inner = rect.inset(PAD);
+                if let Some(src) = premultiplied(img) {
+                    let (kx, ky) = (inner.w * s / img.width as f32, inner.h * s / img.height as f32);
+                    let pp = PixmapPaint { opacity: 1.0, blend_mode: BlendMode::SourceOver, quality: FilterQuality::Bilinear };
+                    cv.pm.draw_pixmap(0, 0, src.as_ref(), &pp, Transform::from_row(kx, 0.0, 0.0, ky, inner.x * s, inner.y * s), None);
+                }
+            }
+            None => {
+                let inner = rect.inset(PAD);
+                self.draw_text(
+                    cv,
+                    &tip.text,
+                    (inner.x * s, inner.y * s),
+                    SMALL_PX * s,
+                    16.0 * s,
+                    Some(inner.w * s),
+                    Wrap::WordOrGlyph,
+                    FOREGROUND,
+                    scaled(inner, s),
+                );
+            }
+        }
+    }
+
     fn draw_card_tooltip(&mut self, cv: &mut Canvas, vm: &ViewModel, g: &Geometry, size_dip: (f32, f32)) {
         let (rect, text) = match vm.hover {
             Some(Hit::Expand) => (g.expand, "Expand (Ctrl+E)"),
@@ -1291,6 +1493,9 @@ impl Renderer {
         if g.query_box.contains(x, y) {
             return Hit::Query;
         }
+        if let Some(i) = g.pins.iter().position(|r| r.contains(x, y)) {
+            return Hit::Pin(i);
+        }
         for (rect, hit) in [(g.expand, Hit::Expand), (g.restore, Hit::Restore), (g.delete, Hit::Delete)] {
             if rect.is_some_and(|r| r.contains(x, y)) {
                 return hit;
@@ -1398,6 +1603,9 @@ pub fn button_at(vm: &ViewModel, size_dip: (f32, f32), scale: f32, px: f32, py: 
     let (x, y) = (px / scale, py / scale);
     if g.multi_button.contains(x, y) {
         return Some(Hit::MultiButton);
+    }
+    if let Some(i) = g.pins.iter().position(|r| r.contains(x, y)) {
+        return Some(Hit::Pin(i));
     }
     [(g.expand, Hit::Expand), (g.restore, Hit::Restore), (g.delete, Hit::Delete)]
         .into_iter()

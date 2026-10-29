@@ -86,7 +86,12 @@ days (or at once with *Delete permanently*, Shift+Delete, the **Clear history** 
 *Advanced Image Paste* works on your computer only. The edited picture is written where you choose
 (the Desktop, or the folder chosen in Settings, by default) and nowhere else. That folder's path is kept in plain text in `config.toml`. The presets you save (the settings, never a picture) and
 the folder you last saved to are kept in a small plain-text file, `image-presets.txt`, in the data
-folder.
+folder. Marks drawn or written on a picture are part of that one edit only: they are not stored,
+except in the picture you save or paste.
+
+The colour you give a pinned clip's tile is kept in another small plain-text file, `pin-colors.txt`, in
+the data folder: only the clip's number and a colour code, never the clip's content. It is deleted with
+the other data files when you choose to delete your data on uninstall.
 
 *Extract text* in the expanded viewer recognises text on this computer only (Windows' built-in
 recognition, or Tesseract on Linux, which reads the picture through a pipe, not a file). *Save

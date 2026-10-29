@@ -17,10 +17,10 @@ const BACKGROUND: u32 = 700;
 const PADDING: u32 = 800;
 const OUTPUT: u32 = 900;
 // the presets popup
-const POP_PRESET_ROW: u32 = 1010;
-const POP_SAVE_AS: u32 = 1060;
-const POP_NAME_BUTTONS: u32 = 1062;
-const POP_PALETTE: u32 = 1000;
+const POP_PRESET_ROW: u32 = 2010;
+const POP_SAVE_AS: u32 = 2060;
+const POP_NAME_BUTTONS: u32 = 2062;
+const POP_PALETTE: u32 = 2000;
 
 fn desktop_target() -> Target {
     Target { id: 5, pid: 5, exe: "explorer.exe".into(), class: "Progman".into(), desktop: true }

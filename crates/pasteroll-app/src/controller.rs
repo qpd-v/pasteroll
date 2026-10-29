@@ -16,6 +16,7 @@ mod collapse;
 mod editor;
 mod joinpanel;
 mod multi;
+mod pins;
 mod viewer;
 
 use crate::event::{Event, Key, MouseEvent, MouseKind};
@@ -347,6 +348,8 @@ pub struct Controller {
     image_folder: String,
     /// How the carousel looks: everything on show, or only the clip (every feature works in both).
     ui_mode: UiMode,
+    /// The pinned clips' tiles above the list.
+    pins: pins::Pins,
 }
 
 fn thousands(n: usize) -> String {
@@ -468,6 +471,7 @@ impl Controller {
             advanced_modifier: pasteroll_core::config::ClickModifier::Ctrl,
             image_folder: String::new(),
             ui_mode: UiMode::Complete,
+            pins: pins::Pins::default(),
         }
     }
 
@@ -756,6 +760,7 @@ impl Controller {
             }
         };
         self.notice = None;
+        self.pins_open(p);
         self.open = Some(Open {
             opened_ms: now,
             session: Some(session),
@@ -817,6 +822,7 @@ impl Controller {
         self.thumbs.clear();
         self.row_thumbs.clear();
         self.row_thumbs_asked.clear();
+        self.pins.reset();
         // A footer message (a terminal warning, say) belongs to the session that raised it.
         self.status = None;
     }
@@ -862,6 +868,7 @@ impl Controller {
     fn set_pin(&mut self, p: &mut dyn Platform, id: i64, _now: u64) -> Option<String> {
         let pinned = self.store.borrow().info(id).ok().flatten().is_some_and(|i| i.pinned);
         let result = self.store.borrow_mut().set_pinned(id, !pinned);
+        self.pins.invalidate();
         let mut now_pinned = pinned;
         let msg = match result {
             Ok(PinResult::Pinned) => {
@@ -964,6 +971,7 @@ impl Controller {
             }
         }
         self.row_cache.remove(&id);
+        self.pins.invalidate();
         if let Some(o) = self.open.as_mut() {
             // the index no longer covers history: rebuilt on the next search
             o.index = None;
@@ -977,6 +985,7 @@ impl Controller {
     /// A clip left the list being shown: drop what is cached about it.
     fn forget_clip(&mut self, id: i64) {
         self.row_cache.remove(&id);
+        self.pins.invalidate();
         self.thumbs.retain(|(k, _)| *k != id);
         self.row_thumbs.retain(|(k, _)| *k != id);
         if let Some(idx) = self.open.as_mut().and_then(|o| o.index.as_mut()) {
@@ -1651,6 +1660,7 @@ impl Controller {
                     self.dirty = true;
                 }
             }
+            self.pin_hover_move(None, (0.0, 0.0), now);
             return;
         }
         // Outside a drag, a move only lights up the card's buttons: a cheap geometry test.
@@ -1662,6 +1672,12 @@ impl Controller {
                 .as_ref()
                 .and_then(|_| pasteroll_render::menu_item_at(&vm, self.size_dip(), self.overlay.scale, m.x, m.y));
             vm.wipe();
+            let tile = match hover {
+                Some(Hit::Pin(i)) => Some(i),
+                _ => None,
+            };
+            let scale = self.overlay.scale.max(0.1);
+            self.pin_hover_move(tile, (m.x / scale, m.y / scale), now);
             if let Some(o) = self.open.as_mut() {
                 if o.ui.hover != hover {
                     o.ui.hover = hover;
@@ -1724,6 +1740,7 @@ impl Controller {
                             self.dirty = true;
                         }
                     }
+                    Hit::Pin(i) => self.pin_click(p, i),
                     Hit::Row(i) => self.activate_row(p, i, vm),
                     Hit::Body { pos } => self.body_press(vm, m.kind, pos, now),
                     _ => {
@@ -1984,6 +2001,7 @@ impl Controller {
         p.heartbeat();
         self.on_new_clips(p);
         self.collapse_tick(p, now);
+        self.pins_tick(now);
         if self.viewer.is_some() {
             self.viewer_tick(p, now);
         }
@@ -2254,6 +2272,7 @@ impl Controller {
             let ratio = self.row_cache.get(&id).map_or(0.0, |i| i.ratio);
             vm.rows.push(RowView { kind, pinned, title, meta, highlights, multi, ratio, thumb: None });
         }
+        self.view_pins(&mut vm);
         if !vm.slim {
             self.attach_row_thumbs(&mut vm, &ids);
         }

@@ -14,12 +14,15 @@
 use super::viewer::{ease_in_out, ease_out, home_rect, lerp, lerp_rect, Anim, AnimKind, ANIM_MAX_PIXELS, CLOSE_MS, DIM, OPEN_MS};
 use super::*;
 use crate::platform::SaveChoice;
-use pasteroll_core::imgedit::{self, BgMode, Color, CropRect, EditParams, Format, PngLevel, Presets, ResizeMode};
+use pasteroll_core::imgedit::{self, BgMode, Color, CropRect, EditParams, Format, MarkKind, PngLevel, Presets, ResizeMode};
 use pasteroll_render::{
     editor_hit, editor_layout, ButtonView, Col, CropPart, CropView, EHit, EditorView, FieldView, Icon, Item, ItemKind,
     Frame, Morph, PopupAnchor, PopupView, Top, TopView,
 };
 use std::path::{Path, PathBuf};
+
+mod markup;
+use markup::TextEdit;
 
 const TOAST_MS: u64 = 2_400;
 /// The smallest crop, in pixels.
@@ -121,6 +124,7 @@ struct Job {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Sec {
+    Markup,
     Crop,
     Resize,
     Rotate,
@@ -132,12 +136,13 @@ enum Sec {
     Output,
 }
 
-const SECS: [Sec; 9] =
-    [Sec::Crop, Sec::Resize, Sec::Rotate, Sec::Corners, Sec::Outline, Sec::Shadow, Sec::Background, Sec::Padding, Sec::Output];
+const SECS: [Sec; 10] =
+    [Sec::Crop, Sec::Resize, Sec::Rotate, Sec::Corners, Sec::Outline, Sec::Shadow, Sec::Background, Sec::Padding, Sec::Output, Sec::Markup];
 
 impl Sec {
     fn title(self) -> &'static str {
         match self {
+            Sec::Markup => "Draw and write",
             Sec::Crop => "Crop",
             Sec::Resize => "Resize",
             Sec::Rotate => "Rotate and flip",
@@ -166,12 +171,12 @@ fn split_id(id: u32) -> Option<(Sec, u32)> {
 }
 
 /// The ids of the popups' items.
-const POP_PALETTE: u32 = 1000;
-const POP_HEX: u32 = 1001;
-const POP_PRESET_BASE: u32 = 1010;
-const POP_SAVE_AS: u32 = 1060;
-const POP_NAME: u32 = 1061;
-const POP_NAME_BUTTONS: u32 = 1062;
+const POP_PALETTE: u32 = 2000;
+const POP_HEX: u32 = 2001;
+const POP_PRESET_BASE: u32 = 2010;
+const POP_SAVE_AS: u32 = 2060;
+const POP_NAME: u32 = 2061;
+const POP_NAME_BUTTONS: u32 = 2062;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Num {
@@ -193,10 +198,14 @@ enum Num {
     Quality,
     CropW,
     CropH,
+    /// How thick a line is drawn, or how large text is written.
+    MarkSize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ColorTarget {
+    /// The colour lines and new text are drawn in (and, for a selected stretch of text, its colour).
+    Mark,
     Outline,
     Shadow,
     Fill,
@@ -229,6 +238,10 @@ enum Popup {
 enum Drag {
     Slider { id: u32, num: Num },
     Crop { part: CropPart, start: (f32, f32), rect: (f32, f32, f32, f32) },
+    /// Drawing mark number `idx`.
+    Mark { idx: usize },
+    /// Selecting part of the text of mark number `idx`.
+    TextSel { idx: usize },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -284,6 +297,17 @@ pub(crate) struct Editor {
     last_frame: Option<Frame>,
     last_present_ms: u64,
     then: Then,
+    // drawing and writing on the picture
+    mark_tool: MarkKind,
+    mark_color: Col,
+    /// 1 .. 40, relative to the picture's size (see `stroke_px` and `text_px`).
+    mark_size: f32,
+    font: String,
+    /// The fonts of the picker that are installed.
+    fonts: Vec<String>,
+    text_edit: Option<TextEdit>,
+    /// The original with the marks on it, shown while the Draw and write section is open.
+    markup_img: Option<Arc<core_image::Rgba>>,
 }
 
 impl Editor {
@@ -384,10 +408,22 @@ impl Editor {
             Num::Quality => f32::from(p.quality),
             Num::CropW => self.crop_rect().2,
             Num::CropH => self.crop_rect().3,
+            Num::MarkSize => self.mark_size,
         }
     }
 
     fn num_set(&mut self, n: Num, v: f32) {
+        if n == Num::MarkSize {
+            self.mark_size = if v.is_nan() { 4.0 } else { v.clamp(1.0, 40.0) };
+            // the text being written takes the new size
+            if let Some(te) = self.text_edit {
+                let px = self.text_px();
+                if let Some(m) = self.params.marks.get_mut(te.index) {
+                    m.size = px;
+                }
+            }
+            return;
+        }
         let rotated = self.plan().rotated;
         let src = self.src_dims;
         let p = &mut self.params;
@@ -426,6 +462,7 @@ impl Editor {
             Num::PadBottom => p.pad[2] = v,
             Num::PadLeft => p.pad[3] = v,
             Num::Quality => p.quality = v.round().clamp(1.0, 100.0) as u8,
+            Num::MarkSize => {}
             Num::CropW | Num::CropH => {
                 let (x, y, w, h) = match p.crop {
                     Some(c) => (c.x, c.y, c.w, c.h),
@@ -454,6 +491,7 @@ impl Editor {
     fn color_get(&self, t: ColorTarget) -> Col {
         let p = &self.params;
         match t {
+            ColorTarget::Mark => self.mark_color,
             ColorTarget::Outline => p.outline_color.0,
             ColorTarget::Shadow => p.shadow_color.0,
             ColorTarget::Fill => p.bg_color.0,
@@ -463,8 +501,25 @@ impl Editor {
     }
 
     fn color_set(&mut self, t: ColorTarget, c: Col) {
+        if t == ColorTarget::Mark {
+            self.mark_color = c;
+            // a selected stretch of the text being written takes the colour; with nothing selected
+            // the colour is for what is typed next
+            if let Some(te) = self.text_edit {
+                let (a, b) = te.range();
+                if let Some(m) = self.params.marks.get_mut(te.index).filter(|_| a != b) {
+                    let n = m.text.chars().count();
+                    m.colors.resize(n, m.color);
+                    for col in m.colors.iter_mut().take(b.min(n)).skip(a) {
+                        *col = c;
+                    }
+                }
+            }
+            return;
+        }
         let p = &mut self.params;
         match t {
+            ColorTarget::Mark => {}
             ColorTarget::Outline => p.outline_color = Color(c),
             ColorTarget::Shadow => p.shadow_color = Color(c),
             ColorTarget::Fill => p.bg_color = Color(c),
@@ -488,6 +543,11 @@ impl Drop for Editor {
         }
         if let Some(d) = self.deliver.as_mut() {
             d.wipe();
+        }
+        // text written on the picture is clip content too
+        for m in &mut self.params.marks {
+            use zeroize::Zeroize;
+            m.text.zeroize();
         }
     }
 }
@@ -680,6 +740,7 @@ impl Editor {
             Num::ShadowBlur | Num::ShadowDist => (0.0, 100.0),
             Num::ShadowAngle => (0.0, 360.0),
             Num::PadAll | Num::PadTop | Num::PadRight | Num::PadBottom | Num::PadLeft => (0.0, 200.0),
+            Num::MarkSize => (1.0, 40.0),
             _ => (0.0, 100.0),
         }
     }
@@ -692,6 +753,11 @@ impl Editor {
     fn summary(&self, s: Sec) -> String {
         let p = &self.params;
         match s {
+            Sec::Markup => match p.marks.len() {
+                0 => String::new(),
+                1 => "1 mark".to_owned(),
+                n => format!("{n} marks"),
+            },
             Sec::Crop => match p.crop {
                 Some(c) => format!("{} x {}", c.w.round(), c.h.round()),
                 None => String::new(),
@@ -780,6 +846,38 @@ impl Editor {
         let button = |label: &str, icon: Option<Icon>, enabled: bool| ButtonView { label: label.to_owned(), icon, enabled, primary: false, on: false };
         let mut v = Vec::new();
         match s {
+            Sec::Markup => {
+                let tools = ["Pen", "Brush", "Circle", "Arrow", "Text"];
+                v.push(chips(iid(s, 1), "Tool", &tools, markup::MARK_TOOLS.iter().position(|t| *t == self.mark_tool)));
+                v.push(self.color_item(iid(s, 2), "Colour", ColorTarget::Mark));
+                let label = if self.mark_tool == MarkKind::Text { "Text size" } else { "Thickness" };
+                v.push(self.slider(iid(s, 3), label, Num::MarkSize, "", 1.0, 40.0));
+                if self.mark_tool == MarkKind::Text {
+                    let mut names: Vec<&str> = vec!["Default"];
+                    names.extend(self.fonts.iter().map(String::as_str));
+                    let sel = if self.font.is_empty() {
+                        Some(0)
+                    } else {
+                        self.fonts.iter().position(|f| *f == self.font).map(|i| i + 1)
+                    };
+                    v.push(chips(iid(s, 4), "Font", &names, sel));
+                }
+                let any = !p.marks.is_empty();
+                v.push(Item {
+                    id: iid(s, 5),
+                    kind: ItemKind::Buttons {
+                        buttons: vec![button("Remove last", Some(Icon::Undo), any), button("Clear all", Some(Icon::Trash), any)],
+                    },
+                });
+                let text = match self.mark_tool {
+                    MarkKind::Pen => "Drag on the picture to draw a thin line.",
+                    MarkKind::Brush => "Drag on the picture to paint a thick, soft stroke.",
+                    MarkKind::Ellipse => "Drag from one corner of the circle to the opposite one.",
+                    MarkKind::Arrow => "Drag from where the arrow starts to where it points.",
+                    MarkKind::Text => "Click where the text goes, then type. Click text to change it; drag over part of it, then pick a colour to recolour just that part. Esc finishes.",
+                };
+                v.push(note(iid(s, 6), text));
+            }
             Sec::Crop => {
                 let sel = match self.crop_aspect {
                     None => Some(0),
@@ -1018,8 +1116,14 @@ impl Editor {
                 items.push(Item { id: iid(s, 99), kind: ItemKind::Gap(6.0) });
             }
         }
+        let markup_mode = self.markup_mode();
         let (preview, dims) = if crop_mode {
             (self.proxy.as_ref().map(|(p, _)| p.clone()).or_else(|| self.preview.clone()), self.src_dims)
+        } else if markup_mode {
+            (
+                self.markup_img.clone().or_else(|| self.proxy.as_ref().map(|(p, _)| p.clone())).or_else(|| self.preview.clone()),
+                self.src_dims,
+            )
         } else {
             (self.preview.clone(), self.preview_dims)
         };
@@ -1040,6 +1144,7 @@ impl Editor {
         let note = match (&too_large, crop_mode) {
             (Some(why), _) => why.clone(),
             (None, true) => "Showing the original while you crop".to_owned(),
+            (None, false) if markup_mode => "Showing the original while you draw. Leave this section to see the result".to_owned(),
             (None, false) => format!("Result: {} x {} px", out.0, out.1),
         };
         let tip = |s: &str| s.to_owned();
@@ -1054,7 +1159,7 @@ impl Editor {
             ],
             preview,
             dims,
-            busy: self.pending && !crop_mode,
+            busy: self.pending && !crop_mode && !markup_mode,
             crop,
             items,
             scroll: self.scroll,
@@ -1208,12 +1313,20 @@ impl Controller {
         let tx = self.edit_tx.clone();
         let waker = self.waker.clone();
         std::thread::spawn(move || {
+            // made when the first mark needs drawing: loading the fonts takes a moment
+            let mut painter: Option<pasteroll_render::Renderer> = None;
             while let Ok(mut job) = rx.recv() {
                 // only the newest request matters
                 while let Ok(newer) = rx.try_recv() {
                     job = newer;
                 }
-                let img = imgedit::apply(&job.proxy, &job.params);
+                let img = if job.params.marks.is_empty() {
+                    imgedit::apply(&job.proxy, &job.params)
+                } else {
+                    let mut base = (*job.proxy).clone();
+                    painter.get_or_insert_with(pasteroll_render::Renderer::new).burn_marks(&mut base, &job.params.marks, None);
+                    imgedit::apply(&base, &job.params)
+                };
                 if tx.send(EditMsg::Preview { gen: job.gen, img: Arc::new(img), dims: job.dims }).is_err() {
                     break;
                 }
@@ -1221,6 +1334,7 @@ impl Controller {
             }
         });
         let params = EditParams::default();
+        let fonts = self.renderer.installed_fonts(&markup::FONT_CANDIDATES);
         let src_dims = (info.width, info.height);
         self.editor = Some(Editor {
             id,
@@ -1262,6 +1376,13 @@ impl Controller {
             last_frame: None,
             last_present_ms: 0,
             then: Then::Carousel,
+            mark_tool: MarkKind::Pen,
+            mark_color: markup::DEFAULT_MARK_COLOR,
+            mark_size: 4.0,
+            font: String::new(),
+            fonts,
+            text_edit: None,
+            markup_img: None,
         });
         let to = self.render_editor_at(home, true);
         let Some(morph) = Morph::new(&card_img, &to) else {
@@ -1448,6 +1569,7 @@ impl Controller {
                     e.src = Some(src);
                     e.proxy = Some((proxy, k));
                     self.request_preview();
+                    self.refresh_markup();
                     self.dirty = true;
                 }
                 EditMsg::LoadFailed { id } => {
@@ -1474,8 +1596,8 @@ impl Controller {
     fn request_preview(&mut self) {
         let Some(e) = self.editor.as_mut() else { return };
         let Some((proxy, k)) = e.proxy.clone() else { return };
-        if e.crop_mode() {
-            return; // the original is shown; the result is drawn when the crop is done
+        if e.crop_mode() || e.markup_mode() {
+            return; // the original is shown; the result is drawn when the crop or marking is done
         }
         e.gen += 1;
         e.pending = true;
@@ -1485,7 +1607,12 @@ impl Controller {
 
     /// The parameters changed: redraw the preview.
     fn edited(&mut self) {
+        // writing text ends when the section is left
+        if self.editor.as_ref().is_some_and(|e| e.text_edit.is_some() && !e.markup_mode()) {
+            self.finish_text_edit();
+        }
         self.request_preview();
+        self.refresh_markup();
         self.dirty = true;
     }
 
@@ -1520,6 +1647,7 @@ impl Controller {
     }
 
     fn editor_paste(&mut self, p: &mut dyn Platform, now: u64) {
+        self.finish_text_edit();
         let Some(e) = self.editor.as_ref() else { return };
         if e.saving || e.animating() {
             return;
@@ -1599,7 +1727,13 @@ impl Controller {
         p.log("saving the edited image");
         std::thread::spawn(move || {
             let result = (|| {
-                let img = imgedit::apply(&src, &params);
+                let img = if params.marks.is_empty() {
+                    imgedit::apply(&src, &params)
+                } else {
+                    let mut base = (*src).clone();
+                    pasteroll_render::Renderer::new().burn_marks(&mut base, &params.marks, None);
+                    imgedit::apply(&base, &params)
+                };
                 if picture_only {
                     // the picture itself goes on the clipboard; it is always a PNG
                     let png = pasteroll_core::imgout::encode(&img, Format::Png, params.quality, params.png_level)?;
@@ -1860,13 +1994,18 @@ impl Controller {
             }
         }
         let popup = e.popup.is_some();
+        if !popup && self.text_key(key) {
+            return;
+        }
+        let Some(e) = self.editor.as_mut() else { return };
+        let popup = e.popup.is_some();
         match key {
             Key::Escape => {
                 if popup {
                     e.popup = None;
                     self.dirty = true;
-                } else if e.open_sec.is_some() && e.crop_mode() {
-                    // leaving the crop view shows the result again
+                } else if e.open_sec.is_some() && (e.crop_mode() || e.markup_mode()) {
+                    // leaving the crop or drawing view shows the result again
                     e.open_sec = None;
                     self.edited();
                 } else {
@@ -2040,8 +2179,13 @@ impl Controller {
 
     fn editor_release(&mut self) {
         let Some(e) = self.editor.as_mut() else { return };
-        if e.drag.take().is_some() {
-            e.checkpoint();
+        if let Some(d) = e.drag.take() {
+            if let Drag::Mark { idx } = d {
+                self.markup_release(idx);
+            }
+            if let Some(e) = self.editor.as_mut() {
+                e.checkpoint();
+            }
             self.dirty = true;
         }
     }
@@ -2070,6 +2214,8 @@ impl Controller {
                 let frac = (((x / scale) - t.x - 7.0) / (t.w - 14.0).max(1.0)).clamp(0.0, 1.0);
                 self.slider_to(num, frac);
             }
+            Drag::Mark { idx } => self.markup_drag(idx, x, y),
+            Drag::TextSel { idx } => self.markup_select_drag(idx, x, y),
             Drag::Crop { part, start, rect } => {
                 let Some((px, py)) = self.crop_point(x, y) else { return };
                 let Some(e) = self.editor.as_ref() else { return };
@@ -2138,6 +2284,7 @@ impl Controller {
             }
             EHit::Browse => self.browse_folder(p, now),
             EHit::Item { id, part, frac } => self.item_press(p, id, part, frac, keeps_focus, now),
+            EHit::Image if self.editor.as_ref().is_some_and(|e| e.markup_mode()) => self.markup_press(m),
             EHit::Crop(part) => {
                 if let (Some(pt), Some(e)) = (self.crop_point(m.x, m.y), self.editor.as_mut()) {
                     let rect = e.crop_rect();
@@ -2153,6 +2300,7 @@ impl Controller {
         let (sec, n) = split_id(id)?;
         let part = usize::from(part);
         Some(match (sec, n) {
+            (Sec::Markup, 3) => Num::MarkSize,
             (Sec::Crop, 2) => [Num::CropW, Num::CropH].get(part).copied()?,
             (Sec::Resize, 2) => [Num::ResizeW, Num::ResizeH].get(part).copied()?,
             (Sec::Rotate, 1) => Num::Angle,
@@ -2189,7 +2337,7 @@ impl Controller {
         }
         // a number box or a slider
         if let Some(num) = self.item_field(id, part) {
-            let is_slider_track = matches!((sec, n), (Sec::Rotate, 1) | (Sec::Corners, 1) | (Sec::Outline, 1) | (Sec::Shadow, 2..=5) | (Sec::Background, 5) | (Sec::Output, 2))
+            let is_slider_track = matches!((sec, n), (Sec::Markup, 3) | (Sec::Rotate, 1) | (Sec::Corners, 1) | (Sec::Outline, 1) | (Sec::Shadow, 2..=5) | (Sec::Background, 5) | (Sec::Output, 2))
                 || (sec == Sec::Padding && n == 2 && self.editor.as_ref().is_some_and(|e| e.pad_linked));
             if is_slider_track && part == 0 {
                 if let Some(e) = self.editor.as_mut() {
@@ -2201,6 +2349,10 @@ impl Controller {
             if !keeps_focus {
                 self.focus_field(Field::Num(num), true);
             }
+            return;
+        }
+        if sec == Sec::Markup {
+            self.markup_item_press(id, n, part);
             return;
         }
         let Some(e) = self.editor.as_mut() else { return };
@@ -2314,19 +2466,22 @@ impl Controller {
     }
 
     fn toggle_section(&mut self, sec: Sec) {
+        self.finish_text_edit();
         let Some(e) = self.editor.as_mut() else { return };
-        let was_crop = e.crop_mode();
+        let was_original = e.crop_mode() || e.markup_mode();
         e.open_sec = if e.open_sec == Some(sec) { None } else { Some(sec) };
         e.scroll = 0.0;
         e.focus = None;
-        let crop_now = e.crop_mode();
-        if was_crop != crop_now {
-            // the crop view shows the original, the others show the result
-            if crop_now {
-                self.dirty = true;
+        let original_now = e.crop_mode() || e.markup_mode();
+        if was_original != original_now {
+            // the crop and drawing views show the original, the others show the result
+            if original_now {
+                self.refresh_markup();
             } else {
                 self.edited();
             }
+        } else if original_now {
+            self.refresh_markup();
         }
         self.dirty = true;
     }
@@ -2363,6 +2518,7 @@ impl Controller {
             Top::Reset => {
                 let Some(e) = self.editor.as_mut() else { return };
                 if e.params != EditParams::default() {
+                    e.text_edit = None;
                     e.params = EditParams::default();
                     e.pad_linked = true;
                     e.crop_aspect = None;
@@ -2385,6 +2541,7 @@ impl Controller {
     fn editor_undo(&mut self) {
         let Some(e) = self.editor.as_mut() else { return };
         e.focus = None;
+        e.text_edit = None;
         if e.params != e.history[e.pos] {
             e.params = e.history[e.pos].clone();
         } else if e.pos > 0 {
@@ -2399,6 +2556,7 @@ impl Controller {
     fn editor_redo(&mut self) {
         let Some(e) = self.editor.as_mut() else { return };
         e.focus = None;
+        e.text_edit = None;
         if e.can_redo() {
             e.pos += 1;
             e.params = e.history[e.pos].clone();
@@ -2465,8 +2623,10 @@ impl Controller {
                 } else {
                     // a preset is a way of working: this picture's crop stays
                     let crop = e.params.crop;
+                    let marks = std::mem::take(&mut e.params.marks);
                     e.params = preset;
                     e.params.crop = crop;
+                    e.params.marks = marks;
                     e.params.sanitize();
                     e.pad_linked = e.params.pad.iter().all(|v| *v == e.params.pad[0]);
                     e.checkpoint();

@@ -10,7 +10,7 @@ try {
     $dist = Join-Path $PackageRoot 'dist'
     New-Item -ItemType Directory -Path $dist -Force | Out-Null
     $archive = Join-Path $dist "pasteroll-$($package.version)-windows-x64-portable.zip"
-    Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $archive -Force
+    Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $archive -CompressionLevel Fastest -Force
     Write-Output "Built pasteroll-$($package.version)-windows-x64-portable.zip"
 } finally {
     Pop-Location

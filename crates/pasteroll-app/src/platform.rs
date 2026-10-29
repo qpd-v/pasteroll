@@ -263,6 +263,15 @@ pub trait Platform {
         let _ = text;
         Err("Presets cannot be saved here.".to_owned())
     }
+    /// The text of the file that remembers the colour of each pinned clip's tile ("" when there is none).
+    fn load_pin_colors(&self) -> String {
+        String::new()
+    }
+    /// Stores the pinned clips' colours file.
+    fn save_pin_colors(&mut self, text: &str) -> Result<(), String> {
+        let _ = text;
+        Err("Pin colours cannot be saved here.".to_owned())
+    }
     /// Local date and time of a Unix time, "YYYY-MM-DD HH:MM".
     fn format_time(&self, secs: i64) -> String {
         crate::controller::utc_date_time(secs)

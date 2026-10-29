@@ -18,16 +18,29 @@ const MENU_COPY: usize = 0;
 const MENU_CLEAR: usize = 1;
 
 /// The right-click menu: where it was opened (DIP) and the entry under the pointer.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum MenuKind {
+    /// The chosen clips: Copy, Clear selection.
+    Picks,
+    /// A pinned clip's tile.
+    Pin(i64),
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct Menu {
     pub at: (f32, f32),
     pub hover: Option<usize>,
+    pub kind: MenuKind,
 }
 
 impl Menu {
     pub(super) fn view(self, picks: usize) -> MenuView {
+        if let MenuKind::Pin(_) = self.kind {
+            let (items, dots) = super::pins::menu_entries();
+            return MenuView { items, at: self.at, hover: self.hover, dots };
+        }
         let copy = if picks > 1 { format!("Copy {picks} clips") } else { "Copy".to_owned() };
-        MenuView { items: vec![copy, "Clear selection".to_owned()], at: self.at, hover: self.hover }
+        MenuView { items: vec![copy, "Clear selection".to_owned()], at: self.at, hover: self.hover, dots: Vec::new() }
     }
 }
 
@@ -139,6 +152,13 @@ impl Controller {
         match m.kind {
             MouseKind::RightDown => {
                 self.close_menu();
+                if let Hit::Pin(i) = hit {
+                    if let (Some(id), Some(o)) = (self.pin_menu_target(i), self.open.as_mut()) {
+                        o.ui.menu = Some(Menu { at: (m.x / scale, m.y / scale), hover: None, kind: MenuKind::Pin(id) });
+                        self.dirty = true;
+                    }
+                    return true;
+                }
                 let Some(id) = row_id(self) else { return true };
                 if let Some(o) = self.open.as_mut() {
                     // like a file manager: a right click on a clip that is not chosen chooses it alone
@@ -146,7 +166,7 @@ impl Controller {
                         o.ui.picks = vec![id];
                         o.ui.pick_anchor = Some(id);
                     }
-                    o.ui.menu = Some(Menu { at: (m.x / scale, m.y / scale), hover: None });
+                    o.ui.menu = Some(Menu { at: (m.x / scale, m.y / scale), hover: None, kind: MenuKind::Picks });
                     self.dirty = true;
                 }
                 self.withdraw_warning();
@@ -154,7 +174,12 @@ impl Controller {
             }
             MouseKind::Down | MouseKind::DoubleClick => {
                 if self.open.as_ref().is_some_and(|o| o.ui.menu.is_some()) {
+                    let kind = self.open.as_ref().and_then(|o| o.ui.menu).map(|m| m.kind);
                     self.close_menu();
+                    if let (Hit::MenuItem(i), Some(MenuKind::Pin(id))) = (hit, kind) {
+                        self.pin_menu_pick(p, id, i, now);
+                        return true;
+                    }
                     if let Hit::MenuItem(i) = hit {
                         match i {
                             MENU_COPY => self.copy_picks(p, now),

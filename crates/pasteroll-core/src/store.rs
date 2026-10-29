@@ -877,6 +877,14 @@ impl Store {
         }
     }
 
+    /// The pinned clips in history (newest first), at most `max`. Ids only: nothing is opened.
+    pub fn pinned_ids(&self, max: usize) -> Result<Vec<i64>, StoreError> {
+        let mut stmt =
+            self.conn.prepare("SELECT id FROM clips WHERE pinned = 1 AND trashed IS NULL ORDER BY ord DESC LIMIT ?1")?;
+        let rows = stmt.query_map([max as i64], |r| r.get::<_, i64>(0))?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
     /// Records a paste; `bump` also moves the clip to the top of history. Either way the clip's
     /// age restarts: a clip you keep using does not expire.
     pub fn mark_pasted(&mut self, id: i64, now: i64, bump: bool) -> Result<(), StoreError> {

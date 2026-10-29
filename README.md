@@ -4,19 +4,19 @@ A clipboard history you can scroll with the mouse wheel. Copy as usual; when you
 clip, press **Ctrl+Shift+middle-click**, scroll through your history right where you are working,
 and paste the whole clip, or select just a part of it and paste only that.
 
-**Status: public beta.** Windows is at `0.1.0-beta.15`; Linux is still at `0.1.0-beta.4` and
+**Status: public beta.** Windows is at `0.1.0-beta.16`; Linux is still at `0.1.0-beta.4` and
 catches up in a later release. It works and is tested, but it is young. Expect rough edges and
 please [report them](https://github.com/qpd-v/pasteroll/issues).
 
 | | Windows 10 / 11 | Linux (X11) |
 |---|---|---|
-| Download | [Setup EXE](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.15/pasteroll-0.1.0-beta.15-windows-x64-setup.exe) · [Portable ZIP](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.15/pasteroll-0.1.0-beta.15-windows-x64-portable.zip) | [Static archive](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/pasteroll-0.1.0-beta.4-linux-x86_64.tar.gz) · [Debian/Ubuntu .deb](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/pasteroll_0.1.0-beta.4_amd64.deb) |
+| Download | [Setup EXE](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.16/pasteroll-0.1.0-beta.16-windows-x64-setup.exe) · [Portable ZIP](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.16/pasteroll-0.1.0-beta.16-windows-x64-portable.zip) | [Static archive](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/pasteroll-0.1.0-beta.4-linux-x86_64.tar.gz) · [Debian/Ubuntu .deb](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/pasteroll_0.1.0-beta.4_amd64.deb) |
 | Tray icon | yes | StatusNotifier (KDE, GNOME with AppIndicator, Ubuntu) or XEmbed |
 | Wayland | n/a | experimental GNOME 46; separate packages and setup below |
 | macOS | not available | |
 
-Windows: [release notes and testing status](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.15) ·
-[SHA256SUMS](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.15/SHA256SUMS)
+Windows: [release notes and testing status](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.16) ·
+[SHA256SUMS](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.16/SHA256SUMS)
 Linux: [release notes and testing status](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.4) ·
 [SHA256SUMS](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/SHA256SUMS)
 
@@ -68,10 +68,15 @@ the experimental packages; it does not indicate broader Wayland compatibility.
 - **Expanded viewer**: the card's Expand button (or Ctrl+E) grows a clip into a large window:
   long text to read and search, pictures to zoom and pan, Save as, Info, and Extract text (OCR, on
   this computer). F11 for fullscreen, Esc to shrink it back.
+- **Pinned clips as tiles**: pinned clips also show as small square tiles between the search bar and
+  the list (a picture's tile is the picture cropped to a square; text, files, video and audio get a
+  symbol). Click a tile to paste it; rest the pointer on it for a second to see the whole clip in a
+  popup that follows the pointer; right-click to paste, unpin or colour it. The colours are kept in
+  `pin-colors.txt` in the data folder. Windows only for now.
 - **Advanced Image Paste**: Ctrl+click the desktop or any window (the key is a setting) with an
   image chosen and the picture grows into an editor instead of being saved or pasted at once:
   outline, resize, crop, rounded corners, drop shadow, background removal or fill, padding, rotate
-  and flip, PNG / JPG / WebP / BMP with quality, a file name and folder of your choice (Settings sets
+  and flip, drawing and writing on the picture (pen, brush, circle, arrow, text), PNG / JPG / WebP / BMP with quality, a file name and folder of your choice (Settings sets
   the folder pictures go to unless you pick another; it starts as the Desktop), undo and
   redo, and presets you can reuse. In a window you choose what is pasted: the picture, the saved
   file's path, or its name. A plain click still saves (desktop) or pastes (window) the picture
@@ -118,13 +123,13 @@ the experimental packages; it does not indicate broader Wayland compatibility.
 
 ### Windows
 
-1. Download `pasteroll-0.1.0-beta.15-windows-x64-setup.exe` and `SHA256SUMS` from the
-   [beta.15 release](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.15) and
+1. Download `pasteroll-0.1.0-beta.16-windows-x64-setup.exe` and `SHA256SUMS` from the
+   [beta.16 release](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.16) and
    [verify the checksum](#verify-your-download).
 2. Run the setup wizard. **Only for me** is the default and needs no administrator rights;
    **For all users** needs UAC. Start menu is on by default; desktop shortcut and autostart are off.
 
-For portable use, extract `pasteroll-0.1.0-beta.15-windows-x64-portable.zip` and run `pasteroll.exe`.
+For portable use, extract `pasteroll-0.1.0-beta.16-windows-x64-portable.zip` and run `pasteroll.exe`.
 Its included `portable.txt` keeps application data in the adjacent `data` folder.
 
 > **"Windows protected your PC"**: the beta is **not code-signed yet**, so SmartScreen shows
@@ -200,6 +205,7 @@ change.
 
 | | |
 |---|---|
+| Draw and write | pen, soft brush, empty circle and arrow in any colour (a palette or a hex code) and thickness; text in an installed font, with the colour of each part changeable (select part of it, then pick a colour); Remove last and Clear all. Marks follow the picture through crop, rotate and resize and are never part of a preset |
 | Crop | drag the handles on the picture, or type a size; lock a shape (1:1, 4:3, 3:2, 16:9, 9:16 or the original's) |
 | Resize | by pixels or percent, keeping the proportions or not |
 | Rotate and flip | any angle, 90 degree turns, flip sideways or upside down |
@@ -273,7 +279,7 @@ Each release has a `SHA256SUMS` file.
 
 ```powershell
 # Windows
-Get-FileHash .\pasteroll-0.1.0-beta.15-windows-x64-setup.exe -Algorithm SHA256
+Get-FileHash .\pasteroll-0.1.0-beta.16-windows-x64-setup.exe -Algorithm SHA256
 ```
 ```sh
 # Linux

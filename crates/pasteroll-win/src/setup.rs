@@ -384,7 +384,7 @@ pub fn remove_user_data(db: &Path) -> Result<usize, String> {
     let mut files = vec![db.to_path_buf(), sidecar("-wal"), sidecar("-shm"), sidecar("-journal"),
         db.with_extension("key"), db.with_extension("key.tmp")];
     for name in ["config.toml", "config.toml.tmp", "paste_keys.txt", "image-presets.txt",
-        "image-presets.txt.tmp", "first-run.txt", "update-check.txt", "pasteroll.log"] {
+        "image-presets.txt.tmp", "pin-colors.txt", "pin-colors.txt.tmp", "first-run.txt", "update-check.txt", "pasteroll.log"] {
         files.push(dir.join(name));
     }
     // Refuse links before deleting anything, just as reset-history does.

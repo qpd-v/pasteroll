@@ -332,6 +332,18 @@ impl Platform for WinPlatform {
         std::fs::write(&tmp, text).and_then(|_| std::fs::rename(&tmp, &path)).map_err(|e| e.to_string())
     }
 
+    fn load_pin_colors(&self) -> String {
+        let Some(db) = &self.db else { return String::new() };
+        std::fs::read_to_string(db.with_file_name("pin-colors.txt")).unwrap_or_default()
+    }
+
+    fn save_pin_colors(&mut self, text: &str) -> Result<(), String> {
+        let Some(db) = &self.db else { return Err("no data folder".to_owned()) };
+        let path = db.with_file_name("pin-colors.txt");
+        let tmp = db.with_file_name("pin-colors.txt.tmp");
+        std::fs::write(&tmp, text).and_then(|_| std::fs::rename(&tmp, &path)).map_err(|e| e.to_string())
+    }
+
     fn format_time(&self, secs: i64) -> String {
         crate::dialogs::local_time(secs).unwrap_or_else(|| pasteroll_app::controller::utc_date_time(secs))
     }

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.0-beta.16 (Windows only)
+
+- **Pinned clips as tiles.** Pinned clips now also show as small square tiles between the search bar and
+  the list. A picture clip's tile is its picture, cropped to a square from the middle; text, files,
+  video and audio get a symbol. Click a tile to paste the clip. Rest the pointer on a tile for a second
+  and a popup shows the whole clip (the text, or the picture larger); it follows the pointer while it
+  stays on the tile. Right-click a tile to paste, unpin, or colour the tile's edge and symbol. The
+  colours are kept in a small file, `pin-colors.txt`, in the data folder.
+- **Draw and write on pictures.** The image editor has a new "Draw and write" section: a pen, a soft
+  brush, an empty circle and an arrow, a colour picker, and a size slider, with Remove last and Clear all.
+  The marks are saved into the pasted or saved picture and follow it through crop, rotate and resize.
+- **Text on pictures.** The same section writes text on the picture, with a font picker (the common
+  fonts that are installed) and the chosen colour. Click text to change it; select part of it with the
+  mouse (or double-click a word), then pick a colour to recolour just that part.
+
 ## 0.1.0-beta.15 (Windows only)
 
 - **Choosing several clips collapses the list to rows.** While Multi-paste is on, or any clip is chosen
