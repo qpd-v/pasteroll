@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.0-beta.17 (Windows only)
+
+- **Fixed: "Download and install" could refuse to update.** After a successful update, the clean-up of
+  the downloaded installer could stop halfway (Setup was still running) and leave its folder without
+  the mark that tells Pasteroll the folder is its own. The next update then said "pasteroll-update
+  exists and is not Pasteroll's update folder, so it was not touched" and did nothing. The mark is now
+  removed last, and a leftover folder that holds only Pasteroll's own update files is cleared and
+  reused. A folder with anything else in it is still never touched. If you already see that message,
+  delete the `pasteroll-update` folder in the data folder (it holds only an old installer) once.
+
 ## 0.1.0-beta.16 (Windows only)
 
 - **Pinned clips as tiles.** Pinned clips now also show as small square tiles between the search bar and

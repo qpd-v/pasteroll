@@ -262,14 +262,55 @@ fn random_name() -> String {
 /// belong to something else, and it is left alone.
 fn fresh_dir(dir: &Path) -> Result<(), String> {
     if dir.exists() {
-        if !dir.join(FOLDER_MARKER).is_file() {
+        if !dir.join(FOLDER_MARKER).is_file() && !holds_only_our_files(dir) {
             return Err(format!("{} exists and is not Pasteroll's update folder, so it was not touched", dir.display()));
         }
-        std::fs::remove_dir_all(dir).map_err(|e| format!("could not clear the old update folder ({e})"))?;
+        clear_ours(dir).map_err(|e| format!("could not clear the old update folder ({e})"))?;
     }
     crate::keystore::private_dir(dir)?;
     std::fs::write(dir.join(FOLDER_MARKER), b"Pasteroll's update folder. Safe to delete.\n")
         .map_err(|e| format!("could not prepare the update folder ({e})"))
+}
+
+/// True for a folder with no marker whose every entry is a file this code makes (`update-<16 hex>.exe`,
+/// `pending.txt`). An earlier clean-up that lost the marker but could not remove the installer (Setup
+/// was still running) leaves exactly this, and it must not block every later update.
+fn holds_only_our_files(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else { return false };
+    entries.into_iter().all(|e| {
+        let Ok(e) = e else { return false };
+        let name = e.file_name();
+        let name = name.to_string_lossy();
+        let is_file = e.file_type().map(|t| t.is_file()).unwrap_or(false);
+        let hex = name.strip_prefix("update-").and_then(|n| n.strip_suffix(".exe"));
+        is_file && (name == PENDING || hex.is_some_and(|h| h.len() == 16 && h.bytes().all(|b| b.is_ascii_hexdigit())))
+    })
+}
+
+/// Removes one of our update folders, the marker last: if something inside cannot be removed (an
+/// installer that is still running), the marker stays, so the folder is still recognised as ours and
+/// the next attempt clears it.
+fn clear_ours(dir: &Path) -> std::io::Result<()> {
+    let mut first_err = None;
+    for entry in std::fs::read_dir(dir)?.flatten() {
+        if entry.file_name() == FOLDER_MARKER {
+            continue;
+        }
+        let path = entry.path();
+        let r = if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) { std::fs::remove_dir_all(&path) } else { std::fs::remove_file(&path) };
+        if let Err(e) = r {
+            first_err.get_or_insert(e);
+        }
+    }
+    if let Some(e) = first_err {
+        return Err(e);
+    }
+    match std::fs::remove_file(dir.join(FOLDER_MARKER)) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    std::fs::remove_dir(dir)
 }
 
 /// Where a failed preparation stopped. The administrator helper cannot send words back to the
@@ -543,7 +584,7 @@ pub fn startup_report(data_dir: &Path) -> Option<Startup> {
     if current >= target {
         // it worked: the downloaded installer is not needed any more
         if dir.join(FOLDER_MARKER).is_file() {
-            let _ = std::fs::remove_dir_all(&dir);
+            let _ = clear_ours(&dir);
         }
         return Some(Startup::Updated(current));
     }
@@ -936,6 +977,46 @@ mod tests {
         std::fs::write(ours.join("old-download.exe"), b"x").unwrap();
         fresh_dir(&ours).unwrap();
         assert!(!ours.join("old-download.exe").exists() && ours.join(FOLDER_MARKER).is_file());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_markerless_folder_holding_only_our_files_is_cleared() {
+        let dir = scratch("leftover");
+        let left = dir.join("pasteroll-update");
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::write(left.join("update-d58dadf10b73b7b7.exe"), b"old setup").unwrap();
+        std::fs::write(left.join(PENDING), b"0.1.0-beta.16").unwrap();
+        fresh_dir(&left).unwrap();
+        assert!(left.join(FOLDER_MARKER).is_file() && !left.join("update-d58dadf10b73b7b7.exe").exists());
+        // anything else in a markerless folder keeps it off limits
+        let other = dir.join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("update-d58dadf10b73b7b7.exe"), b"x").unwrap();
+        std::fs::write(other.join("notes.txt"), b"keep").unwrap();
+        assert!(fresh_dir(&other).is_err());
+        assert_eq!(std::fs::read(other.join("notes.txt")).unwrap(), b"keep");
+        // a name that only looks like ours is not ours
+        let odd = dir.join("odd");
+        std::fs::create_dir_all(&odd).unwrap();
+        std::fs::write(odd.join("update-zz.exe"), b"x").unwrap();
+        assert!(fresh_dir(&odd).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_marker_survives_when_the_installer_cannot_be_removed() {
+        let dir = scratch("locked");
+        let ours = dir.join("ours");
+        fresh_dir(&ours).unwrap();
+        let exe = ours.join("update-d58dadf10b73b7b7.exe");
+        std::fs::write(&exe, b"setup").unwrap();
+        let held = OpenOptions::new().read(true).share_mode(0).open(&exe).unwrap(); // like a running Setup
+        assert!(clear_ours(&ours).is_err());
+        assert!(ours.join(FOLDER_MARKER).is_file(), "still recognised as ours");
+        drop(held);
+        fresh_dir(&ours).unwrap();
+        assert!(!exe.exists());
         let _ = std::fs::remove_dir_all(dir);
     }
 
