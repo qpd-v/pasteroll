@@ -52,7 +52,7 @@ pub enum UiMode {
     #[default]
     Complete,
     /// Only the current clip, in a smaller window. The search bar and filter menu appear while
-    /// they are used; the rest is reached by keyboard (Ctrl+E, Ctrl+P, Delete, Ctrl+Z...).
+    /// they are used; the rest is reached by keyboard (Ctrl+E, Ctrl+F, Delete, Ctrl+Z...).
     NoBloat,
 }
 
@@ -86,6 +86,42 @@ impl UiMode {
             "complete" => Some(UiMode::Complete),
             "nobloat" => Some(UiMode::NoBloat),
             _ => None,
+        }
+    }
+}
+
+/// The rolls: which of the computed ones are in the rotation, and what rolls the carousel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RollSettings {
+    /// The built-in LEFT and RIGHT rolls are in the rotation (to the left and right of Main). They
+    /// can be hidden, never deleted; clips in a hidden one stay in it.
+    pub left: bool,
+    pub right: bool,
+    /// The "Most used" roll is in the rotation.
+    pub most_used: bool,
+    /// The "Images" roll is in the rotation.
+    pub images: bool,
+    /// Rolls to the previous roll while the carousel is open (`None`: no key).
+    pub left_key: Option<crate::bindings::Combo>,
+    /// Rolls to the next roll.
+    pub right_key: Option<crate::bindings::Combo>,
+    /// What a click of a tilt wheel to the left does, and to the right.
+    pub tilt_left: crate::bindings::TiltAction,
+    pub tilt_right: crate::bindings::TiltAction,
+}
+
+impl Default for RollSettings {
+    fn default() -> Self {
+        use crate::bindings::{Combo, ComboKey, TiltAction};
+        RollSettings {
+            left: true,
+            right: true,
+            most_used: false,
+            images: false,
+            left_key: Some(Combo { ctrl: true, alt: false, shift: false, key: ComboKey::Left }),
+            right_key: Some(Combo { ctrl: true, alt: false, shift: false, key: ComboKey::Right }),
+            tilt_left: TiltAction::RollLeft,
+            tilt_right: TiltAction::RollRight,
         }
     }
 }
@@ -124,6 +160,8 @@ pub struct Config {
     pub mode: UiMode,
     /// Whether to look for a newer version (see [`UpdateCheck`]).
     pub updates: UpdateCheck,
+    /// The rolls' settings.
+    pub rolls: RollSettings,
 }
 
 /// The range the carousel size may take, in percent.
@@ -145,6 +183,7 @@ impl Default for Config {
             image_folder: String::new(),
             mode: UiMode::Complete,
             updates: UpdateCheck::Ask,
+            rolls: RollSettings::default(),
         }
     }
 }
@@ -152,7 +191,7 @@ impl Default for Config {
 pub const TEMPLATE: &str = r#"# Pasteroll configuration. Lines starting with # are comments.
 
 [limits]
-# Whichever limit is reached first removes the oldest unpinned clips. Pinned clips are never removed
+# Whichever limit is reached first removes the oldest clips that are not favorites. Favorites are never removed
 # automatically and do not count toward these limits.
 max_clips = 1000          # 1 .. 1,000,000   (a settings window offers up to 100,000)
 max_total_mb = 500        # 1 MB .. 100,000 MB (a settings window offers up to 10 GB)
@@ -186,6 +225,24 @@ image_folder = ""
 mode = "complete"
 # Size of the carousel as a percentage of its normal size, 50 .. 200.
 size = 100
+
+[rolls]
+# Rolls are separate collections of clips you roll through left and right (make them, and move
+# clips into them with the right-click menu; Settings manages them). New copies always go to the
+# main roll. LEFT and RIGHT are built in, to the left and the right of Main: hide them here (clips
+# in a hidden one stay in it; they are never deleted). The other two add computed rolls.
+left_roll = true
+right_roll = true
+most_used = false
+images = false
+# Keys that roll to the previous and the next roll while the carousel is open, such as "ctrl+left".
+# They need Ctrl or Alt (or be an F key). "" for none.
+roll_left_key = "ctrl+left"
+roll_right_key = "ctrl+right"
+# What a click of a tilt wheel (a sideways wheel, or a scroll wheel that tilts) does while the carousel
+# is open: "roll-left", "roll-right" or "none".
+tilt_left = "roll-left"
+tilt_right = "roll-right"
 
 [updates]
 # Pasteroll never uses the internet unless you allow it here. true: once a day it asks GitHub
@@ -385,6 +442,65 @@ pub fn parse(text: &str) -> Result<Config, Vec<String>> {
                     }
                 }
             }
+            "rolls" => {
+                let Some(t) = item.as_table() else {
+                    problems.push("[rolls] must be a table".into());
+                    continue;
+                };
+                for (k, v) in t.iter() {
+                    let flag = |v: &Item, name: &str, problems: &mut Vec<String>| {
+                        let b = v.as_bool();
+                        if b.is_none() {
+                            problems.push(format!("{name} must be true or false"));
+                        }
+                        b
+                    };
+                    match k {
+                        "left_roll" => {
+                            if let Some(b) = flag(v, k, &mut problems) {
+                                cfg.rolls.left = b;
+                            }
+                        }
+                        "right_roll" => {
+                            if let Some(b) = flag(v, k, &mut problems) {
+                                cfg.rolls.right = b;
+                            }
+                        }
+                        "most_used" => {
+                            if let Some(b) = flag(v, k, &mut problems) {
+                                cfg.rolls.most_used = b;
+                            }
+                        }
+                        "images" => {
+                            if let Some(b) = flag(v, k, &mut problems) {
+                                cfg.rolls.images = b;
+                            }
+                        }
+                        "roll_left_key" | "roll_right_key" => match v.as_str().map(crate::bindings::parse_optional) {
+                            Some(Ok(c)) => {
+                                if k == "roll_left_key" {
+                                    cfg.rolls.left_key = c;
+                                } else {
+                                    cfg.rolls.right_key = c;
+                                }
+                            }
+                            Some(Err(e)) => problems.push(format!("{k}: {e}")),
+                            None => problems.push(format!("{k} must be text such as \"ctrl+left\", or \"\"")),
+                        },
+                        "tilt_left" | "tilt_right" => match v.as_str().and_then(crate::bindings::TiltAction::parse) {
+                            Some(a) => {
+                                if k == "tilt_left" {
+                                    cfg.rolls.tilt_left = a;
+                                } else {
+                                    cfg.rolls.tilt_right = a;
+                                }
+                            }
+                            None => problems.push(format!("{k} must be \"roll-left\", \"roll-right\" or \"none\"")),
+                        },
+                        other => problems.push(format!("unknown setting [rolls] {other}")),
+                    }
+                }
+            }
             "updates" => {
                 let Some(t) = item.as_table() else {
                     problems.push("[updates] must be a table".into());
@@ -405,6 +521,9 @@ pub fn parse(text: &str) -> Result<Config, Vec<String>> {
         }
     }
     problems.extend(cfg.limits.problems());
+    if cfg.rolls.left_key.is_some() && cfg.rolls.left_key == cfg.rolls.right_key {
+        problems.push("roll_left_key and roll_right_key are the same key".into());
+    }
     if problems.is_empty() {
         Ok(cfg)
     } else {
@@ -422,6 +541,7 @@ pub fn set_value(text: &str, key: &str, val: &str) -> Result<String, Vec<String>
         .or_else(|| key.strip_prefix("paste."))
         .or_else(|| key.strip_prefix("appearance."))
         .or_else(|| key.strip_prefix("updates."))
+        .or_else(|| key.strip_prefix("rolls."))
         .unwrap_or(key);
     let (section, item) = match key {
         "max_clips" | "max_total_mb" | "max_clip_mb" | "max_pins" => {
@@ -490,6 +610,22 @@ pub fn set_value(text: &str, key: &str, val: &str) -> Result<String, Vec<String>
             };
             ("updates", value(b))
         }
+        "most_used" | "images" | "left_roll" | "right_roll" => {
+            let b = match val.trim().to_ascii_lowercase().as_str() {
+                "true" | "yes" | "on" => true,
+                "false" | "no" | "off" => false,
+                _ => return Err(vec![format!("{key} must be true or false (got {val:?})")]),
+            };
+            ("rolls", value(b))
+        }
+        "roll_left_key" | "roll_right_key" => match crate::bindings::parse_optional(val) {
+            Ok(c) => ("rolls", value(c.map(|c| c.text()).unwrap_or_default())),
+            Err(e) => return Err(vec![format!("{key}: {e}")]),
+        },
+        "tilt_left" | "tilt_right" => match crate::bindings::TiltAction::parse(val) {
+            Some(a) => ("rolls", value(a.key())),
+            None => return Err(vec![format!("{key} must be roll-left, roll-right or none (got {val:?})")]),
+        },
         other => return Err(vec![format!("unknown setting {other}")]),
     };
     let mut doc: DocumentMut = if text.trim().is_empty() {
@@ -572,7 +708,7 @@ pub fn add_custom_filter(text: &str, name: &str, extensions: &[String]) -> Resul
     if name.is_empty() || name.chars().count() > 24 || name.chars().any(char::is_control) {
         return Err(vec!["a filter name is 1 to 24 characters".into()]);
     }
-    const BUILTIN: [&str; 8] = ["everything", "text", "document", "image", "video", "audio", "compressed", "pinned"];
+    const BUILTIN: [&str; 9] = ["everything", "text", "document", "image", "video", "audio", "compressed", "pinned", "favorites"];
     if BUILTIN.contains(&name.to_lowercase().as_str()) {
         return Err(vec![format!("{name} is already a built-in filter")]);
     }

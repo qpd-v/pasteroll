@@ -879,7 +879,8 @@ fn probe_multi_select(out: &mut Vec<Check>) -> Result<()> {
         check!("multi_ctrl_c_session_opens", false, "");
     }
 
-    // --- the right-click menu: a right click chooses the clip and opens Copy
+    // --- the right-click menu: a right click opens Copy for that clip without choosing it (so the
+    // card stays tall); a plain click would choose it instead
     clear_edit();
     if open_carousel_in_corner() {
         if let Some(pt) = row_point(2) {
@@ -889,8 +890,13 @@ fn probe_multi_select(out: &mut Vec<Check>) -> Result<()> {
             input::right_up();
             pump(200);
         }
-        let menu = app::with_runtime(|rt| rt.controller.view_model().menu.is_some()).unwrap_or(false);
-        check!("multi_right_click_opens_the_menu", menu && picked() == 1, "menu {menu}, {} chosen", picked());
+        let (menu, rows_at_click) = app::with_runtime(|rt| {
+            let vm = rt.controller.view_model();
+            let titles: Vec<String> = vm.rows.iter().take(5).map(|r| r.title.chars().take(14).collect()).collect();
+            (vm.menu.is_some(), format!("active {} rows {titles:?}", vm.active))
+        })
+        .unwrap_or((false, String::new()));
+        check!("multi_right_click_opens_the_menu", menu && picked() == 0, "menu {menu}, {} chosen; {rows_at_click}", picked());
         if let Some(pt) = carousel_point(|g| g.menu_items.first().copied()) {
             input::move_to(pt);
             pump(60);
@@ -904,7 +910,7 @@ fn probe_multi_select(out: &mut Vec<Check>) -> Result<()> {
         input::send_chord(&[VK_CONTROL], VIRTUAL_KEY(b'V' as u16));
         pump(300);
         let text = edit_text(edit);
-        check!("multi_menu_copy_copied_the_clip", text == "multi two", "after Ctrl+V: {text:?}");
+        check!("multi_menu_copy_copied_the_clip", text == "multi two", "after Ctrl+V: {text:?}; {rows_at_click}");
     } else {
         check!("multi_menu_session_opens", false, "");
     }

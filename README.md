@@ -4,19 +4,19 @@ A clipboard history you can scroll with the mouse wheel. Copy as usual; when you
 clip, press **Ctrl+Shift+middle-click**, scroll through your history right where you are working,
 and paste the whole clip, or select just a part of it and paste only that.
 
-**Status: public beta.** Windows is at `0.1.0-beta.17`; Linux is still at `0.1.0-beta.4` and
+**Status: public beta.** Windows is at `0.1.0-beta.18`; Linux is still at `0.1.0-beta.4` and
 catches up in a later release. It works and is tested, but it is young. Expect rough edges and
 please [report them](https://github.com/qpd-v/pasteroll/issues).
 
 | | Windows 10 / 11 | Linux (X11) |
 |---|---|---|
-| Download | [Setup EXE](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.17/pasteroll-0.1.0-beta.17-windows-x64-setup.exe) · [Portable ZIP](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.17/pasteroll-0.1.0-beta.17-windows-x64-portable.zip) | [Static archive](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/pasteroll-0.1.0-beta.4-linux-x86_64.tar.gz) · [Debian/Ubuntu .deb](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/pasteroll_0.1.0-beta.4_amd64.deb) |
+| Download | [Setup EXE](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.18/pasteroll-0.1.0-beta.18-windows-x64-setup.exe) · [Portable ZIP](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.18/pasteroll-0.1.0-beta.18-windows-x64-portable.zip) | [Static archive](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/pasteroll-0.1.0-beta.4-linux-x86_64.tar.gz) · [Debian/Ubuntu .deb](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/pasteroll_0.1.0-beta.4_amd64.deb) |
 | Tray icon | yes | StatusNotifier (KDE, GNOME with AppIndicator, Ubuntu) or XEmbed |
 | Wayland | n/a | experimental GNOME 46; separate packages and setup below |
 | macOS | not available | |
 
-Windows: [release notes and testing status](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.17) ·
-[SHA256SUMS](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.17/SHA256SUMS)
+Windows: [release notes and testing status](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.18) ·
+[SHA256SUMS](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.18/SHA256SUMS)
 Linux: [release notes and testing status](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.4) ·
 [SHA256SUMS](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/SHA256SUMS)
 
@@ -62,17 +62,42 @@ the experimental packages; it does not indicate broader Wayland compatibility.
   use them). Switch from the tray menu or Settings. Windows only for now.
 - **Scroll your history** with the mouse wheel or arrow keys; the carousel opens at the pointer.
 - **Search as you type** (file names too) and filter by Text, Document, Image, Video, Audio,
-  Compressed, Pinned, or filters you define.
+  Compressed, Favorites, or filters you define.
 - **Partial paste**: double-click a word or drag across text in the preview, then Enter pastes
   only the selection.
 - **Expanded viewer**: the card's Expand button (or Ctrl+E) grows a clip into a large window:
   long text to read and search, pictures to zoom and pan, Save as, Info, and Extract text (OCR, on
   this computer). F11 for fullscreen, Esc to shrink it back.
-- **Pinned clips as tiles**: pinned clips also show as small square tiles between the search bar and
+- **Favorites as tiles**: favorite clips also show as small square tiles between the search bar and
   the list (a picture's tile is the picture cropped to a square; text, files, video and audio get a
   symbol). Click a tile to paste it; rest the pointer on it for a second to see the whole clip in a
-  popup that follows the pointer; right-click to paste, unpin or colour it. The colours are kept in
-  `pin-colors.txt` in the data folder. Windows only for now.
+  popup that follows the pointer; right-click to paste, remove it from favorites or colour it. The
+  colours are kept in `pin-colors.txt` in the data folder. Windows only for now.
+- **Move the carousel**: press on an empty part of it (the margins and the gaps between things) and
+  drag it anywhere on the screen. Clicking elsewhere still pastes there and closes it, as usual.
+  Windows only for now.
+- **Rolls**: separate collections of clips that you roll through left and right, with a slide
+  between them, the way you roll through clips. The main roll is your history and new copies always
+  land there. Two rolls are built in, **LEFT** and **RIGHT**, one on each side of Main (Settings can
+  hide them; nothing deletes them or the clips in them). Right-click a clip (or several chosen ones),
+  pick **Move to roll**, and choose a roll, or **New left roll... / New right roll...** to name a new
+  one on that side of Main (leave the name empty and it is called New roll 1, New roll 2...). Settings
+  makes, renames and removes your own rolls, puts each one on the side of Main you want, orders them,
+  and can add a **Most used** roll (what you paste most) and an **Images** roll (every picture clip).
+  Right-clicking a clip opens its menu without choosing it, so the card stays as it was. The footer
+  shows the roll you are on, centered, and flashes a black arrow while it rolls. Roll with Ctrl+Left /
+  Ctrl+Right while the carousel is open, by clicking the left or right part of the footer, or with the
+  sideways clicks of a tilt wheel (Logitech's thumb wheel, a tilting scroll wheel); Settings lets you
+  choose the keys and what each sideways click does. Search, filters, choosing and pasting work in
+  every roll. Clips in a custom roll are not removed by the limits, like favorites. A pinned-open
+  carousel rolls with the tilt wheel over it. Windows only for now.
+- **Pin it open**: the pin button in the search bar (or Ctrl+K) keeps the carousel on top of the other
+  windows while you use them. The keyboard and the wheel go back to the window you are using; the wheel
+  over the carousel turns it, the bar's Paste button and the favorite tiles paste into the window that
+  is in front, and the pin button closes it. Multi-paste works with the mouse (the Multi-paste button
+  chooses clips, Paste pastes them, Ctrl+click Paste opens the options card). There is no typing into
+  the search box, and no expanded viewer or image editor, while it is pinned open. Press the open
+  gesture to bring a fresh carousel to the pointer instead. Windows only for now.
 - **Advanced Image Paste**: Ctrl+click the desktop or any window (the key is a setting) with an
   image chosen and the picture grows into an editor instead of being saved or pasted at once:
   outline, resize, crop, rounded corners, drop shadow, background removal or fill, padding, rotate
@@ -97,8 +122,8 @@ the experimental packages; it does not indicate broader Wayland compatibility.
   While Multi-paste is on, or any clip is chosen, the tall card of the clip shown collapses into a
   one-line row so the whole list is rows (it opens again when the choice is cleared). A picture clip's
   one-line row ends in a small picture of it.
-- **Pin** clips (Ctrl+P) so they are never removed automatically. Settings has a **Clear history**
-  button (it keeps pinned clips and asks first).
+- Make clips **favorites** (Ctrl+F, or the star) so they are never removed automatically. Settings has a
+  **Clear history** button (it keeps favorites and asks first).
 - **Recycle bin**: deleted clips can be brought back (Ctrl+Z, or the Recycle bin filter) for 30
   days; Shift+Delete deletes for good.
 - **Images and files** are kept too, with fast cached previews.
@@ -123,13 +148,13 @@ the experimental packages; it does not indicate broader Wayland compatibility.
 
 ### Windows
 
-1. Download `pasteroll-0.1.0-beta.17-windows-x64-setup.exe` and `SHA256SUMS` from the
-   [beta.17 release](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.17) and
+1. Download `pasteroll-0.1.0-beta.18-windows-x64-setup.exe` and `SHA256SUMS` from the
+   [beta.18 release](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.18) and
    [verify the checksum](#verify-your-download).
 2. Run the setup wizard. **Only for me** is the default and needs no administrator rights;
    **For all users** needs UAC. Start menu is on by default; desktop shortcut and autostart are off.
 
-For portable use, extract `pasteroll-0.1.0-beta.17-windows-x64-portable.zip` and run `pasteroll.exe`.
+For portable use, extract `pasteroll-0.1.0-beta.18-windows-x64-portable.zip` and run `pasteroll.exe`.
 Its included `portable.txt` keeps application data in the adjacent `data` folder.
 
 > **"Windows protected your PC"**: the beta is **not code-signed yet**, so SmartScreen shows
@@ -169,7 +194,8 @@ The X11 backend does not provide full native Wayland support.
 | Tab | choose a filter |
 | Enter, or click the target | paste |
 | double-click / drag in the preview | select part of a clip to paste |
-| Ctrl+P | pin or unpin a clip |
+| Ctrl+F | make a clip a favorite, or remove it |
+| Ctrl+K | pin the carousel open (on Windows) |
 | Delete / Ctrl+Z | move a clip to the recycle bin / bring it back |
 | Shift+Delete, Shift+click on the bin button | delete for good (asks first) |
 | Ctrl+E, or the card's Expand button | open the expanded viewer |
@@ -177,7 +203,7 @@ The X11 backend does not provide full native Wayland support.
 
 **No Bloat** is a look, not a smaller program. The carousel shows only the clip, with no list and
 no buttons on the card, and every key above still works: typing brings up the search bar, Tab the
-filter menu, Ctrl+P marks the clip with a star, Delete and Ctrl+Z talk in the message line, and
+filter menu, Ctrl+F marks the clip with a star, Delete and Ctrl+Z talk in the message line, and
 Ctrl+E opens the expanded viewer. Choose it from the tray menu (right-click) or in Settings.
 
 In the expanded viewer:
@@ -279,7 +305,7 @@ Each release has a `SHA256SUMS` file.
 
 ```powershell
 # Windows
-Get-FileHash .\pasteroll-0.1.0-beta.17-windows-x64-setup.exe -Algorithm SHA256
+Get-FileHash .\pasteroll-0.1.0-beta.18-windows-x64-setup.exe -Algorithm SHA256
 ```
 ```sh
 # Linux

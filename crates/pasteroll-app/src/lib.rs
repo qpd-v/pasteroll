@@ -18,7 +18,7 @@ pub use event::{Event, Key, MouseEvent, MouseKind, Wheel};
 pub use pastekeys::{PasteKey, PasteKeys};
 pub use terminals::PastePolicy;
 pub use platform::{
-    Captured, ClickPoll, ClipboardSource, Modifiers, OverlayInfo, Payload, Platform, SaveChoice, Skip, Target,
+    Captured, ClickPoll, ClipboardSource, Modifiers, OverlayInfo, OverlayMoved, Payload, Platform, SaveChoice, Skip, Target,
     TextRecognizer, Waker,
 };
 pub use workers::{IngestPolicy, Logger, StoreFactory};

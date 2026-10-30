@@ -8,7 +8,7 @@ use pasteroll_render::Hit;
 
 impl H {
     /// A harness whose carousel starts in No Bloat, like the program does from its config.
-    fn no_bloat(clips: &[Clip<'_>]) -> H {
+    pub(super) fn no_bloat(clips: &[Clip<'_>]) -> H {
         let mut h = H::new(clips);
         h.c.init_ui_mode(UiMode::NoBloat);
         h.p.mode = UiMode::NoBloat;
@@ -278,10 +278,10 @@ fn ctrl_p_pins_and_the_star_shows_on_the_card() {
     let g = h.open();
     let id = h.c.current_id().unwrap();
     assert!(!h.vm().rows[0].pinned);
-    key(&mut h, g, Key::CtrlP);
+    key(&mut h, g, Key::CtrlF);
     assert!(h.is_pinned(id));
     assert!(h.vm().rows[0].pinned, "the card shows its pin");
-    key(&mut h, g, Key::CtrlP);
+    key(&mut h, g, Key::CtrlF);
     assert!(!h.is_pinned(id) && !h.vm().rows[0].pinned);
 }
 
@@ -433,7 +433,7 @@ fn choosing_the_mode_you_are_in_changes_nothing() {
 fn the_history_is_the_same_in_both_modes() {
     let mut h = H::new(&[Clip::Text("a"), Clip::Text("b")]);
     let g = h.open();
-    key(&mut h, g, Key::CtrlP);
+    key(&mut h, g, Key::CtrlF);
     let id = h.c.current_id().unwrap();
     assert!(h.is_pinned(id));
     h.send(Event::Key(Key::Escape, g));

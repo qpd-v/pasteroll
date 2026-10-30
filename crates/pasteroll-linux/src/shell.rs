@@ -716,7 +716,7 @@ impl Shell {
         w.push(Widget::new(
             0,
             rect(16.0, 192.0, 488.0, 36.0),
-            "When a limit is reached the oldest clips are removed first. Pinned clips are never removed.",
+            "When a limit is reached the oldest clips are removed first. Favorite clips are never removed.",
             WKind::Note,
         ));
         w.push(Widget::new(

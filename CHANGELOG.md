@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.1.0-beta.18 (Windows only)
+
+- **Rolls.** Separate collections of clips that you roll through left and right, with a slide between
+  them. The main roll is your history; new copies always land there. Two rolls are built in, LEFT and
+  RIGHT, on either side of Main (Settings can hide them, nothing deletes them or their clips). Move
+  clips into a roll from the right-click menu (Move to roll, which lists the rolls in the order the
+  carousel rolls in, or New left roll... / New right roll... to name a new one on that side; a new roll
+  left unnamed is called New roll 1, New roll 2...). Settings makes, renames and removes your own
+  rolls, places each one on the side of Main you want and orders them. Settings can also add a Most
+  used roll and an Images roll. A right click now opens the menu for that clip without choosing it, so
+  the card stays as it was. The footer shows the roll centered and flashes a black arrow while it
+  rolls; roll with Ctrl+Left / Ctrl+Right, by clicking the left or right part of the footer, or with
+  the sideways clicks of a tilt wheel. Settings sets the keys and what each sideways click does. Clips
+  in a custom roll are exempt from the limits, like favorites, and deleting a roll gives its clips back
+  to the main roll. Roll names are encrypted with the history.
+- **Move the carousel.** Press on an empty part of it (the margins and the gaps between things) and
+  drag it anywhere on the screen. Clicking elsewhere still pastes there and closes it, as before.
+- **Pin it open.** A pin button in the search bar (and Ctrl+K, which also works in No Bloat) keeps the
+  carousel on top of the other windows while you use them. The keyboard and the wheel go back to the
+  window you are using; the wheel over the carousel turns it, the bar's Paste button and the favorite
+  tiles paste into the window that is in front, and the pin button closes it. Multi-paste works with the
+  mouse alone (the Multi-paste button chooses clips, Paste pastes them, Ctrl+click Paste opens the
+  options card). While it is pinned open there is no typing into the search box and no expanded viewer
+  or image editor. The open gesture brings a fresh carousel to the pointer instead.
+- **Pins are now Favorites.** The pin that keeps a clip until you remove it is called a favorite
+  everywhere (the star, the Favorites filter, the tiles). It is Ctrl+F instead of Ctrl+P; inside the
+  expanded viewer Ctrl+F still finds text, and the star button makes a clip a favorite there.
+
 ## 0.1.0-beta.17 (Windows only)
 
 - **Fixed: "Download and install" could refuse to update.** After a successful update, the clean-up of

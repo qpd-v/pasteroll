@@ -318,13 +318,31 @@ fn no_bloat_has_no_choosing() {
 // ---------------------------------------------------------------- the right-click menu
 
 #[test]
-fn a_right_click_chooses_the_clip_and_opens_the_copy_menu() {
+fn a_right_click_opens_the_menu_for_that_clip_without_choosing_it() {
     let mut h = four();
     h.open();
     h.right_click_row(2);
-    assert_eq!(h.chosen(), vec![2]);
+    assert!(h.chosen().is_empty(), "no multiple-paste look: the clip is not chosen");
+    assert_eq!(h.vm().collapse, 0.0, "the card stays tall");
     let menu = h.vm().menu.expect("a menu");
-    assert_eq!(menu.items, vec!["Copy", "Clear selection"]);
+    assert_eq!(menu.items, vec!["Copy", "Move to roll >"], "nothing is chosen, so nothing to clear");
+}
+
+#[test]
+fn the_menu_acts_on_the_clip_it_was_opened_on_and_leaves_the_choice_alone() {
+    let mut h = four();
+    h.open();
+    h.click_row(1, CTRL);
+    h.right_click_row(3); // a clip that is not among the chosen
+    assert_eq!(h.chosen(), vec![1]);
+    let menu = h.vm().menu.expect("a menu");
+    assert_eq!(menu.items, vec!["Copy", "Clear selection", "Move to roll >"]);
+    let vm = h.vm();
+    let size = h.p.window();
+    let g = pasteroll_render::geometry(&vm, (size.0 as f32, size.1 as f32), 1.0);
+    let item = g.menu_items[0];
+    h.mouse(MouseKind::Down, (item.x + 5.0, item.y + 5.0));
+    assert_eq!(h.pasted_texts(), vec!["a"], "only the clip that was right-clicked");
 }
 
 #[test]
@@ -374,6 +392,7 @@ fn clear_selection_in_the_menu_forgets_the_choice() {
 fn a_click_elsewhere_only_closes_the_menu() {
     let mut h = four();
     h.open();
+    h.click_row(1, CTRL);
     h.right_click_row(1);
     assert!(h.vm().menu.is_some());
     let at = h.row_point(3);
@@ -387,6 +406,7 @@ fn a_click_elsewhere_only_closes_the_menu() {
 fn escape_closes_the_menu_without_forgetting_the_choice() {
     let mut h = four();
     let g = h.open();
+    h.click_row(1, CTRL);
     h.right_click_row(1);
     h.send(Event::Key(Key::Escape, g));
     assert!(h.vm().menu.is_none());

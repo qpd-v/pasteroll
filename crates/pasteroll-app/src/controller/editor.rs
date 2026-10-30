@@ -1869,7 +1869,7 @@ impl Controller {
                 true
             }
             // the editor is modal: nothing else reaches the carousel or the program underneath
-            Event::ClickPaste(_) | Event::ClickCancel(_) | Event::ClickOutside(_) | Event::Mouse(_) | Event::Activate | Event::BrowseAt(_, _) => true,
+            Event::ClickPaste(_) | Event::ClickCancel(_) | Event::ClickOutside(_) | Event::Mouse(_) | Event::OverlayWheel(_) | Event::Roll(..) | Event::OverlayRoll(_) | Event::Activate | Event::BrowseAt(_, _) => true,
             Event::Tick | Event::Wake => false,
         }
     }

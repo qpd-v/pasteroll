@@ -6,7 +6,7 @@
 //! `MA_NOACTIVATE`, clicking or dragging in it never moves the foreground or the keyboard focus
 //! away from the application underneath.
 
-use pasteroll_app::{Event, MouseEvent, MouseKind, OverlayInfo};
+use pasteroll_app::{Event, MouseEvent, MouseKind, OverlayInfo, OverlayMoved};
 use pasteroll_core::config::UiMode;
 use pasteroll_render::{window_dip, Frame};
 use std::cell::RefCell;
@@ -209,6 +209,49 @@ impl OverlayWindow {
         }
     }
 
+    /// Puts the window back above the other topmost windows, without activating it.
+    pub fn raise(&self) {
+        unsafe {
+            let _ = SetWindowPos(self.hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+    }
+
+    /// Where the pointer is inside the window right now (the spot the user picked it up by).
+    pub fn drag_grab(&self) -> Option<(i32, i32)> {
+        let r = self.screen_rect();
+        let mut p = POINT::default();
+        unsafe { GetCursorPos(&mut p).ok()? };
+        Some((p.x - r.left, p.y - r.top))
+    }
+
+    /// Moves the window so the pointer keeps the place `grab` it was picked up by, kept inside the
+    /// work area of the monitor the pointer is on (so it can never be dragged out of reach).
+    pub fn drag_to(&self, grab: (i32, i32)) -> Option<OverlayMoved> {
+        unsafe {
+            let mut p = POINT::default();
+            GetCursorPos(&mut p).ok()?;
+            let r = self.screen_rect();
+            let (w, h) = (r.right - r.left, r.bottom - r.top);
+            let monitor = MonitorFromPoint(p, MONITOR_DEFAULTTONEAREST);
+            let mut info = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+            if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+                return None;
+            }
+            let work = info.rcWork;
+            let x = (p.x - grab.0).clamp(work.left, (work.right - w).max(work.left));
+            let y = (p.y - grab.1).clamp(work.top, (work.bottom - h).max(work.top));
+            if (x, y) != (r.left, r.top) {
+                SetWindowPos(self.hwnd, None, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE).ok()?;
+            }
+            let m = info.rcMonitor;
+            Some(OverlayMoved {
+                origin_px: (x, y),
+                monitor_px: (m.left, m.top, (m.right - m.left).max(1) as u32, (m.bottom - m.top).max(1) as u32),
+                work_px: (work.left, work.top, (work.right - work.left).max(1) as u32, (work.bottom - work.top).max(1) as u32),
+            })
+        }
+    }
+
     /// Shows the window at `rect` (screen pixels), on top, without activating it.
     pub fn show_rect(&self, rect: (i32, i32, u32, u32), rounded: bool) {
         if self.rounded.get() != rounded {
@@ -332,6 +375,21 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 }
                 let (x, y) = xy(lparam);
                 send(MouseKind::Move, x, y);
+                return LRESULT(0);
+            }
+            // Only reaches the window while the carousel is pinned open (a live session's hook takes
+            // the wheel first): it turns the carousel.
+            WM_MOUSEWHEEL if matches!(role, Role::Carousel) => {
+                let delta = ((wparam.0 >> 16) & 0xFFFF) as u16 as i16;
+                crate::app::dispatch(Event::OverlayWheel(delta));
+                return LRESULT(0);
+            }
+            // a click of a tilt wheel over a carousel that is pinned open rolls it
+            WM_MOUSEHWHEEL if matches!(role, Role::Carousel) => {
+                let delta = ((wparam.0 >> 16) & 0xFFFF) as u16 as i16;
+                if let Some(dir) = crate::hooks::tilt_step(delta) {
+                    crate::app::dispatch(Event::OverlayRoll(dir));
+                }
                 return LRESULT(0);
             }
             WM_MOUSELEAVE => {

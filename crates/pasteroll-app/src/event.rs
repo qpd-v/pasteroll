@@ -18,6 +18,7 @@ pub enum Key {
     /// Delete the clip even while the search box has text.
     CtrlDelete,
     Tab,
+    /// Not used by the controller any more (Favorites moved to Ctrl+F); the Linux backends still send it.
     CtrlP,
     CtrlA,
     /// A typed character (layout- and shift-aware), for the search box.
@@ -36,6 +37,8 @@ pub enum Key {
     CtrlC,
     CtrlE,
     CtrlF,
+    /// Pin the carousel open (or close it again).
+    CtrlK,
     CtrlI,
     CtrlS,
     CtrlZ,
@@ -110,6 +113,13 @@ pub enum Event {
     /// Mouse input over the expanded viewer's window, in its device pixels.
     ViewerMouse(MouseEvent),
     Wheel(Wheel, u64),
+    /// A key combination or a tilt-wheel click rolled to the previous (`-1`) or the next (`1`) roll.
+    Roll(i8, u64),
+    /// The same from a tilt wheel over a carousel that is pinned open (the hooks are not listening).
+    OverlayRoll(i8),
+    /// The wheel turned over the carousel while it is pinned open (nothing else takes the wheel
+    /// then). The signed high word of the wheel message.
+    OverlayWheel(i16),
     /// A click outside Pasteroll's windows while the viewer is open (it closes the viewer).
     ClickOutside(u64),
     /// ~25-40 ms timer (faster while something is animating).

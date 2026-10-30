@@ -277,7 +277,7 @@ fn shell_action(a: ShellAction, controller: &mut Controller, p: &mut LinuxPlatfo
             let plan = controller.store().borrow().plan_prune(&limits, now).ok();
             if let Some(plan) = plan.filter(|p| p.clips > 0 && !confirmed) {
                 let msg = format!(
-                    "Saving will delete {} clip(s), {:.1} MB ({} of them only because of age). Pinned clips are kept.",
+                    "Saving will delete {} clip(s), {:.1} MB ({} of them only because of age). Favorite clips are kept.",
                     plan.clips,
                     plan.bytes as f64 / (1024.0 * 1024.0),
                     plan.by_age

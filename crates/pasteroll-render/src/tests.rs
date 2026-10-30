@@ -58,6 +58,36 @@ fn background_and_surface_colours_are_where_expected() {
 }
 
 #[test]
+fn the_roll_indicator_is_centred_and_its_arrow_only_flashes_while_rolling() {
+    let mut r = Renderer::new();
+    let mut vm = text_vm("x", None);
+    vm.roll = Some(RollView { name: "Main".into(), position: 2, count: 3, flash: 0 });
+    let g = geometry(&vm, SIZE, 1.0);
+    let middle = g.footer.x + g.footer.w / 2.0;
+    assert!((g.roll_label.x + g.roll_label.w / 2.0 - middle).abs() < 0.01, "the name sits in the middle");
+    let dark = |f: &Frame, x0: f32, x1: f32| {
+        let (x0, x1) = (x0 as u32, x1 as u32);
+        (g.footer.y as u32..(g.footer.y + g.footer.h) as u32)
+            .flat_map(|y| (x0..x1).map(move |x| (x, y)))
+            .filter(|&(x, y)| {
+                let p = f.pixel(x, y);
+                p.0 < 10 && p.1 < 10 && p.2 < 10
+            })
+            .count()
+    };
+    let still = r.render(&vm, SIZE, 1.0);
+    assert_eq!(dark(&still, g.footer.x, g.footer.x + g.footer.w), 0, "nothing flashes when it is still");
+    vm.roll.as_mut().unwrap().flash = -1;
+    let left = r.render(&vm, SIZE, 1.0);
+    assert!(dark(&left, g.footer.x, middle) > 0, "a black arrow on the left");
+    assert_eq!(dark(&left, middle, g.footer.x + g.footer.w), 0, "and none on the right");
+    vm.roll.as_mut().unwrap().flash = 1;
+    let right = r.render(&vm, SIZE, 1.0);
+    assert_eq!(dark(&right, g.footer.x, middle), 0);
+    assert!(dark(&right, middle, g.footer.x + g.footer.w) > 0, "and the other way when rolling right");
+}
+
+#[test]
 fn geometry_places_the_active_row_larger_than_the_rest_without_overlap() {
     let vm = text_vm("x", None);
     let g = geometry(&vm, SIZE, 1.0);

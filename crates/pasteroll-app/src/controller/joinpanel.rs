@@ -348,7 +348,7 @@ impl Controller {
             }
             // a click elsewhere does not paste while the card is up; the wheel and the viewer's
             // click are not for it either
-            Event::ClickPaste(_) | Event::ClickOutside(_) | Event::Wheel(..) | Event::ViewerMouse(_) => true,
+            Event::ClickPaste(_) | Event::ClickOutside(_) | Event::Wheel(..) | Event::OverlayWheel(_) | Event::ViewerMouse(_) => true,
             _ => false,
         }
     }
@@ -436,7 +436,11 @@ impl Controller {
             if let Some(o) = self.open.as_mut() {
                 o.ui.warned = true;
                 if let Some(j) = o.ui.join.as_mut() {
-                    j.note = Some(format!("{lines} lines into a terminal may run commands. Enter pastes, Esc cancels."));
+                    j.note = Some(if o.kept {
+                        format!("{lines} lines into a terminal may run commands. Press Paste again to go ahead.")
+                    } else {
+                        format!("{lines} lines into a terminal may run commands. Enter pastes, Esc cancels.")
+                    });
                 }
             }
             self.dirty = true;

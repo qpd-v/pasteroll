@@ -40,7 +40,7 @@ pub const BUILTIN: &[(Filter, &str)] = &[
     (Filter::Video, "Video"),
     (Filter::Audio, "Audio"),
     (Filter::Compressed, "Compressed"),
-    (Filter::Pinned, "Pinned"),
+    (Filter::Pinned, "Favorites"),
     (Filter::Trash, "Recycle bin"),
 ];
 

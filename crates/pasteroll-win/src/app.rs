@@ -96,7 +96,9 @@ fn to_event(cmd: Command, gen: u64) -> Event {
         Command::PageDown => Event::Key(Key::PageDown, gen),
         Command::Delete => Event::Key(Key::Delete, gen),
         Command::CtrlDelete => Event::Key(Key::CtrlDelete, gen),
-        Command::TogglePin => Event::Key(Key::CtrlP, gen),
+        Command::CtrlK => Event::Key(Key::CtrlK, gen),
+        Command::RollLeft => Event::Roll(-1, gen),
+        Command::RollRight => Event::Roll(1, gen),
         Command::Backspace => Event::Key(Key::Backspace, gen),
         Command::CtrlBackspace => Event::Key(Key::CtrlBackspace, gen),
         Command::Tab => Event::Key(Key::Tab, gen),
@@ -276,6 +278,8 @@ pub fn create(opts: &Options) -> Result<HWND> {
         controller.set_advanced_modifier(cfg.advanced_image_modifier);
         controller.set_image_folder(&cfg.image_folder);
         controller.init_ui_mode(cfg.mode);
+        controller.set_roll_settings(cfg.rolls.clone());
+        crate::hooks::set_roll_bindings(cfg.rolls.left_key, cfg.rolls.right_key, cfg.rolls.tilt_left, cfg.rolls.tilt_right);
         controller.set_ocr(Arc::new(crate::ocr::WinOcr));
         let platform = WinPlatform::new(hwnd, overlay, viewer, hooks).with_db(&opts.db);
         SetTimer(Some(hwnd), TIMER_TICK, 25, None);

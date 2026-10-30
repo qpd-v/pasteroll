@@ -11,6 +11,7 @@
 //! - [`image`]   DIB / PNG / RGBA conversion and thumbnails
 //! - [`imgedit`] / [`imgfx`] / [`imgout`]  the Advanced Image Paste editor: adjustments, pixel operations, file formats
 
+pub mod bindings;
 pub mod config;
 pub mod export;
 pub mod hdrop;

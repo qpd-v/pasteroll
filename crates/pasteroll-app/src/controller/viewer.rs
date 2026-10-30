@@ -375,7 +375,7 @@ impl Viewer {
                 sub.push("In the recycle bin".to_owned());
             }
             if i.pinned && i.trashed.is_none() {
-                sub.push("Pinned".to_owned());
+                sub.push("Favorite".to_owned());
             }
             if !i.source.is_empty() {
                 sub.push(format!("from {}", i.source));
@@ -436,11 +436,11 @@ impl Viewer {
         tools.push(t(Tool::Copy, false, has_clip, "Copy (Ctrl+C)"));
         tools.push(ToolView { tool: Tool::Paste, on: false, enabled: has_clip, tip: paste_tip });
         if self.trash {
-            tools.push(t(Tool::Pin, false, false, "Restore it first to pin it"));
+            tools.push(t(Tool::Pin, false, false, "Restore it first to make it a favorite"));
             tools.push(t(Tool::Restore, false, true, "Restore to history (Ctrl+Z)"));
         } else {
             let pinned = self.pinned();
-            tools.push(t(Tool::Pin, pinned, true, if pinned { "Unpin (Ctrl+P)" } else { "Pin: keep it until you unpin it (Ctrl+P)" }));
+            tools.push(t(Tool::Pin, pinned, true, if pinned { "Remove from favorites" } else { "Favorite: keep it until you remove it" }));
             tools.push(t(Tool::Delete, false, true, "Move to recycle bin (Del)"));
         }
         if self.shown_text().is_some() {
@@ -934,7 +934,7 @@ impl Controller {
             if i.created_day < i.touched_day {
                 out.push(("First copied".into(), utc_date(i.created_day)));
             }
-            out.push(("Pinned".into(), (if i.pinned && i.trashed.is_none() { "Yes" } else { "No" }).into()));
+            out.push(("Favorite".into(), (if i.pinned && i.trashed.is_none() { "Yes" } else { "No" }).into()));
             if let Some(t) = i.trashed {
                 out.push((
                     "In the recycle bin since".into(),
@@ -1076,7 +1076,7 @@ impl Controller {
     fn viewer_pin(&mut self, p: &mut dyn Platform, now: u64) {
         let Some(v) = self.viewer.as_ref() else { return };
         if v.trash {
-            self.viewer_toast("Restore it from the recycle bin first to pin it.", now);
+            self.viewer_toast("Restore it from the recycle bin first to make it a favorite.", now);
             return;
         }
         let id = v.id;
@@ -1086,7 +1086,7 @@ impl Controller {
                 if let (Some(i), Some(new)) = (v.info.as_mut(), info) {
                     i.pinned = new.pinned;
                 }
-                if let Some(line) = v.info_lines.iter_mut().find(|(l, _)| l == "Pinned") {
+                if let Some(line) = v.info_lines.iter_mut().find(|(l, _)| l == "Favorite") {
                     line.1 = (if v.info.as_ref().is_some_and(|i| i.pinned) { "Yes" } else { "No" }).into();
                 }
             }
@@ -1675,10 +1675,10 @@ impl Controller {
             Key::CtrlF => self.find_open(None),
             Key::CtrlC => self.viewer_copy(p, now),
             Key::CtrlS => self.viewer_save(p, now),
-            Key::CtrlP => self.viewer_pin(p, now),
             Key::CtrlZ => self.viewer_restore_or_undo(p, now),
             Key::CtrlY => {}
             Key::CtrlE => self.close_viewer(p, now),
+            Key::CtrlP | Key::CtrlK => {}
             Key::CtrlI => self.run_action(p, Action::Info, now),
             Key::CtrlA => {
                 if let Some((san, _)) = v.shown_text() {

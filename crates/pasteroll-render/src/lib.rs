@@ -22,6 +22,7 @@
 mod editor;
 mod icons;
 mod markup;
+pub mod slide;
 mod panel;
 mod textmap;
 mod viewer;
@@ -33,6 +34,7 @@ pub use editor::{
 };
 pub use icons::Icon;
 pub use markup::MarkEdit;
+pub use slide::{ease_out, slide_frames, SLIDE_MS};
 pub use panel::{panel_geometry, panel_hit_at, PanelGeometry, PanelGroup, PanelHit, PanelView};
 pub use viewer::{
     fit_zoom, viewer_geometry, ConfirmView, FindView, Morph, MenuItemView, Tool, ToolView, VGeom, VHit, ViewerBody, ViewerView, OcrSelectionView,
@@ -71,6 +73,26 @@ const BAR_H: f32 = 34.0;
 const FILTER_W: f32 = 118.0;
 /// The Multi-paste button beside the filter button (Complete only): an icon, as wide as the bar is high.
 const MULTI_W: f32 = BAR_H;
+const KEEP_W: f32 = BAR_H;
+/// How far beside the name the flashing arrow sits.
+const ROLL_ARROW_GAP: f32 = 12.0;
+/// The roll indicator gives way to a footer message longer than this (the message is right-aligned).
+const ROLL_FOOTER_MESSAGE_MAX: usize = 40;
+
+/// The indicator's three rectangles, or empty ones. The name takes the middle of the footer and
+/// the two thirds on either side are invisible click targets that roll.
+fn roll_nav(vm: &ViewModel, footer: Rect) -> (Rect, Rect, Rect) {
+    let none = Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 };
+    if vm.roll.is_none() || vm.footer.chars().count() > ROLL_FOOTER_MESSAGE_MAX {
+        return (none, none, none);
+    }
+    let third = footer.w / 3.0;
+    let prev = Rect { x: footer.x, y: footer.y, w: third, h: footer.h };
+    let label = Rect { x: footer.x + third, y: footer.y, w: footer.w - 2.0 * third, h: footer.h };
+    let next = Rect { x: footer.x + footer.w - third, y: footer.y, w: third, h: footer.h };
+    (prev, label, next)
+}
+const PASTE_W: f32 = BAR_H;
 const ROW_H: f32 = 28.0;
 const FOOTER_H: f32 = 20.0;
 const DROPDOWN_ITEM_H: f32 = 28.0;
@@ -101,6 +123,8 @@ const ACCENT: Rgb = (47, 174, 151);
 const DANGER: Rgb = (232, 96, 96);
 const MENU: Rgb = (52, 52, 62);
 const MENU_BORDER: Rgb = (74, 74, 88);
+/// The arrow that flashes in the footer while rolling: black, and only while it moves.
+const ROLL_FLASH: Rgb = (0, 0, 0);
 
 // ---------------------------------------------------------------- view model
 
@@ -191,6 +215,18 @@ pub struct MenuView {
     pub dots: Vec<Option<Rgb>>,
 }
 
+/// Which roll the carousel is on, for the little indicator in the footer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RollView {
+    pub name: String,
+    /// 1-based place in the rotation, and how many rolls it has.
+    pub position: usize,
+    pub count: usize,
+    /// The direction of the roll that is sliding in (`-1` left, `1` right, `0` still), for the
+    /// black arrow that flashes beside the name while it happens.
+    pub flash: i8,
+}
+
 #[derive(Debug, Clone)]
 pub struct ViewModel {
     pub query: String,
@@ -225,6 +261,12 @@ pub struct ViewModel {
     pub menu: Option<MenuView>,
     /// Multi-paste is on: a plain click chooses a clip (Complete only).
     pub multi_mode: bool,
+    /// The carousel is pinned open: it stays up while other windows are used. Its button is lit,
+    /// the search bar has a Paste button, and the card has no Expand button (the viewer needs the
+    /// keyboard, which belongs to the other windows).
+    pub kept: bool,
+    /// The roll indicator in the footer (Complete only; `None` while there is only one roll).
+    pub roll: Option<RollView>,
     /// The multi-paste options card, while it is open (modal).
     pub panel: Option<PanelView>,
     /// Pinned clips, drawn as tiles between the search bar and the list (Complete only).
@@ -252,6 +294,9 @@ impl ViewModel {
             Body::Image(_) => {}
         }
         self.footer.zeroize();
+        if let Some(r) = self.roll.as_mut() {
+            r.name.zeroize();
+        }
         if let Some(t) = &mut self.pin_tip {
             t.text.zeroize();
         }
@@ -284,6 +329,8 @@ impl Default for ViewModel {
             picked: Vec::new(),
             menu: None,
             multi_mode: false,
+            kept: false,
+            roll: None,
             panel: None,
             pins: Vec::new(),
             pin_tip: None,
@@ -320,6 +367,11 @@ pub enum Hit {
     DropdownItem(usize),
     /// An entry of the right-click menu (index into `MenuView::items`).
     MenuItem(usize),
+    /// The button that pins the carousel open (or closes it again).
+    Keep,
+    /// The footer's roll arrows (the name between them counts as the next one).
+    RollPrev,
+    RollNext,
     /// Something on the multi-paste options card.
     Panel(PanelHit),
     /// A pinned clip's tile (index into `ViewModel::pins`).
@@ -330,6 +382,8 @@ pub enum Hit {
     Body { pos: usize },
     /// The active card's buttons.
     Expand,
+    /// The bar's Paste button (while the carousel is pinned open).
+    PasteButton,
     Delete,
     Restore,
     Nothing,
@@ -461,6 +515,15 @@ pub struct Geometry {
     pub filter_button: Rect,
     /// The Multi-paste button; an empty rectangle where it is not drawn (No Bloat).
     pub multi_button: Rect,
+    /// The roll indicator at the left of the footer: previous, name, next (empty rectangles where it
+    /// is not drawn).
+    pub roll_prev: Rect,
+    pub roll_label: Rect,
+    pub roll_next: Rect,
+    /// The pin-open button; an empty rectangle where it is not drawn.
+    pub keep_button: Rect,
+    /// The Paste button in the bar while the carousel is pinned open (otherwise an empty rectangle).
+    pub paste_button: Rect,
     pub list: Rect,
     /// One rect per pinned clip's tile that fits (the first ones of `ViewModel::pins`).
     pub pins: Vec<Rect>,
@@ -537,13 +600,19 @@ fn slim_geometry(vm: &ViewModel, size_dip: (f32, f32), scale: f32) -> Geometry {
     // the message line takes room only while there is a message
     let strip = if vm.footer.is_empty() { 0.0 } else { FOOTER_H + 4.0 };
     let nothing = Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 };
-    let (query_box, filter_button, top) = if vm.slim_bar {
+    let (query_box, filter_button, keep_button, paste_button, top) = if vm.slim_bar {
         let bar = Rect { x: inner.x, y: inner.y, w: inner.w, h: BAR_H };
         let filter_button = Rect { x: bar.x + bar.w - FILTER_W, y: bar.y, w: FILTER_W, h: BAR_H };
-        let query_box = Rect { x: bar.x, y: bar.y, w: bar.w - FILTER_W - 6.0, h: BAR_H };
-        (query_box, filter_button, bar.y + BAR_H + 8.0)
+        let keep_button = Rect { x: filter_button.x - 6.0 - KEEP_W, y: bar.y, w: KEEP_W, h: BAR_H };
+        let (paste_button, paste_w) = if vm.kept {
+            (Rect { x: keep_button.x - 6.0 - PASTE_W, y: bar.y, w: PASTE_W, h: BAR_H }, PASTE_W + 6.0)
+        } else {
+            (nothing, 0.0)
+        };
+        let query_box = Rect { x: bar.x, y: bar.y, w: (bar.w - FILTER_W - KEEP_W - 12.0 - paste_w).max(0.0), h: BAR_H };
+        (query_box, filter_button, keep_button, paste_button, bar.y + BAR_H + 8.0)
     } else {
-        (nothing, nothing, inner.y)
+        (nothing, nothing, nothing, nothing, inner.y)
     };
     let card = Rect { x: inner.x, y: top, w: inner.w, h: (inner.y + inner.h - strip - top).max(0.0) };
     let mut rows: Vec<Option<Rect>> = vec![None; vm.rows.len()];
@@ -558,6 +627,11 @@ fn slim_geometry(vm: &ViewModel, size_dip: (f32, f32), scale: f32) -> Geometry {
         query_box,
         filter_button,
         multi_button: nothing,
+        roll_prev: nothing,
+        roll_label: nothing,
+        roll_next: nothing,
+        keep_button,
+        paste_button,
         list: card,
         pins: Vec::new(),
         rows,
@@ -583,9 +657,17 @@ pub fn geometry(vm: &ViewModel, size_dip: (f32, f32), scale: f32) -> Geometry {
     let inner = surface.inset(INNER);
     let bar = Rect { x: inner.x, y: inner.y, w: inner.w, h: BAR_H };
     let filter_button = Rect { x: bar.x + bar.w - FILTER_W, y: bar.y, w: FILTER_W, h: BAR_H };
-    let multi_button = Rect { x: filter_button.x - 6.0 - MULTI_W, y: bar.y, w: MULTI_W, h: BAR_H };
-    let query_box = Rect { x: bar.x, y: bar.y, w: (bar.w - FILTER_W - MULTI_W - 12.0).max(0.0), h: BAR_H };
+    let keep_button = Rect { x: filter_button.x - 6.0 - KEEP_W, y: bar.y, w: KEEP_W, h: BAR_H };
+    let multi_button = Rect { x: keep_button.x - 6.0 - MULTI_W, y: bar.y, w: MULTI_W, h: BAR_H };
+    // pinned open, there is no click elsewhere to paste with: the bar has a Paste button instead
+    let (paste_button, paste_w) = if vm.kept {
+        (Rect { x: multi_button.x - 6.0 - PASTE_W, y: bar.y, w: PASTE_W, h: BAR_H }, PASTE_W + 6.0)
+    } else {
+        (Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 }, 0.0)
+    };
+    let query_box = Rect { x: bar.x, y: bar.y, w: (bar.w - FILTER_W - MULTI_W - KEEP_W - 18.0 - paste_w).max(0.0), h: BAR_H };
     let footer = Rect { x: inner.x, y: inner.y + inner.h - FOOTER_H, w: inner.w, h: FOOTER_H };
+    let (roll_prev, roll_label, roll_next) = roll_nav(vm, footer);
     let pin_top = bar.y + BAR_H + 8.0;
     let fit = ((inner.w + PIN_GAP) / (PIN_TILE + PIN_GAP)).floor().max(0.0) as usize;
     let pins: Vec<Rect> = (0..vm.pins.len().min(fit))
@@ -654,7 +736,10 @@ pub fn geometry(vm: &ViewModel, size_dip: (f32, f32), scale: f32) -> Geometry {
         // (a collapsed card is a one-liner: no room for them)
         if vm.card_buttons && !vm.lifted && active_h >= 2.0 * CARD_BUTTON + 16.0 {
             let bx = active_rect.x + active_rect.w - 4.0 - CARD_BUTTON;
-            expand = Some(Rect { x: bx, y: active_rect.y + 2.0, w: CARD_BUTTON, h: CARD_BUTTON });
+            // (the expanded viewer needs the keyboard: not while pinned open)
+            if !vm.kept {
+                expand = Some(Rect { x: bx, y: active_rect.y + 2.0, w: CARD_BUTTON, h: CARD_BUTTON });
+            }
             let by = active_rect.y + active_rect.h - 4.0 - CARD_BUTTON;
             delete = Some(Rect { x: bx, y: by, w: CARD_BUTTON, h: CARD_BUTTON });
             if vm.in_trash {
@@ -679,6 +764,11 @@ pub fn geometry(vm: &ViewModel, size_dip: (f32, f32), scale: f32) -> Geometry {
         query_box,
         filter_button,
         multi_button,
+        roll_prev,
+        roll_label,
+        roll_next,
+        keep_button,
+        paste_button,
         list,
         pins,
         rows,
@@ -951,6 +1041,7 @@ impl Renderer {
             );
         }
 
+        self.draw_roll_nav(&mut cv, vm, &g);
         self.draw_card_tooltip(&mut cv, vm, &g, size_dip);
         self.draw_pin_tip(&mut cv, vm, size_dip);
 
@@ -1098,6 +1189,26 @@ impl Renderer {
                 cv.stroke(m, 6.0, MUTED, 0.8, 1.0);
             }
             icons::draw(cv, Icon::MultiPaste, m, 16.0, if vm.multi_mode { FOREGROUND } else if hot { FOREGROUND } else { MUTED });
+        }
+        if g.keep_button.w > 0.0 {
+            let k = g.keep_button;
+            let hot = vm.hover == Some(Hit::Keep);
+            cv.fill(k, 6.0, FIELD, 1.0);
+            if vm.kept {
+                cv.fill(k, 6.0, ACCENT, 0.30);
+                cv.stroke(k, 6.0, ACCENT, 1.0, 1.2);
+            } else if hot {
+                cv.stroke(k, 6.0, MUTED, 0.8, 1.0);
+            }
+            icons::draw(cv, Icon::Keep, k, 16.0, if vm.kept || hot { FOREGROUND } else { MUTED });
+        }
+        if g.paste_button.w > 0.0 {
+            let b = g.paste_button;
+            let hot = vm.hover == Some(Hit::PasteButton);
+            cv.fill(b, 6.0, FIELD, 1.0);
+            cv.fill(b, 6.0, ACCENT, if hot { 0.45 } else { 0.25 });
+            cv.stroke(b, 6.0, ACCENT, 1.0, 1.0);
+            icons::draw(cv, Icon::Paste, b, 16.0, FOREGROUND);
         }
         let f = g.filter_button;
         self.draw_text(
@@ -1335,9 +1446,49 @@ impl Renderer {
         }
     }
 
+    /// "Name 2/4" in the middle of the footer, with a black arrow flashing beside it while the
+    /// carousel rolls left or right.
+    fn draw_roll_nav(&mut self, cv: &mut Canvas, vm: &ViewModel, g: &Geometry) {
+        let Some(roll) = &vm.roll else { return };
+        if g.roll_label.w <= 0.0 {
+            return;
+        }
+        let s = g.scale;
+        let l = g.roll_label;
+        let text = format!("{}  {}/{}", roll.name, roll.position, roll.count);
+        let tw = self.measure(&text, SMALL_PX * s, 16.0 * s).min(l.w * s);
+        let cx = (l.x + l.w / 2.0) * s;
+        self.draw_text(
+            cv,
+            &text,
+            (cx - tw / 2.0, (l.y + 2.0) * s),
+            SMALL_PX * s,
+            16.0 * s,
+            None,
+            Wrap::None,
+            MUTED,
+            scaled(l, s),
+        );
+        if roll.flash != 0 {
+            let dir = f32::from(roll.flash.signum());
+            let ax = cx + dir * (tw / 2.0 + ROLL_ARROW_GAP * s);
+            let ay = (l.y + l.h / 2.0) * s;
+            cv.line(
+                &[(ax - 3.0 * s * dir, ay - 6.0 * s), (ax + 3.0 * s * dir, ay), (ax - 3.0 * s * dir, ay + 6.0 * s)],
+                ROLL_FLASH,
+                2.5,
+            );
+        }
+    }
+
     fn draw_card_tooltip(&mut self, cv: &mut Canvas, vm: &ViewModel, g: &Geometry, size_dip: (f32, f32)) {
         let (rect, text) = match vm.hover {
             Some(Hit::Expand) => (g.expand, "Expand (Ctrl+E)"),
+            Some(Hit::RollPrev) => (Some(g.roll_prev), "Previous roll"),
+            Some(Hit::RollNext) => (Some(g.roll_next), "Next roll"),
+            Some(Hit::PasteButton) => (Some(g.paste_button), "Paste into the window in front. Ctrl+click with several chosen for options"),
+            Some(Hit::Keep) if vm.kept => (Some(g.keep_button), "Pinned open. Click to close it"),
+            Some(Hit::Keep) => (Some(g.keep_button), "Pin open (Ctrl+K): stays on top while you use other windows"),
             Some(Hit::Restore) => (g.restore, "Restore from the recycle bin (Ctrl+Z)"),
             Some(Hit::Delete) if vm.in_trash => (g.delete, "Delete permanently (Del)"),
             Some(Hit::Delete) => (g.delete, "Move to recycle bin (Del). Shift+click deletes permanently"),
@@ -1490,6 +1641,18 @@ impl Renderer {
         if g.multi_button.contains(x, y) {
             return Hit::MultiButton;
         }
+        if g.keep_button.contains(x, y) {
+            return Hit::Keep;
+        }
+        if g.paste_button.contains(x, y) {
+            return Hit::PasteButton;
+        }
+        if g.roll_prev.contains(x, y) {
+            return Hit::RollPrev;
+        }
+        if g.roll_next.contains(x, y) || g.roll_label.contains(x, y) {
+            return Hit::RollNext;
+        }
         if g.query_box.contains(x, y) {
             return Hit::Query;
         }
@@ -1603,6 +1766,18 @@ pub fn button_at(vm: &ViewModel, size_dip: (f32, f32), scale: f32, px: f32, py: 
     let (x, y) = (px / scale, py / scale);
     if g.multi_button.contains(x, y) {
         return Some(Hit::MultiButton);
+    }
+    if g.keep_button.contains(x, y) {
+        return Some(Hit::Keep);
+    }
+    if g.paste_button.contains(x, y) {
+        return Some(Hit::PasteButton);
+    }
+    if g.roll_prev.contains(x, y) {
+        return Some(Hit::RollPrev);
+    }
+    if g.roll_next.contains(x, y) || g.roll_label.contains(x, y) {
+        return Some(Hit::RollNext);
     }
     if let Some(i) = g.pins.iter().position(|r| r.contains(x, y)) {
         return Some(Hit::Pin(i));

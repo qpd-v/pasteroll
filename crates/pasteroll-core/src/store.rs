@@ -5,14 +5,16 @@
 //! tie-breaker.
 //!
 //! What is stored in the clear: row id, ordering key, day-granularity dates, clip kind, pinned flag
-//! and the padded size. What is sealed (XChaCha20-Poly1305, see [`crate::vault`]): the clip body and
+//! and the padded size (and, in `roll_clips` and `usage`, which roll a clip is in and how often it was
+//! pasted: plain numbers). What is sealed (XChaCha20-Poly1305, see [`crate::vault`]): the clip body and
 //! a small searchable record. Both are padded to size buckets first ([`crate::padding`]), so
 //! ciphertext length does not reveal clip length. Each row has a random `uid` that is part of the
 //! associated data, so a body cannot be moved to another row by someone who can write the file.
 //! The duplicate fingerprint is a keyed HMAC and reveals nothing about the content.
 //!
 //! Limits ([`crate::limits::Limits`]): whichever of count, total size or age is hit first removes
-//! the oldest *unpinned* clips; pinned clips are exempt from all three.
+//! the oldest *unpinned* clips; pinned clips, and clips in a custom roll (see [`rolls`]), are
+//! exempt from all three.
 //!
 //! Deleted data: `secure_delete` overwrites freed pages, the write-ahead log is truncated after
 //! deletions (otherwise old page images, including deleted ciphertext, would linger there), and
@@ -34,6 +36,9 @@ use crate::vault::Vault;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use std::path::Path;
 use zeroize::Zeroize;
+
+pub mod rolls;
+pub use rolls::{clean_roll_name, Roll, RollError, RollSide};
 
 /// "CARS" - marks a database as ours.
 const APPLICATION_ID: i64 = 0x4341_5253;
@@ -257,6 +262,31 @@ CREATE TRIGGER IF NOT EXISTS thumbs_cleanup AFTER DELETE ON clips
 BEGIN
     DELETE FROM thumbs WHERE id = old.id;
 END;
+-- Rolls: custom collections of clips (see rolls.rs). Additive: older builds ignore these tables.
+CREATE TABLE IF NOT EXISTS rolls(
+    id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    side INTEGER NOT NULL DEFAULT 1,
+    pos  INTEGER NOT NULL,
+    name BLOB    NOT NULL
+);
+CREATE TABLE IF NOT EXISTS roll_clips(
+    clip_id INTEGER PRIMARY KEY,
+    roll_id INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS roll_clips_roll ON roll_clips(roll_id);
+CREATE TRIGGER IF NOT EXISTS roll_clips_cleanup AFTER DELETE ON clips
+BEGIN
+    DELETE FROM roll_clips WHERE clip_id = old.id;
+END;
+-- How many times each clip was pasted whole (the most used collection).
+CREATE TABLE IF NOT EXISTS usage(
+    clip_id INTEGER PRIMARY KEY,
+    n       INTEGER NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS usage_cleanup AFTER DELETE ON clips
+BEGIN
+    DELETE FROM usage WHERE clip_id = old.id;
+END;
 ";
 
 fn random_uid() -> Result<[u8; 16], StoreError> {
@@ -313,6 +343,19 @@ impl Store {
         conn.pragma_update(None, "secure_delete", "ON")?;
         conn.pragma_update(None, "journal_size_limit", 1_048_576)?;
         conn.execute_batch(SCHEMA)?;
+        // A test build made the rolls table before it had a side: every roll was on Main's right.
+        let has_side = {
+            let mut stmt = conn.prepare("PRAGMA table_info(rolls)")?;
+            let mut rows = stmt.query([])?;
+            let mut found = false;
+            while let Some(row) = rows.next()? {
+                found |= row.get::<_, String>(1)? == "side";
+            }
+            found
+        };
+        if !has_side {
+            conn.execute("ALTER TABLE rolls ADD COLUMN side INTEGER NOT NULL DEFAULT 1", [])?;
+        }
         conn.pragma_update(None, "application_id", APPLICATION_ID)?;
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         let mut s = Store { conn, vault, limits: Limits::default(), count: 0, bytes: 0, pins: 0 };
@@ -322,7 +365,7 @@ impl Store {
 
     fn recount(&mut self) -> Result<(), StoreError> {
         let (count, bytes): (i64, i64) = self.conn.query_row(
-            "SELECT COUNT(*), COALESCE(SUM(size), 0) FROM clips WHERE pinned = 0 AND trashed IS NULL",
+            "SELECT COUNT(*), COALESCE(SUM(size), 0) FROM clips WHERE pinned = 0 AND NOT EXISTS(SELECT 1 FROM roll_clips WHERE roll_clips.clip_id = clips.id) AND trashed IS NULL",
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
@@ -388,6 +431,12 @@ impl Store {
         let max: Option<f64> = tx.query_row("SELECT MAX(ord) FROM clips", [], |r| r.get(0))?;
         let ord = max.map_or(1.0, |m| m + 1.0);
         let today = day(now);
+        let rolled: bool = match &existing {
+            Some((id, ..)) => {
+                tx.query_row("SELECT EXISTS(SELECT 1 FROM roll_clips WHERE clip_id = ?1)", [id], |r| r.get(0))?
+            }
+            None => false,
+        };
         let mut restored = false;
         let (id, delta_count, delta_bytes) = match existing {
             Some((id, old_size, pinned, trashed)) => {
@@ -398,7 +447,7 @@ impl Store {
                      trashed = NULL, pinned = CASE WHEN trashed IS NULL THEN pinned ELSE 0 END WHERE id = ?7",
                     params![ord, today, &uid[..], body, search, size, id],
                 )?;
-                (id, 0, if pinned == 0 && !restored { size - old_size } else { 0 })
+                (id, 0, if pinned == 0 && !rolled && !restored { size - old_size } else { 0 })
             }
             None => {
                 tx.execute(
@@ -509,7 +558,7 @@ impl Store {
         while self.count > max_c || self.bytes > max_b {
             let batch: Vec<(i64, i64)> = {
                 let mut stmt = self.conn.prepare_cached(
-                    "SELECT id, size FROM clips WHERE pinned = 0 AND trashed IS NULL ORDER BY ord ASC, id ASC LIMIT 256",
+                    "SELECT id, size FROM clips WHERE pinned = 0 AND NOT EXISTS(SELECT 1 FROM roll_clips WHERE roll_clips.clip_id = clips.id) AND trashed IS NULL ORDER BY ord ASC, id ASC LIMIT 256",
                 )?;
                 let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
                 rows.collect::<Result<_, _>>()?
@@ -547,7 +596,7 @@ impl Store {
         if let Some(days) = self.limits.max_age_days {
             let cutoff = day(now) - i64::from(days);
             removed += self.conn.execute(
-                "DELETE FROM clips WHERE pinned = 0 AND trashed IS NULL AND touched_day < ?1",
+                "DELETE FROM clips WHERE pinned = 0 AND NOT EXISTS(SELECT 1 FROM roll_clips WHERE roll_clips.clip_id = clips.id) AND trashed IS NULL AND touched_day < ?1",
                 [cutoff],
             )?;
             self.recount()?;
@@ -565,7 +614,7 @@ impl Store {
         let cutoff = limits.max_age_days.map(|d| day(now) - i64::from(d));
         let mut stmt = self
             .conn
-            .prepare("SELECT size, touched_day FROM clips WHERE pinned = 0 AND trashed IS NULL ORDER BY ord ASC, id ASC")?;
+            .prepare("SELECT size, touched_day FROM clips WHERE pinned = 0 AND NOT EXISTS(SELECT 1 FROM roll_clips WHERE roll_clips.clip_id = clips.id) AND trashed IS NULL ORDER BY ord ASC, id ASC")?;
         let rows: Vec<(i64, i64)> =
             stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_, _>>()?;
         let mut plan = PrunePlan::default();
@@ -749,10 +798,13 @@ impl Store {
             })
             .optional()?;
         let Some((size, pinned, trashed)) = row else { return Ok(false) };
+        let rolled = self.roll_of(id)?.is_some();
         self.conn.execute("DELETE FROM clips WHERE id = ?1", [id])?;
         if trashed.is_none() {
             if pinned != 0 {
                 self.pins -= 1;
+            } else if rolled {
+                // (not counted against the limits: it was in a custom roll)
             } else {
                 self.count -= 1;
                 self.bytes -= size;
@@ -835,7 +887,7 @@ impl Store {
     /// many were removed.
     pub fn clear(&mut self, keep_pinned: bool) -> Result<usize, StoreError> {
         let n = if keep_pinned {
-            self.conn.execute("DELETE FROM clips WHERE pinned = 0 OR trashed IS NOT NULL", [])?
+            self.conn.execute("DELETE FROM clips WHERE (pinned = 0 AND NOT EXISTS(SELECT 1 FROM roll_clips WHERE roll_clips.clip_id = clips.id)) OR trashed IS NOT NULL", [])?
         } else {
             self.conn.execute("DELETE FROM clips", [])?
         };
@@ -889,6 +941,7 @@ impl Store {
     /// age restarts: a clip you keep using does not expire.
     pub fn mark_pasted(&mut self, id: i64, now: i64, bump: bool) -> Result<(), StoreError> {
         if bump {
+            self.bump_usage(id)?;
             let max: Option<f64> = self.conn.query_row("SELECT MAX(ord) FROM clips", [], |r| r.get(0))?;
             self.conn.execute(
                 "UPDATE clips SET ord = ?1, touched_day = ?2 WHERE id = ?3",
@@ -1076,6 +1129,7 @@ impl Store {
             drop(tx); // rolls back
             return Err(StoreError::Unreadable(unreadable));
         }
+        Self::reseal_roll_names(&tx, &self.vault, &new_vault)?;
         let check = new_vault.seal(Self::KEY_CHECK_AAD, Self::KEY_CHECK);
         tx.execute(
             "INSERT INTO meta(k, v) VALUES('key_check', ?1) ON CONFLICT(k) DO UPDATE SET v = excluded.v",
@@ -1190,7 +1244,7 @@ impl HistorySource for Store {
 
     fn snapshot(&mut self) -> Result<Option<Snapshot>, StoreError> {
         let (max_order, max_id) =
-            self.conn.query_row("SELECT MAX(ord), MAX(id) FROM clips WHERE trashed IS NULL", [], |r| {
+            self.conn.query_row("SELECT MAX(ord), MAX(id) FROM clips WHERE trashed IS NULL AND NOT EXISTS(SELECT 1 FROM roll_clips WHERE roll_clips.clip_id = clips.id)", [], |r| {
                 Ok((r.get::<_, Option<f64>>(0)?, r.get::<_, Option<i64>>(1)?))
             })?;
         Ok(max_order.zip(max_id).map(|(max_order, max_id)| Snapshot { max_order, max_id }))
@@ -1210,10 +1264,12 @@ impl HistorySource for Store {
         let sql = match after {
             None => format!(
                 "SELECT id, ord FROM clips WHERE ord <= ?1 AND id <= ?2 AND trashed IS NULL \
+                 AND NOT EXISTS(SELECT 1 FROM roll_clips WHERE roll_clips.clip_id = clips.id) \
                  ORDER BY ord {order}, id {order} LIMIT ?3"
             ),
             Some(_) => format!(
                 "SELECT id, ord FROM clips WHERE ord <= ?1 AND id <= ?2 AND trashed IS NULL \
+                 AND NOT EXISTS(SELECT 1 FROM roll_clips WHERE roll_clips.clip_id = clips.id) \
                  AND (ord {cmp} ?4 OR (ord = ?4 AND id {cmp} ?5)) \
                  ORDER BY ord {order}, id {order} LIMIT ?3"
             ),
@@ -1902,6 +1958,23 @@ mod tests {
         assert_eq!(v, SCHEMA_VERSION);
         assert_eq!(s.text(id).unwrap().as_deref(), Some("kept"));
         assert!(s.trash(id, 5).unwrap() && s.restore(id).unwrap());
+        drop(s);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_rolls_table_from_a_test_build_gets_its_side_column() {
+        let (dir, db) = temp_db("rolls-side");
+        let name = {
+            let mut s = Store::open(&db, vault()).unwrap();
+            s.add_roll("Work").unwrap();
+            // the shape a build made before rolls had a side
+            s.conn.execute_batch("ALTER TABLE rolls DROP COLUMN side;").unwrap();
+            "Work".to_owned()
+        };
+        let s = Store::open(&db, vault()).unwrap();
+        let rolls = s.rolls().unwrap();
+        assert_eq!((rolls[0].name.as_str(), rolls[0].side, rolls[0].pos), (name.as_str(), RollSide::Right, 1));
         drop(s);
         let _ = std::fs::remove_dir_all(dir);
     }

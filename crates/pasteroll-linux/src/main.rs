@@ -245,7 +245,7 @@ mod cli {
                 };
                 if plan.clips > 0 {
                     println!(
-                        "This would delete {} clip(s), {:.1} MB ({} of them only because of age). Pinned clips are kept.",
+                        "This would delete {} clip(s), {:.1} MB ({} of them only because of age). Favorite clips are kept.",
                         plan.clips,
                         plan.bytes as f64 / MB as f64,
                         plan.by_age

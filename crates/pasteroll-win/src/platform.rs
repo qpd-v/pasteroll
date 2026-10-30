@@ -32,6 +32,8 @@ pub struct WinPlatform {
     last_focus: Option<HWND>,
     browse_focus: Option<(HWND, u32)>,
     local_generation: u64,
+    /// Where the pointer was inside the carousel window when the user picked it up.
+    drag_grab: Option<(i32, i32)>,
     start: Instant,
     /// History file whose folder holds `config.toml` (custom filters are saved there).
     db: Option<PathBuf>,
@@ -177,6 +179,7 @@ impl WinPlatform {
             last_focus: None,
             browse_focus: None,
             local_generation: 0,
+            drag_grab: None,
             start: Instant::now(),
             db: None,
         }
@@ -251,6 +254,18 @@ impl Platform for WinPlatform {
 
     fn overlay_hide(&mut self) {
         self.overlay.hide();
+    }
+
+    fn overlay_raise(&mut self) {
+        self.overlay.raise();
+    }
+
+    fn overlay_drag_begin(&mut self) {
+        self.drag_grab = self.overlay.drag_grab();
+    }
+
+    fn overlay_drag_update(&mut self) -> Option<pasteroll_app::OverlayMoved> {
+        self.overlay.drag_to(self.drag_grab?)
     }
 
     fn viewer_show(&mut self, rect: (i32, i32, u32, u32), rounded: bool) {

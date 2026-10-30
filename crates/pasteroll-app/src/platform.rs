@@ -66,6 +66,16 @@ pub enum ClickPoll {
     Target(Target),
 }
 
+/// Where the carousel window is after the user dragged it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OverlayMoved {
+    /// Screen position of the window's top-left corner.
+    pub origin_px: (i32, i32),
+    /// The monitor it is on now, and the part of it not taken by task bars and panels.
+    pub monitor_px: (i32, i32, u32, u32),
+    pub work_px: (i32, i32, u32, u32),
+}
+
 /// Geometry the overlay was actually shown with.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OverlayInfo {
@@ -198,6 +208,17 @@ pub trait Platform {
     fn overlay_show(&mut self, at: (i32, i32)) -> OverlayInfo;
     fn overlay_present(&mut self, frame: &Frame);
     fn overlay_hide(&mut self);
+    /// The user pressed on an empty part of the carousel: from now on the window follows the pointer
+    /// (see [`Platform::overlay_drag_update`]) until the button is released.
+    /// Brings the overlay back above the other topmost windows (without activating it). Called now
+    /// and then while the carousel is pinned open.
+    fn overlay_raise(&mut self) {}
+    fn overlay_drag_begin(&mut self) {}
+    /// Moves the carousel window so it keeps the same place under the pointer. `None` when this
+    /// backend cannot move the window.
+    fn overlay_drag_update(&mut self) -> Option<OverlayMoved> {
+        None
+    }
 
     // ---------------------------------------------------------------- expanded viewer
     /// Shows the viewer window (without taking focus, above the overlay) at `rect` = `(x, y, w, h)`
@@ -270,7 +291,7 @@ pub trait Platform {
     /// Stores the pinned clips' colours file.
     fn save_pin_colors(&mut self, text: &str) -> Result<(), String> {
         let _ = text;
-        Err("Pin colours cannot be saved here.".to_owned())
+        Err("Favorite colours cannot be saved here.".to_owned())
     }
     /// Local date and time of a Unix time, "YYYY-MM-DD HH:MM".
     fn format_time(&self, secs: i64) -> String {

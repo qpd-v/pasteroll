@@ -1,4 +1,4 @@
-Pasteroll for Windows - 0.1.0-beta.17
+Pasteroll for Windows - 0.1.0-beta.18
 ====================================
 
 Pasteroll keeps a history of what you copy and lets you paste it again: scroll through
@@ -6,7 +6,7 @@ your clips with the mouse wheel and paste the whole clip, or select part of it a
 just that part.
 
 Install
-  Run pasteroll-0.1.0-beta.17-windows-x64-setup.exe.
+  Run pasteroll-0.1.0-beta.18-windows-x64-setup.exe.
   Choose Only for me (default, no administrator rights), or For all users (UAC).
   The Start menu shortcut is on by default; desktop shortcut and start at sign-in are off.
   Each account always has its own history and settings, even with an all-users install.
@@ -19,7 +19,9 @@ Use
   type                         search (file names too)
   Tab                          choose a filter (Text, Image, Document...)
   Enter                        paste the clip; drag or double-click first to paste only that part
-  Ctrl+P                       pin a clip      Delete   recycle a clip      Esc  close
+  Ctrl+F                       favorite a clip Delete   recycle a clip      Esc  close
+  Ctrl+K                       pin the carousel open (stays on top while you use other windows)
+  Drag an empty part of it     move the carousel
   Tray icon                    pause, settings, quit
 
 Your data
@@ -27,7 +29,7 @@ Your data
   Your clips are never sent anywhere. An optional check for new versions is off until you say yes.
 
 Portable mode
-  Extract pasteroll-0.1.0-beta.17-windows-x64-portable.zip and run pasteroll.exe.
+  Extract pasteroll-0.1.0-beta.18-windows-x64-portable.zip and run pasteroll.exe.
   The included portable.txt keeps all app data in the adjacent data folder.
   Installation, autostart changes and --db are disabled. Quit, then delete the folder to remove it.
   DPAPI still binds the key to your Windows account: copying the folder to another PC/account

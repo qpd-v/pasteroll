@@ -14,8 +14,6 @@ use pasteroll_render::MenuView;
 /// At most this many clips can be chosen at once.
 const PICKS_MAX: usize = 500;
 
-const MENU_COPY: usize = 0;
-const MENU_CLEAR: usize = 1;
 
 /// The right-click menu: where it was opened (DIP) and the entry under the pointer.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -24,6 +22,8 @@ pub(super) enum MenuKind {
     Picks,
     /// A pinned clip's tile.
     Pin(i64),
+    /// Where to move the chosen clips: Back, then the rolls (see `rolls.rs`).
+    MoveTo,
 }
 
 #[derive(Clone, Copy)]
@@ -31,21 +31,65 @@ pub(super) struct Menu {
     pub at: (f32, f32),
     pub hover: Option<usize>,
     pub kind: MenuKind,
+    /// The clip the menu was opened on, when it is not one of the chosen clips: the menu acts on that
+    /// clip alone and the choice is left as it was. `None`: it acts on the chosen clips.
+    pub target: Option<i64>,
+}
+
+/// What a line of the Copy menu does.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum MenuEntry {
+    Copy,
+    ClearChoice,
+    MoveToRoll,
+}
+
+impl MenuEntry {
+    /// The lines, in order: "Clear selection" only while something is chosen.
+    pub(super) fn all(has_picks: bool) -> Vec<MenuEntry> {
+        let mut v = vec![MenuEntry::Copy];
+        if has_picks {
+            v.push(MenuEntry::ClearChoice);
+        }
+        v.push(MenuEntry::MoveToRoll);
+        v
+    }
 }
 
 impl Menu {
-    pub(super) fn view(self, picks: usize) -> MenuView {
+    /// `clips` is how many clips the menu acts on, `has_picks` whether any are chosen, `move_items`
+    /// the lines of the "Move to roll" menu.
+    pub(super) fn view(self, clips: usize, has_picks: bool, move_items: &[String]) -> MenuView {
         if let MenuKind::Pin(_) = self.kind {
             let (items, dots) = super::pins::menu_entries();
             return MenuView { items, at: self.at, hover: self.hover, dots };
         }
-        let copy = if picks > 1 { format!("Copy {picks} clips") } else { "Copy".to_owned() };
-        MenuView { items: vec![copy, "Clear selection".to_owned()], at: self.at, hover: self.hover, dots: Vec::new() }
+        if self.kind == MenuKind::MoveTo {
+            return MenuView { items: move_items.to_vec(), at: self.at, hover: self.hover, dots: Vec::new() };
+        }
+        let items = MenuEntry::all(has_picks)
+            .into_iter()
+            .map(|e| match e {
+                MenuEntry::Copy if clips > 1 => format!("Copy {clips} clips"),
+                MenuEntry::Copy => "Copy".to_owned(),
+                MenuEntry::ClearChoice => "Clear selection".to_owned(),
+                MenuEntry::MoveToRoll => "Move to roll >".to_owned(),
+            })
+            .collect();
+        MenuView { items, at: self.at, hover: self.hover, dots: Vec::new() }
     }
 }
 
 /// The footer while clips are chosen.
-pub(super) fn footer_text(n: usize, multi_on: bool) -> String {
+pub(super) fn footer_text(n: usize, multi_on: bool, kept: bool) -> String {
+    // pinned open: no keyboard, and the Paste button stands in for the click where to paste
+    if kept {
+        return match n {
+            0 => "Multi-paste: click clips to choose them, then press Paste.".to_owned(),
+            1 => "1 chosen. Click more, then press Paste. Right-click for Copy or Clear.".to_owned(),
+            _ => format!("{n} chosen. Press Paste (Ctrl+click for options). Right-click for Copy or Clear."),
+        };
+    }
     match (n, multi_on) {
         (0, _) => "Multi-paste: click clips, or hold Shift and press Down. Ctrl+A chooses all.".to_owned(),
         (1, true) => "1 chosen. Click or Shift+Down for more. Click where to paste.".to_owned(),
@@ -106,6 +150,14 @@ impl Controller {
     }
 
     /// Is the right-click menu closed by this? (`true` if one was open.)
+    /// Opens a menu of `kind` where the last one was.
+    fn open_menu(&mut self, at: (f32, f32), kind: MenuKind, target: Option<i64>) {
+        if let Some(o) = self.open.as_mut() {
+            o.ui.menu = Some(Menu { at, hover: None, kind, target });
+            self.dirty = true;
+        }
+    }
+
     pub(super) fn close_menu(&mut self) -> bool {
         let closed = self.open.as_mut().is_some_and(|o| o.ui.menu.take().is_some());
         if closed {
@@ -154,19 +206,17 @@ impl Controller {
                 self.close_menu();
                 if let Hit::Pin(i) = hit {
                     if let (Some(id), Some(o)) = (self.pin_menu_target(i), self.open.as_mut()) {
-                        o.ui.menu = Some(Menu { at: (m.x / scale, m.y / scale), hover: None, kind: MenuKind::Pin(id) });
+                        o.ui.menu = Some(Menu { at: (m.x / scale, m.y / scale), hover: None, kind: MenuKind::Pin(id), target: None });
                         self.dirty = true;
                     }
                     return true;
                 }
                 let Some(id) = row_id(self) else { return true };
                 if let Some(o) = self.open.as_mut() {
-                    // like a file manager: a right click on a clip that is not chosen chooses it alone
-                    if !o.ui.picks.contains(&id) {
-                        o.ui.picks = vec![id];
-                        o.ui.pick_anchor = Some(id);
-                    }
-                    o.ui.menu = Some(Menu { at: (m.x / scale, m.y / scale), hover: None, kind: MenuKind::Picks });
+                    // a right click on a clip that is not chosen opens the menu for that clip alone: it
+                    // does not choose it (that would turn on the multiple-paste look), the card stays
+                    let target = if o.ui.picks.contains(&id) { None } else { Some(id) };
+                    o.ui.menu = Some(Menu { at: (m.x / scale, m.y / scale), hover: None, kind: MenuKind::Picks, target });
                     self.dirty = true;
                 }
                 self.withdraw_warning();
@@ -174,19 +224,36 @@ impl Controller {
             }
             MouseKind::Down | MouseKind::DoubleClick => {
                 if self.open.as_ref().is_some_and(|o| o.ui.menu.is_some()) {
-                    let kind = self.open.as_ref().and_then(|o| o.ui.menu).map(|m| m.kind);
+                    let shown = self.open.as_ref().and_then(|o| o.ui.menu);
+                    let (kind, at) = (shown.map(|m| m.kind), shown.map_or((0.0, 0.0), |m| m.at));
+                    let target = shown.and_then(|m| m.target);
+                    let has_picks = self.open.as_ref().is_some_and(|o| !o.ui.picks.is_empty());
+                    let ids = self.menu_ids(target);
                     self.close_menu();
                     if let (Hit::MenuItem(i), Some(MenuKind::Pin(id))) = (hit, kind) {
                         self.pin_menu_pick(p, id, i, now);
                         return true;
                     }
-                    if let Hit::MenuItem(i) = hit {
-                        match i {
-                            MENU_COPY => self.copy_picks(p, now),
-                            MENU_CLEAR => {
+                    if let (Hit::MenuItem(i), Some(MenuKind::MoveTo)) = (hit, kind) {
+                        if i == 0 {
+                            self.open_menu(at, MenuKind::Picks, target);
+                        } else {
+                            match self.move_targets().get(i - 1).copied() {
+                                Some(super::rolls::MoveTarget::Roll(roll)) => self.move_clips_to(p, ids, roll, now),
+                                Some(super::rolls::MoveTarget::NewRoll(side)) => self.begin_new_roll(p, ids, side, now),
+                                None => {}
+                            }
+                        }
+                        return true;
+                    }
+                    if let (Hit::MenuItem(i), Some(MenuKind::Picks)) = (hit, kind) {
+                        match MenuEntry::all(has_picks).get(i) {
+                            Some(MenuEntry::Copy) => self.copy_ids(p, ids, None, now),
+                            Some(MenuEntry::ClearChoice) => {
                                 self.clear_picks();
                             }
-                            _ => {}
+                            Some(MenuEntry::MoveToRoll) => self.open_menu(at, MenuKind::MoveTo, target),
+                            None => {}
                         }
                     }
                     // a click that only closes the menu does nothing else
@@ -221,6 +288,10 @@ impl Controller {
             o.ui.multi_on = !o.ui.multi_on;
             o.ui.dropdown_open = false;
             self.dirty = true;
+        }
+        // pinned open there is no Esc to forget the choice: switching Multi-paste off does it
+        if self.open.as_ref().is_some_and(|o| o.kept && !o.ui.multi_on) {
+            self.clear_picks();
         }
         self.withdraw_warning();
     }
@@ -453,9 +524,14 @@ impl Controller {
                 o.ui.warned = true;
             }
             // Stays up until the user decides: Enter to paste, anything else to back out.
+            let kept = self.open.as_ref().is_some_and(|o| o.kept);
             self.status = Some(Status {
-                text: format!("{lines} line(s) into a terminal may run commands. Enter pastes, Esc cancels."),
-                until_ms: u64::MAX,
+                text: if kept {
+                    format!("{lines} line(s) into a terminal may run commands. Press Paste again to go ahead.")
+                } else {
+                    format!("{lines} line(s) into a terminal may run commands. Enter pastes, Esc cancels.")
+                },
+                until_ms: if kept { p.now_ms() + 8_000 } else { u64::MAX },
             });
             self.dirty = true;
         }
@@ -468,6 +544,12 @@ impl Controller {
         let Some(o) = self.open.as_ref() else { return };
         let ids: Vec<i64> = if o.ui.picks.is_empty() { o.current_id().into_iter().collect() } else { o.ui.picks.clone() };
         let highlighted = if o.ui.picks.is_empty() { self.selected_text() } else { None };
+        self.copy_ids(p, ids, highlighted, now);
+    }
+
+    /// Copies these clips (joined, when there are several), or `highlighted`, the part of the shown
+    /// clip that is selected.
+    pub(super) fn copy_ids(&mut self, p: &mut dyn Platform, ids: Vec<i64>, highlighted: Option<String>, now: u64) {
         let (payload, used, skipped) = match ids.as_slice() {
             _ if highlighted.is_some() => (Payload::Text(highlighted.unwrap_or_default()), 1, 0),
             [] => return, // nothing matches the search
@@ -514,6 +596,12 @@ impl Controller {
             (n, 0) => format!("Copied {n} clips"),
             (n, s) => format!("Copied {n} clips ({s} left out: pictures or unreadable)"),
         };
+        if self.open.as_ref().is_some_and(|o| o.kept) {
+            // pinned open: it stays, and the word about it goes in the footer
+            self.finish_kept_picks();
+            self.flash(&message, now);
+            return;
+        }
         self.end_session(p);
         self.notify(p, &message, now);
     }

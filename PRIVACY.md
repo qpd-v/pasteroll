@@ -73,7 +73,7 @@ clipboard history, settings and keys are never sent, and the installer does not 
 
 Each clip is encrypted before it is written to the database (see [SECURITY.md](SECURITY.md) for
 the design and its limits); so are the time it was copied and the program it came from. History is
-removed automatically when it passes the limits you set (count, total size, age); pinned clips are
+removed automatically when it passes the limits you set (count, total size, age); favorite clips are
 kept until you delete them.
 
 A multi-paste (several clips pasted or copied together) is kept as one more clip, encrypted the same
@@ -89,7 +89,14 @@ the folder you last saved to are kept in a small plain-text file, `image-presets
 folder. Marks drawn or written on a picture are part of that one edit only: they are not stored,
 except in the picture you save or paste.
 
-The colour you give a pinned clip's tile is kept in another small plain-text file, `pin-colors.txt`, in
+Rolls (separate collections of clips, see the README) are kept in the same history file. A roll's
+name is encrypted like a clip's text. Which roll a clip is in, and how many times a clip was pasted
+(for the "Most used" roll), are stored as plain numbers next to the clip's number, like whether a clip
+is a favorite: they say nothing about what the clip contains. A roll's side of Main and its place in
+the rotation are plain numbers too. A clip in a custom roll is not removed
+by the limits above, and deleting a roll gives its clips back to the main roll without deleting them.
+
+The colour you give a favorite clip's tile is kept in another small plain-text file, `pin-colors.txt`, in
 the data folder: only the clip's number and a colour code, never the clip's content. It is deleted with
 the other data files when you choose to delete your data on uninstall.
 

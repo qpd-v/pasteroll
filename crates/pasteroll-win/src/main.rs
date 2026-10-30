@@ -41,6 +41,7 @@ mod ocr;
 mod overlay;
 mod platform;
 mod probe;
+mod rollkeys;
 mod selftest;
 mod settings;
 mod settingsui;
@@ -340,7 +341,7 @@ fn config_cmd(db: &Path, args: &[String]) -> i32 {
             };
             if plan.clips > 0 {
                 println!(
-                    "This would delete {} clip(s), {:.1} MB ({} of them only because of age). Pinned clips are kept.",
+                    "This would delete {} clip(s), {:.1} MB ({} of them only because of age). Favorite clips are kept.",
                     plan.clips,
                     plan.bytes as f64 / MB as f64,
                     plan.by_age

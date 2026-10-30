@@ -15,8 +15,10 @@
 mod collapse;
 mod editor;
 mod joinpanel;
+mod keep;
 mod multi;
 mod pins;
+mod rolls;
 mod viewer;
 
 use crate::event::{Event, Key, MouseEvent, MouseKind};
@@ -209,6 +211,8 @@ struct Ui {
     selection: Option<(usize, usize)>,
     anchor: Option<usize>,
     dragging: bool,
+    /// The carousel window is being dragged by an empty part of it.
+    moving: bool,
     scroll: f32,
     last_dbl_ms: Option<u64>,
     click: Option<ClickWait>,
@@ -240,6 +244,11 @@ struct Open {
     target: Target,
     /// Tray browsing has no destination until an application is explicitly clicked.
     browse_only: bool,
+    /// Pinned open: it stays up while other windows are used, takes no keyboard, and pastes into
+    /// whichever window was in front when the paste button was pressed (see `keep.rs`).
+    kept: bool,
+    /// The roll that is showing (a session starts on the main one).
+    roll: rolls::RollId,
     ui: Ui,
     query: String,
     filter: Filter,
@@ -252,6 +261,11 @@ struct Open {
     dd_hover: usize,
     /// The search box is being used to type a new custom filter ("Name ext ext").
     adding_filter: bool,
+    /// The search box is naming a new roll for these clips (`adding_filter` is on too: the box is
+    /// not a search while it is typed into).
+    adding_roll: Option<Vec<i64>>,
+    /// The side of Main the new roll will be placed on.
+    adding_roll_side: pasteroll_core::store::RollSide,
     /// The clip last moved to the recycle bin in this session (Ctrl+Z brings it back).
     last_trashed: Option<Item>,
 }
@@ -350,6 +364,12 @@ pub struct Controller {
     ui_mode: UiMode,
     /// The pinned clips' tiles above the list.
     pins: pins::Pins,
+    /// The wheel over a carousel that is pinned open.
+    kept_wheel: pasteroll_core::WheelAccumulator,
+    /// The rolls: the custom ones, the settings, and the slide between two of them.
+    rolls: rolls::Rolls,
+    /// When a pinned-open carousel was last brought back above the other topmost windows.
+    last_raise_ms: u64,
 }
 
 fn thousands(n: usize) -> String {
@@ -472,6 +492,9 @@ impl Controller {
             image_folder: String::new(),
             ui_mode: UiMode::Complete,
             pins: pins::Pins::default(),
+            kept_wheel: pasteroll_core::WheelAccumulator::new(),
+            rolls: rolls::Rolls::default(),
+            last_raise_ms: 0,
         }
     }
 
@@ -688,6 +711,28 @@ impl Controller {
                     self.viewer_mouse(p, m, now);
                 }
             }
+            Event::Roll(dir, gen) => {
+                if self.live(p, gen) && !viewing && self.editor.is_none() {
+                    self.touch(p, now);
+                    self.roll_step(p, dir, now);
+                }
+            }
+            Event::OverlayRoll(dir) => {
+                if self.open.as_ref().is_some_and(|o| o.kept) && !viewing && self.editor.is_none() {
+                    self.touch(p, now);
+                    self.roll_step(p, dir, now);
+                }
+            }
+            Event::OverlayWheel(delta) => {
+                if self.open.as_ref().is_some_and(|o| o.kept) && self.viewer.is_none() && self.editor.is_none() {
+                    self.touch(p, now);
+                    let mut steps = Vec::new();
+                    self.kept_wheel.push(delta, |s| steps.push(s));
+                    for s in steps {
+                        self.step(p, s == Step::Older);
+                    }
+                }
+            }
             Event::Wheel(w, gen) => {
                 if self.live(p, gen) && viewing {
                     self.touch(p, now);
@@ -731,6 +776,10 @@ impl Controller {
     }
 
     fn activate(&mut self, p: &mut dyn Platform, now: u64) {
+        // the gesture while a carousel is pinned open brings a fresh one to the pointer
+        if self.open.as_ref().is_some_and(|o| o.kept) {
+            self.end_session(p);
+        }
         if self.open.is_some() {
             return;
         }
@@ -761,6 +810,7 @@ impl Controller {
         };
         self.notice = None;
         self.pins_open(p);
+        self.reload_rolls();
         self.open = Some(Open {
             opened_ms: now,
             session: Some(session),
@@ -771,14 +821,19 @@ impl Controller {
             total: 0,
             dd_hover: 0,
             adding_filter: false,
+            adding_roll: None,
+            adding_roll_side: pasteroll_core::store::RollSide::Right,
             last_trashed: None,
             target,
             browse_only,
+            kept: false,
+            roll: rolls::RollId::Main,
             ui: Ui {
                 body: BodyState::Message(String::new()),
                 selection: None,
                 anchor: None,
                 dragging: false,
+                moving: false,
                 scroll: 0.0,
                 last_dbl_ms: None,
                 click: None,
@@ -823,6 +878,10 @@ impl Controller {
         self.row_thumbs.clear();
         self.row_thumbs_asked.clear();
         self.pins.reset();
+        self.kept_wheel.reset();
+        if self.end_slide() {
+            self.animation_over(p);
+        }
         // A footer message (a terminal warning, say) belongs to the session that raised it.
         self.status = None;
     }
@@ -856,7 +915,7 @@ impl Controller {
     fn toggle_pin(&mut self, p: &mut dyn Platform, now: u64) {
         let Some(id) = self.current_id() else { return };
         if self.open.as_ref().is_some_and(Open::in_trash) {
-            self.flash("Restore it from the recycle bin first to pin it", now);
+            self.flash("Restore it from the recycle bin first to make it a favorite", now);
             return;
         }
         if let Some(msg) = self.set_pin(p, id, now) {
@@ -873,19 +932,19 @@ impl Controller {
         let msg = match result {
             Ok(PinResult::Pinned) => {
                 now_pinned = true;
-                Some("Pinned: kept until you unpin it".to_owned())
+                Some("Favorite: kept until you remove it".to_owned())
             }
             Ok(PinResult::Unpinned) => {
                 now_pinned = false;
-                Some("Unpinned".to_owned())
+                Some("Removed from favorites".to_owned())
             }
             Ok(PinResult::LimitReached) => {
                 let max = self.store.borrow().limits().max_pins;
-                Some(format!("Pin limit reached ({max}). Unpin something first."))
+                Some(format!("Favorites limit reached ({max}). Remove one first."))
             }
             Ok(PinResult::Missing) => Some("That clip no longer exists".to_owned()),
             Err(e) => {
-                p.log(&format!("could not change the pin: {e}"));
+                p.log(&format!("could not change the favorite: {e}"));
                 None
             }
         };
@@ -1068,6 +1127,7 @@ impl Controller {
         // the clip the warning was about may no longer be the candidate
         self.withdraw_warning();
         self.withdraw_delete_question();
+        self.fix_roll();
         let open_src = |src: Src| match &at {
             Some(item) => Session::open_at(src, item),
             None => Session::open(src),
@@ -1092,11 +1152,23 @@ impl Controller {
             if open.session.is_none() && open.search_text().trim().is_empty() {
                 self.status = Some(Status { text: "The recycle bin is empty.".into(), until_ms: p.now_ms() + NOTICE_MS });
             }
-        } else if open.is_all() {
+        } else if open.is_all() && open.roll == rolls::RollId::Main {
             let session = open_src(Src::All(SharedStore(self.store.clone()))).ok().flatten();
             open.matched = 0;
             open.total = 0;
             open.session = session;
+        } else if open.is_all() {
+            // another roll with nothing typed: its clips as they are, no index needed
+            let items = match rolls::base_items(&self.store.borrow(), open.roll) {
+                Ok(items) => items.unwrap_or_default(),
+                Err(e) => {
+                    p.log(&format!("could not read a roll: {e}"));
+                    Vec::new()
+                }
+            };
+            open.matched = 0;
+            open.total = 0;
+            open.session = open_src(Src::Matches(MatchSource::new(items, SharedStore(self.store.clone())))).ok().flatten();
         } else {
             if open.index.is_none() {
                 p.heartbeat();
@@ -1120,9 +1192,10 @@ impl Controller {
                 }
             }
             let index = open.index.as_ref().expect("built above");
-            let items = index.search(open.search_text(), &open.filter, &self.custom_filters);
+            let found = index.search(open.search_text(), &open.filter, &self.custom_filters);
+            let (total, items) = rolls::restrict(&self.store.borrow(), open.roll, found, index.len());
             open.matched = items.len();
-            open.total = index.len();
+            open.total = total;
             let src = Src::Matches(MatchSource::new(items, SharedStore(self.store.clone())));
             open.session = match open_src(src) {
                 Ok(s) => s,
@@ -1142,6 +1215,7 @@ impl Controller {
             o.filter = filter;
             o.ui.dropdown_open = false;
             o.adding_filter = false;
+            o.adding_roll = None;
         }
         self.refresh(p);
     }
@@ -1154,6 +1228,7 @@ impl Controller {
                 if let Some(o) = self.open.as_mut() {
                     o.ui.dropdown_open = false;
                     o.adding_filter = true;
+                    o.adding_roll = None;
                     o.query.clear();
                 }
                 self.refresh(p);
@@ -1529,6 +1604,7 @@ impl Controller {
             Key::Escape => {
                 let query_empty = self.open.as_ref().is_none_or(|o| o.query.is_empty());
                 if adding {
+                    self.cancel_new_roll();
                     if let Some(o) = self.open.as_mut() {
                         o.adding_filter = false;
                         o.query.clear();
@@ -1545,7 +1621,9 @@ impl Controller {
             }
             Key::Enter => {
                 if self.open.as_ref().is_some_and(|o| o.ui.click.is_none()) {
-                    if adding {
+                    if adding && self.open.as_ref().is_some_and(|o| o.adding_roll.is_some()) {
+                        self.finish_add_roll(p, now);
+                    } else if adding {
                         self.finish_add_filter(p, now);
                     } else {
                         self.confirm(p);
@@ -1590,7 +1668,8 @@ impl Controller {
                     self.copy_picks(p, now);
                 }
             }
-            Key::CtrlP => self.toggle_pin(p, now),
+            Key::CtrlF => self.toggle_pin(p, now),
+            Key::CtrlK => self.toggle_keep(p, now),
             // Delete is destructive and irreversible; with text in the search box it is more
             // likely meant for the box (Ctrl+A, Delete), so it only acts on an empty box.
             Key::Delete => {
@@ -1632,9 +1711,9 @@ impl Controller {
             | Key::F3
             | Key::ShiftF3
             | Key::F11
-            | Key::CtrlF
             | Key::CtrlI
-            | Key::CtrlS => {}
+            | Key::CtrlS
+            | Key::CtrlP => {}
             Key::PageUp | Key::PageDown => {
                 let mut vm = self.view_model();
                 let size = self.size_dip();
@@ -1664,7 +1743,7 @@ impl Controller {
             return;
         }
         // Outside a drag, a move only lights up the card's buttons: a cheap geometry test.
-        if m.kind == MouseKind::Move && !self.open.as_ref().is_some_and(|o| o.ui.dragging) {
+        if m.kind == MouseKind::Move && !self.open.as_ref().is_some_and(|o| o.ui.dragging || o.ui.moving) {
             let mut vm = self.view_model();
             let hover = pasteroll_render::button_at(&vm, self.size_dip(), self.overlay.scale, m.x, m.y);
             let menu_hover = vm
@@ -1741,8 +1820,25 @@ impl Controller {
                         }
                     }
                     Hit::Pin(i) => self.pin_click(p, i),
+                    Hit::Keep => self.toggle_keep(p, now),
+                    Hit::RollPrev => self.roll_step(p, -1, now),
+                    Hit::RollNext => self.roll_step(p, 1, now),
+                    Hit::PasteButton => self.paste_button(p, now),
                     Hit::Row(i) => self.activate_row(p, i, vm),
                     Hit::Body { pos } => self.body_press(vm, m.kind, pos, now),
+                    // an empty part of the carousel: a press there picks the window up
+                    Hit::Nothing => {
+                        let closed = self.open.as_mut().is_some_and(|o| std::mem::take(&mut o.ui.dropdown_open));
+                        if closed {
+                            self.dirty = true;
+                        } else if m.kind == MouseKind::Down {
+                            if let Some(o) = self.open.as_mut() {
+                                o.ui.moving = true;
+                            }
+                            self.pins.forget_tip();
+                            p.overlay_drag_begin();
+                        }
+                    }
                     _ => {
                         if let Some(o) = self.open.as_mut() {
                             if o.ui.dropdown_open {
@@ -1758,14 +1854,21 @@ impl Controller {
                 self.multi_mouse(p, m, hit, scale, now);
             }
             MouseKind::Move => {
-                let dragging = self.open.as_ref().is_some_and(|o| o.ui.dragging);
-                if dragging {
+                let (dragging, moving) = self.open.as_ref().map_or((false, false), |o| (o.ui.dragging, o.ui.moving));
+                if moving {
+                    if let Some(mv) = p.overlay_drag_update() {
+                        self.overlay.origin_px = mv.origin_px;
+                        self.overlay.monitor_px = mv.monitor_px;
+                        self.overlay.work_px = mv.work_px;
+                    }
+                } else if dragging {
                     self.drag_to(vm, size, scale, x, y);
                 }
             }
             MouseKind::Up => {
                 if let Some(o) = self.open.as_mut() {
                     o.ui.dragging = false;
+                    o.ui.moving = false;
                 }
             }
             MouseKind::Leave => {}
@@ -1859,9 +1962,14 @@ impl Controller {
                 o.ui.warned = true;
             }
             // Stays up until the user decides: Enter to paste, anything else to back out.
+            let kept = self.open.as_ref().is_some_and(|o| o.kept);
             self.status = Some(Status {
-                text: format!("{lines} line(s) into a terminal may run commands. Enter pastes, Esc cancels."),
-                until_ms: u64::MAX,
+                text: if kept {
+                    format!("{lines} line(s) into a terminal may run commands. Click Paste again to go ahead.")
+                } else {
+                    format!("{lines} line(s) into a terminal may run commands. Enter pastes, Esc cancels.")
+                },
+                until_ms: if kept { p.now_ms() + 8_000 } else { u64::MAX },
             });
             self.dirty = true;
         }
@@ -1904,7 +2012,19 @@ impl Controller {
             self.dirty = true;
             return PasteCheck::Done;
         }
-        let target = open.target.clone();
+        let kept = open.kept;
+        // pinned open: the destination is whatever window is in front right now
+        let target = if kept {
+            match p.foreground() {
+                Some(t) if !t.desktop => t,
+                _ => {
+                    self.flash("Click the window you want to paste into first.", p.now_ms());
+                    return PasteCheck::Done;
+                }
+            }
+        } else {
+            open.target.clone()
+        };
         if target.desktop {
             self.cancel(p, "Enter does not paste onto the desktop (click it to save an image)");
             return PasteCheck::Done;
@@ -1914,6 +2034,10 @@ impl Controller {
             return PasteCheck::Done;
         }
         if p.target_privileged(&target) {
+            if kept {
+                self.flash("Can't paste into an administrator window.", p.now_ms());
+                return PasteCheck::Done;
+            }
             self.cancel(p, "target runs at a higher privilege level; not pasting");
             return PasteCheck::Done;
         }
@@ -1936,9 +2060,14 @@ impl Controller {
                 return PasteCheck::Warn(t.lines().count().max(1));
             }
         }
-        self.end_session(p);
+        if !kept {
+            self.end_session(p);
+        }
         let joined = self.joined_paste.take();
         let Some(key) = self.deliver(p, &target, payload) else { return PasteCheck::Done };
+        if kept {
+            self.finish_kept_picks();
+        }
         if let (Payload::Text(t), Some(n)) = (payload, joined) {
             self.record_joined(p, t, n);
         }
@@ -2001,6 +2130,7 @@ impl Controller {
         p.heartbeat();
         self.on_new_clips(p);
         self.collapse_tick(p, now);
+        self.slide_tick(p, now);
         self.pins_tick(now);
         if self.viewer.is_some() {
             self.viewer_tick(p, now);
@@ -2030,6 +2160,14 @@ impl Controller {
             }
         }
         let Some(open) = self.open.as_ref() else { return };
+        // pinned open: no time limit, and leaving the window it began in does not close it
+        if open.kept {
+            if now.saturating_sub(self.last_raise_ms) >= keep::RAISE_EVERY_MS {
+                self.last_raise_ms = now;
+                p.overlay_raise();
+            }
+            return;
+        }
         if self.viewer.is_some() || self.editor.is_some() {
             // reading takes time: the viewer has its own, longer limit, and keeps the hooks alive
             if now.saturating_sub(self.last_activity_ms) > VIEWER_IDLE_MS {
@@ -2198,8 +2336,11 @@ impl Controller {
         vm.slim = self.ui_mode == UiMode::NoBloat;
         vm.card_buttons = open.session.is_some() && !vm.slim;
         // No Bloat shows the search bar and filter only while they are in use
+        vm.kept = open.kept;
+        vm.roll = self.roll_view();
         vm.slim_bar = vm.slim
-            && (!open.query.is_empty()
+            && (open.kept
+                || !open.query.is_empty()
                 || open.adding_filter
                 || open.filter != Filter::Everything
                 || open.ui.dropdown_open);
@@ -2209,6 +2350,8 @@ impl Controller {
             (open.ui.selection, open.ui.scroll, open.ui.dropdown_open);
         let (query, adding, hover, filter) =
             (open.query.clone(), open.adding_filter, open.dd_hover, open.filter.clone());
+        let naming_roll = open.adding_roll.is_some();
+        let naming_side = open.adding_roll_side;
         let counts = (!open.is_all() && !open.adding_filter).then_some((open.matched, open.total));
         let words = search::terms(open.search_text());
         vm.body = match &open.ui.body {
@@ -2224,7 +2367,10 @@ impl Controller {
         }
         vm.query = query;
         vm.filter_label = filters::label(&filter, &self.custom_filters);
-        if adding {
+        if adding && naming_roll {
+            vm.placeholder = "Name the new roll (or leave it for a number)".into();
+            vm.footer = format!("Enter makes the roll on the {} of Main. Esc cancels.", naming_side.label());
+        } else if adding {
             vm.placeholder = "Name, then extensions: Design psd ai".into();
             vm.footer = "Enter saves the filter. Esc cancels.".into();
         }
@@ -2241,7 +2387,7 @@ impl Controller {
         vm.multi_mode = multi_on;
         vm.collapse = if vm.slim { 0.0 } else { open.ui.collapse.value() };
         if !vm.slim && (multi_on || !picks.is_empty()) {
-            vm.footer = multi::footer_text(picks.len(), multi_on);
+            vm.footer = multi::footer_text(picks.len(), multi_on, open.kept);
         }
         if let Some(st) = &self.status {
             vm.footer = st.text.clone();
@@ -2249,7 +2395,10 @@ impl Controller {
         let words = if adding { Vec::new() } else { search::terms(&vm.query) };
         if !vm.slim {
             vm.picked = ids.iter().map(|id| picks.contains(id)).collect();
-            vm.menu = menu_state.map(|m| m.view(picks.len()));
+            vm.menu = menu_state.map(|m| {
+                let clips = if m.target.is_some() { 1 } else { picks.len().max(1) };
+                m.view(clips, !picks.is_empty(), &self.move_menu_items())
+            });
             vm.panel = open.ui.join.as_ref().map(joinpanel::JoinPanel::view);
         }
         for &id in &ids {
@@ -2294,6 +2443,7 @@ impl Controller {
         let mut vm = self.view_model();
         let frame = self.renderer.render(&vm, self.size_dip(), self.overlay.scale);
         vm.wipe();
+        let frame = self.slide_frame(p.now_ms(), frame);
         p.overlay_present(&frame);
     }
 }

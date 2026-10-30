@@ -60,7 +60,6 @@ pub enum Command {
     PageDown,
     Delete,
     CtrlDelete,
-    TogglePin,
     Backspace,
     CtrlBackspace,
     Tab,
@@ -80,6 +79,11 @@ pub enum Command {
     CtrlC,
     CtrlE,
     CtrlF,
+    /// Pin the carousel open.
+    CtrlK,
+    /// A key combination or tilt-wheel click that rolls to the previous / next roll.
+    RollLeft,
+    RollRight,
     CtrlI,
     CtrlS,
     CtrlZ,
@@ -99,9 +103,9 @@ impl Command {
     pub fn from_usize(v: usize) -> Option<Command> {
         use Command::*;
         [
-            Activate, Older, Newer, Confirm, Cancel, PageUp, PageDown, Delete, CtrlDelete, TogglePin, Backspace,
+            Activate, Older, Newer, Confirm, Cancel, PageUp, PageDown, Delete, CtrlDelete, Backspace,
             CtrlBackspace, Tab, ClickPaste, ClickCancel, Left, Right, Home, End, F3, ShiftF3, F11, ShiftDelete,
-            CtrlA, CtrlC, CtrlE, CtrlF, CtrlI, CtrlS, CtrlZ, ClickOutside, CtrlY, CtrlM, CtrlUp, CtrlDown, ShiftUp,
+            CtrlA, CtrlC, CtrlE, CtrlF, CtrlK, RollLeft, RollRight, CtrlI, CtrlS, CtrlZ, ClickOutside, CtrlY, CtrlM, CtrlUp, CtrlDown, ShiftUp,
             ShiftDown,
         ]
         .into_iter()
@@ -129,6 +133,8 @@ struct Shared {
     /// Which of Ctrl (1), Shift (2) and Alt (4) were held for the last paste-at-click.
     click_mods: AtomicU8,
     wheel: Mutex<WheelAccumulator>,
+    /// Sideways wheel clicks, counted separately from the ordinary wheel.
+    tilt: Mutex<WheelAccumulator>,
 }
 
 static S: Shared = Shared {
@@ -148,7 +154,69 @@ static S: Shared = Shared {
     down_gen: AtomicUsize::new(0),
     click_mods: AtomicU8::new(0),
     wheel: Mutex::new(WheelAccumulator::new()),
+    tilt: Mutex::new(WheelAccumulator::new()),
 };
+
+// ---------------------------------------------------------------- rolling between rolls
+// The keys and tilt-wheel clicks that roll the carousel. Written by the UI thread at start-up (from
+// the settings file), read by the hook callbacks, which must not take locks that could stall them.
+
+/// `(modifiers << 16) | virtual key`, 0 for none; modifiers are Ctrl 1, Shift 2, Alt 4.
+static ROLL_LEFT_KEY: AtomicU32 = AtomicU32::new(0);
+static ROLL_RIGHT_KEY: AtomicU32 = AtomicU32::new(0);
+/// What a tilt to the left / right does: 0 nothing, 1 roll left, 2 roll right.
+static TILT_LEFT: AtomicU8 = AtomicU8::new(0);
+static TILT_RIGHT: AtomicU8 = AtomicU8::new(0);
+
+fn pack_key(vk: u16, ctrl: bool, shift: bool, alt: bool) -> u32 {
+    (u32::from(ctrl) | (u32::from(shift) << 1) | (u32::from(alt) << 2)) << 16 | u32::from(vk)
+}
+
+fn tilt_code(a: pasteroll_core::bindings::TiltAction) -> u8 {
+    use pasteroll_core::bindings::TiltAction::*;
+    match a {
+        None => 0,
+        RollLeft => 1,
+        RollRight => 2,
+    }
+}
+
+/// Sets what rolls the carousel (see the `[rolls]` section of the settings file).
+pub fn set_roll_bindings(
+    left: Option<pasteroll_core::bindings::Combo>,
+    right: Option<pasteroll_core::bindings::Combo>,
+    tilt_left: pasteroll_core::bindings::TiltAction,
+    tilt_right: pasteroll_core::bindings::TiltAction,
+) {
+    let pack = |c: Option<pasteroll_core::bindings::Combo>| {
+        c.map_or(0, |c| pack_key(crate::rollkeys::vk_of(c.key), c.ctrl, c.shift, c.alt))
+    };
+    ROLL_LEFT_KEY.store(pack(left), SeqCst);
+    ROLL_RIGHT_KEY.store(pack(right), SeqCst);
+    TILT_LEFT.store(tilt_code(tilt_left), SeqCst);
+    TILT_RIGHT.store(tilt_code(tilt_right), SeqCst);
+}
+
+/// Is a tilt in this direction (`delta` > 0: to the right) bound to something?
+pub fn tilt_bound(delta: i16) -> bool {
+    let code = if delta > 0 { TILT_RIGHT.load(SeqCst) } else { TILT_LEFT.load(SeqCst) };
+    delta != 0 && code != 0
+}
+
+/// Counts a tilt-wheel click that is bound to something; once a whole notch has come, which way to
+/// roll (`-1` previous, `1` next).
+pub fn tilt_step(delta: i16) -> Option<i8> {
+    if !tilt_bound(delta) {
+        return None;
+    }
+    let code = if delta > 0 { TILT_RIGHT.load(SeqCst) } else { TILT_LEFT.load(SeqCst) };
+    let dir: i8 = if code == 1 { -1 } else { 1 };
+    let mut out = None;
+    if let Ok(mut t) = S.tilt.lock() {
+        t.push(delta, |_| out = Some(dir));
+    }
+    out
+}
 
 /// A session only swallows input while the UI thread keeps proving it is alive. If the UI thread
 /// stalls (a huge clip, a busy database, a hung clipboard owner) the hooks stop swallowing within
@@ -498,6 +566,18 @@ fn mouse_event(msg: u32, ev: &MSLLHOOKSTRUCT) -> bool {
         return viewer_mouse_event(msg, ev);
     }
     match msg {
+        // a click of a tilt wheel: it rolls the carousel when it is bound to that, and is otherwise
+        // left for the program underneath
+        WM_MOUSEHWHEEL => {
+            let delta = (ev.mouseData >> 16) as u16 as i16;
+            if !tilt_bound(delta) {
+                return false;
+            }
+            if let Some(dir) = tilt_step(delta) {
+                post(if dir < 0 { Command::RollLeft } else { Command::RollRight });
+            }
+            true
+        }
         WM_MOUSEWHEEL => {
             let delta = (ev.mouseData >> 16) as u16 as i16;
             if let Ok(mut w) = S.wheel.lock() {
@@ -634,6 +714,16 @@ fn classify(vk: usize, scan: u32) -> Option<Out> {
     let (ctrl, shift, alt, win) = modifiers();
     let plain = !ctrl && !shift && !alt && !win;
     let ctrl_only = ctrl && !shift && !alt && !win;
+    // the keys that roll between rolls (the carousel only; the viewer and the editor use the arrows)
+    if !win && !viewer_mode() {
+        let now = pack_key(vk as u16, ctrl, shift, alt);
+        if now != 0 && now == ROLL_LEFT_KEY.load(SeqCst) {
+            return Some(Out::Cmd(Command::RollLeft));
+        }
+        if now != 0 && now == ROLL_RIGHT_KEY.load(SeqCst) {
+            return Some(Out::Cmd(Command::RollRight));
+        }
+    }
     let direct = match VIRTUAL_KEY(vk as u16) {
         VK_ESCAPE => Some(Command::Cancel),
         VK_RETURN => Some(Command::Confirm),
@@ -652,11 +742,11 @@ fn classify(vk: usize, scan: u32) -> Option<Out> {
         VK_BACK if plain || (shift && !ctrl && !alt && !win) => Some(Command::Backspace),
         VK_BACK if ctrl_only => Some(Command::CtrlBackspace),
         VK_DELETE if shift && !ctrl && !alt && !win => Some(Command::ShiftDelete),
-        VIRTUAL_KEY(0x50) if ctrl_only => Some(Command::TogglePin), // Ctrl+P
         VIRTUAL_KEY(0x41) if ctrl_only => Some(Command::CtrlA),
         VIRTUAL_KEY(0x43) if ctrl_only => Some(Command::CtrlC),
         VIRTUAL_KEY(0x45) if ctrl_only => Some(Command::CtrlE),
         VIRTUAL_KEY(0x46) if ctrl_only => Some(Command::CtrlF),
+        VIRTUAL_KEY(0x4B) if ctrl_only => Some(Command::CtrlK),
         VIRTUAL_KEY(0x49) if ctrl_only => Some(Command::CtrlI),
         VIRTUAL_KEY(0x53) if ctrl_only => Some(Command::CtrlS),
         VIRTUAL_KEY(0x5A) if ctrl_only => Some(Command::CtrlZ),

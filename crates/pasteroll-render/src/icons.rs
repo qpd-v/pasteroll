@@ -46,6 +46,8 @@ pub enum Icon {
     Bookmark,
     /// Multi-paste: a checklist of clips.
     MultiPaste,
+    /// Keep the carousel open: a push pin.
+    Keep,
 }
 
 /// Maps a point of the 16-unit design grid into `r` (DIP), centred, `size` units across.
@@ -207,6 +209,12 @@ pub(crate) fn draw(cv: &mut Canvas, icon: Icon, r: Rect, size: f32, rgb: Rgb) {
         }
         Icon::Star => star(cv, &g, rgb, false),
         Icon::StarFilled => star(cv, &g, rgb, true),
+        Icon::Keep => {
+            // a push pin: the flat head, the body tapering to the collar, the needle
+            poly(cv, &g, &[(4.5, 2.0), (11.5, 2.0)], rgb, 1.6);
+            poly(cv, &g, &[(6.0, 2.0), (6.0, 6.8), (3.8, 9.4), (12.2, 9.4), (10.0, 6.8), (10.0, 2.0)], rgb, 1.4);
+            poly(cv, &g, &[(8.0, 9.4), (8.0, 14.5)], rgb, 1.6);
+        }
         Icon::Save => {
             poly(cv, &g, &[(8.0, 1.5), (8.0, 10.0)], rgb, 1.5);
             poly(cv, &g, &[(4.5, 6.5), (8.0, 10.0), (11.5, 6.5)], rgb, 1.5);

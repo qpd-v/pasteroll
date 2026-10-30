@@ -35,7 +35,7 @@ pub(super) const PIN_MENU_PLAIN: usize = 2;
 
 /// The entries and colour dots of a pinned clip's right-click menu.
 pub(super) fn menu_entries() -> (Vec<String>, Vec<Option<(u8, u8, u8)>>) {
-    let mut items = vec!["Paste".to_owned(), "Unpin".to_owned(), "Plain colour".to_owned()];
+    let mut items = vec!["Paste".to_owned(), "Remove favorite".to_owned(), "Plain colour".to_owned()];
     let mut dots = vec![None, None, None];
     for (name, rgb) in PIN_COLORS {
         items.push(name.to_owned());
@@ -64,7 +64,7 @@ pub(super) struct Pins {
 }
 
 impl Pins {
-    fn forget_tip(&mut self) {
+    pub(super) fn forget_tip(&mut self) {
         use zeroize::Zeroize;
         if let Some((_, t)) = self.tip_text.as_mut() {
             t.zeroize();
@@ -236,7 +236,7 @@ impl Controller {
         if let PasteCheck::Warn(lines) = self.paste_item(p, id, None, warned) {
             self.pins.warned = Some(id);
             self.status = Some(Status {
-                text: format!("{lines} line(s) into a terminal may run commands. Click the pin again to paste, Esc cancels."),
+                text: format!("{lines} line(s) into a terminal may run commands. Click the favorite again to paste, Esc cancels."),
                 until_ms: u64::MAX,
             });
             self.dirty = true;
@@ -276,7 +276,7 @@ impl Controller {
             }
         }
         if let Err(e) = p.save_pin_colors(&self.pins.colors_text()) {
-            p.log(&format!("could not save the pin colours: {e}"));
+            p.log(&format!("could not save the favorite colours: {e}"));
         }
         self.dirty = true;
     }

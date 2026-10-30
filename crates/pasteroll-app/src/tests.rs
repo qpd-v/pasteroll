@@ -75,6 +75,9 @@ struct Fake {
     mode_changes: Vec<pasteroll_core::config::UiMode>,
     /// How many clicks were polled as editor clicks (those do not wait for held keys).
     editor_polls: u32,
+    /// The carousel window was picked up by an empty part of it this many times, and moved this many.
+    drag_begins: u32,
+    drag_updates: u32,
 }
 
 fn target(id: u64, exe: &str) -> Target {
@@ -125,6 +128,8 @@ impl Fake {
             mode: pasteroll_core::config::UiMode::Complete,
             mode_changes: Vec::new(),
             editor_polls: 0,
+            drag_begins: 0,
+            drag_updates: 0,
         }
     }
 
@@ -221,6 +226,17 @@ impl Platform for Fake {
     }
     fn overlay_hide(&mut self) {
         self.hidden += 1;
+    }
+    fn overlay_drag_begin(&mut self) {
+        self.drag_begins += 1;
+    }
+    fn overlay_drag_update(&mut self) -> Option<crate::OverlayMoved> {
+        self.drag_updates += 1;
+        Some(crate::OverlayMoved {
+            origin_px: (700, 500),
+            monitor_px: (1920, 0, 2560, 1440),
+            work_px: (1920, 0, 2560, 1400),
+        })
     }
     fn input_active(&mut self, active: bool) {
         self.generation += 1;
@@ -991,17 +1007,17 @@ fn a_stale_preview_is_dropped_when_the_user_has_scrolled_on() {
 // ---------------------------------------------------------------- pins, delete, rows
 
 #[test]
-fn ctrl_p_pins_and_unpins_the_candidate() {
+fn ctrl_f_makes_the_candidate_a_favorite_and_removes_it() {
     let mut h = H::new(&[Clip::Text("a"), Clip::Text("b")]);
     let g = h.open();
     assert!(!h.vm().rows[h.vm().active].pinned);
-    h.send(Event::Key(Key::CtrlP, g));
+    h.send(Event::Key(Key::CtrlF, g));
     let vm = h.vm();
     assert!(vm.rows[vm.active].pinned, "the star must show");
-    assert!(vm.footer.contains("Pinned"), "{}", vm.footer);
+    assert!(vm.footer.contains("Favorite"), "{}", vm.footer);
     let id = h.c.current_id().unwrap();
     assert!(h.c.store().borrow().info(id).unwrap().unwrap().pinned);
-    h.send(Event::Key(Key::CtrlP, g));
+    h.send(Event::Key(Key::CtrlF, g));
     assert!(!h.vm().rows[h.vm().active].pinned);
     assert!(!h.c.store().borrow().info(id).unwrap().unwrap().pinned);
 }
@@ -1011,10 +1027,10 @@ fn the_pin_limit_is_reported_in_the_footer() {
     let mut h = H::new(&[Clip::Text("a"), Clip::Text("b")]);
     h.c.store().borrow_mut().set_limits(Limits { max_pins: 1, ..Limits::default() }).unwrap();
     let g = h.open();
-    h.send(Event::Key(Key::CtrlP, g));
+    h.send(Event::Key(Key::CtrlF, g));
     h.step_older(g);
-    h.send(Event::Key(Key::CtrlP, g));
-    assert!(h.vm().footer.contains("Pin limit reached"), "{}", h.vm().footer);
+    h.send(Event::Key(Key::CtrlF, g));
+    assert!(h.vm().footer.contains("Favorites limit reached"), "{}", h.vm().footer);
     let id = h.c.current_id().unwrap();
     assert!(!h.c.store().borrow().info(id).unwrap().unwrap().pinned);
 }
@@ -1023,7 +1039,7 @@ fn the_pin_limit_is_reported_in_the_footer() {
 fn the_footer_message_goes_away_by_itself() {
     let mut h = H::new(&[Clip::Text("a")]);
     let g = h.open();
-    h.send(Event::Key(Key::CtrlP, g));
+    h.send(Event::Key(Key::CtrlF, g));
     assert!(!h.vm().footer.is_empty());
     h.p.now_ms += 2_000;
     h.send(Event::Tick);
@@ -1492,7 +1508,7 @@ fn the_filter_dropdown_lists_the_categories_and_filters_by_click() {
     let vm = h.vm();
     let items = vm.dropdown.as_ref().expect("open").items.clone();
     assert_eq!(items.first().map(String::as_str), Some("Everything"));
-    assert!(items.iter().any(|i| i == "Document") && items.iter().any(|i| i == "Pinned"));
+    assert!(items.iter().any(|i| i == "Document") && items.iter().any(|i| i == "Favorites"));
     assert_eq!(items.last().map(String::as_str), Some("Add custom filter..."));
     let doc = items.iter().position(|i| i == "Document").unwrap();
     let r = geometry(&vm, size, 1.0).dropdown_items[doc];
@@ -1556,14 +1572,14 @@ fn pinning_in_a_search_updates_the_pinned_filter() {
     let mut h = H::new(&[Clip::Text("keep this"), Clip::Text("other")]);
     let g = h.open();
     type_text(&mut h, g, "keep");
-    key(&mut h, g, Key::CtrlP);
+    key(&mut h, g, Key::CtrlF);
     key(&mut h, g, Key::Escape); // clears the query
     key(&mut h, g, Key::Tab);
     for _ in 0..7 {
         key(&mut h, g, Key::Down);
     }
     key(&mut h, g, Key::Enter);
-    assert_eq!(h.c.filter_label().as_deref(), Some("Pinned"));
+    assert_eq!(h.c.filter_label().as_deref(), Some("Favorites"));
     assert_eq!(h.c.match_counts(), Some((1, 2)));
 }
 
@@ -1768,7 +1784,7 @@ fn a_pending_click_paste_is_modal() {
     h.send(Event::ClickPaste(g));
     type_text(&mut h, g, "alp");
     key(&mut h, g, Key::Tab);
-    key(&mut h, g, Key::CtrlP);
+    key(&mut h, g, Key::CtrlF);
     key(&mut h, g, Key::CtrlDelete);
     assert_eq!(h.c.query(), Some(""), "typing must not change the clip a click is about to paste");
     assert!(h.vm().dropdown.is_none());
@@ -1837,15 +1853,15 @@ fn a_pathological_clip_does_not_make_a_search_slow() {
 fn unpinning_in_the_pinned_filter_removes_the_clip_from_the_list() {
     let mut h = H::new(&[Clip::Text("a"), Clip::Text("b")]);
     let g = h.open();
-    key(&mut h, g, Key::CtrlP); // pins "b"
+    key(&mut h, g, Key::CtrlF); // pins "b"
     key(&mut h, g, Key::Tab);
     for _ in 0..7 {
         key(&mut h, g, Key::Down);
     }
     key(&mut h, g, Key::Enter);
-    assert_eq!(h.c.filter_label().as_deref(), Some("Pinned"));
+    assert_eq!(h.c.filter_label().as_deref(), Some("Favorites"));
     assert_eq!(h.c.match_counts(), Some((1, 2)));
-    key(&mut h, g, Key::CtrlP); // unpin it again
+    key(&mut h, g, Key::CtrlF); // unpin it again
     assert_eq!(h.c.match_counts(), Some((0, 2)), "the count must follow the pin");
     assert_eq!(h.c.current_id(), None, "the unpinned clip must leave the Pinned list");
 }
@@ -2399,7 +2415,7 @@ fn hovering_a_toolbar_button_explains_it() {
     h.tool(Tool::Pin);
     let view = h.c.viewer_view().unwrap();
     assert!(view.tools.iter().any(|t| t.tool == Tool::Pin && t.on));
-    assert!(view.subtitle.contains("Pinned"));
+    assert!(view.subtitle.contains("Favorite"));
 }
 
 #[test]
@@ -2451,4 +2467,608 @@ fn tray_browsing_releases_input_when_the_foreground_changes() {
     h.send(Event::Tick);
     assert!(!h.c.is_open() && !h.p.input_active);
     assert!(h.p.clipboard.is_empty() && h.p.pastes.is_empty());
+}
+
+#[test]
+fn an_empty_part_of_the_carousel_picks_the_window_up() {
+    let mut h = H::new(&[Clip::Text("a"), Clip::Text("b")]);
+    h.open();
+    // the margin between the window edge and the surface belongs to nothing
+    h.mouse(MouseKind::Down, (2.0, 2.0));
+    assert_eq!(h.p.drag_begins, 1);
+    h.mouse(MouseKind::Move, (30.0, 30.0));
+    h.mouse(MouseKind::Move, (60.0, 50.0));
+    assert_eq!(h.p.drag_updates, 2);
+    let info = h.c.overlay_info();
+    assert_eq!(info.origin_px, (700, 500));
+    assert_eq!(info.monitor_px, (1920, 0, 2560, 1440), "the monitor it was dragged onto");
+    h.mouse(MouseKind::Up, (60.0, 50.0));
+    h.mouse(MouseKind::Move, (90.0, 90.0));
+    assert_eq!(h.p.drag_updates, 2, "after the button is released the window stays where it is");
+    assert!(h.c.is_open(), "dragging does not close it");
+}
+
+#[test]
+fn a_press_on_a_control_does_not_move_the_window() {
+    let mut h = H::new(&[Clip::Text("a"), Clip::Text("b")]);
+    h.open();
+    let vm = h.vm();
+    let g = pasteroll_render::geometry(&vm, (h.p.window().0 as f32, h.p.window().1 as f32), 1.0);
+    let q = (g.query_box.x + 20.0, g.query_box.y + 10.0);
+    h.mouse(MouseKind::Down, q);
+    h.mouse(MouseKind::Move, (q.0 + 30.0, q.1 + 30.0));
+    h.mouse(MouseKind::Up, q);
+    assert_eq!(h.p.drag_begins, 0);
+    assert_eq!(h.p.drag_updates, 0);
+}
+
+fn keep_rect(h: &mut H) -> pasteroll_render::Rect {
+    let vm = h.vm();
+    let (w, hh) = h.p.window();
+    pasteroll_render::geometry(&vm, (w as f32, hh as f32), 1.0).keep_button
+}
+
+fn click_at(h: &mut H, r: pasteroll_render::Rect) {
+    let at = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+    h.mouse(MouseKind::Down, at);
+    h.mouse(MouseKind::Up, at);
+}
+
+#[test]
+fn pinning_open_lets_go_of_the_keyboard_and_never_times_out() {
+    let mut h = H::new(&[Clip::Text("a"), Clip::Text("b")]);
+    h.open();
+    assert!(h.p.input_active);
+    let k = keep_rect(&mut h);
+    click_at(&mut h, k);
+    assert!(h.vm().kept);
+    assert!(h.c.is_open());
+    assert!(!h.p.input_active, "the keyboard and the wheel belong to the other windows again");
+    // neither time nor another window in front closes it
+    h.p.now_ms += 10 * 60_000;
+    h.p.current = 99;
+    h.send(Event::Tick);
+    assert!(h.c.is_open());
+    assert_eq!(h.p.hidden, 0, "the window was never hidden");
+    // the pin again closes it
+    let k = keep_rect(&mut h);
+    click_at(&mut h, k);
+    assert!(!h.c.is_open());
+    assert_eq!(h.p.hidden, 1);
+}
+
+#[test]
+fn ctrl_k_pins_open_and_the_paste_button_pastes_into_the_window_in_front() {
+    let mut h = H::new(&[Clip::Text("a"), Clip::Text("b")]);
+    let g = h.open();
+    h.send(Event::Key(Key::CtrlK, g));
+    assert!(h.vm().kept);
+    // the user moves on to another program
+    h.p.foreground = Some(target(2, "code.exe"));
+    h.p.current = 2;
+    let vm = h.vm();
+    let (w, hh) = h.p.window();
+    let geo = pasteroll_render::geometry(&vm, (w as f32, hh as f32), 1.0);
+    let paste = Some(geo.paste_button).filter(|r| r.w > 0.0).expect("the bar has a Paste button");
+    assert!(geo.expand.is_none(), "Expand needs the keyboard");
+    click_at(&mut h, paste);
+    assert_eq!(h.p.pastes, vec![PasteKey::CtrlV], "pasted into the window now in front");
+    assert!(h.c.is_open(), "and stays open for the next one");
+}
+
+#[test]
+fn the_wheel_over_a_pinned_carousel_turns_it() {
+    let mut h = H::new(&[Clip::Text("a"), Clip::Text("b"), Clip::Text("c")]);
+    let g = h.open();
+    h.send(Event::Key(Key::CtrlK, g));
+    let before = h.c.current_id();
+    h.send(Event::OverlayWheel(-120));
+    assert_ne!(h.c.current_id(), before);
+    h.send(Event::OverlayWheel(120));
+    assert_eq!(h.c.current_id(), before);
+}
+
+#[test]
+fn the_gesture_while_pinned_brings_a_fresh_carousel_to_the_pointer() {
+    let mut h = H::new(&[Clip::Text("a"), Clip::Text("b")]);
+    let g = h.open();
+    h.send(Event::Key(Key::CtrlK, g));
+    let shown = h.p.shown;
+    h.send(Event::Activate);
+    assert!(h.c.is_open());
+    assert!(h.p.input_active, "an ordinary session again");
+    assert!(!h.vm().kept);
+    assert_eq!(h.p.shown, shown + 1);
+}
+
+#[test]
+fn a_pinned_carousel_pastes_nowhere_without_a_window_in_front() {
+    let mut h = H::new(&[Clip::Text("a")]);
+    let g = h.open();
+    h.send(Event::Key(Key::CtrlK, g));
+    h.p.foreground = None;
+    let vm = h.vm();
+    let (w, hh) = h.p.window();
+    let paste = pasteroll_render::geometry(&vm, (w as f32, hh as f32), 1.0).paste_button;
+    click_at(&mut h, paste);
+    assert!(h.p.pastes.is_empty());
+    assert!(h.c.is_open());
+}
+
+fn geo(h: &mut H) -> pasteroll_render::Geometry {
+    let vm = h.vm();
+    let (w, hh) = h.p.window();
+    pasteroll_render::geometry(&vm, (w as f32, hh as f32), 1.0)
+}
+
+#[test]
+fn multi_paste_works_with_the_mouse_alone_while_pinned_open() {
+    let mut h = H::new(&[Clip::Text("one"), Clip::Text("two"), Clip::Text("three")]);
+    let g = h.open();
+    h.send(Event::Key(Key::CtrlK, g));
+    let multi = geo(&mut h).multi_button;
+    assert!(multi.w > 0.0, "the Multi-paste button is still there");
+    click_at(&mut h, multi);
+    assert!(h.vm().multi_mode);
+    // choose the shown clip and the next one by plain clicks
+    for i in 0..2 {
+        let rows = geo(&mut h).rows;
+        let rect = rows.iter().flatten().nth(i).copied().expect("a row");
+        click_at(&mut h, rect);
+        h.c.view_model(); // let the card settle
+    }
+    h.p.now_ms += 7_000; // the hint about pinning has gone
+    h.send(Event::Tick);
+    assert!(h.vm().footer.contains("Press Paste"), "{}", h.vm().footer);
+    h.p.foreground = Some(target(2, "code.exe"));
+    h.p.current = 2;
+    let paste = geo(&mut h).paste_button;
+    click_at(&mut h, paste);
+    assert_eq!(h.p.pastes.len(), 1, "the chosen clips went into the window in front");
+    assert!(h.c.is_open(), "and the carousel stays");
+    assert!(h.vm().picked.iter().all(|p| !p), "the choice is spent");
+}
+
+#[test]
+fn ctrl_clicking_paste_with_several_chosen_opens_the_options_card() {
+    let mut h = H::new(&[Clip::Text("one"), Clip::Text("two"), Clip::Text("three")]);
+    let g = h.open();
+    h.send(Event::Key(Key::CtrlK, g));
+    let multi = geo(&mut h).multi_button;
+    click_at(&mut h, multi);
+    for i in 0..2 {
+        let rows = geo(&mut h).rows;
+        let rect = rows.iter().flatten().nth(i).copied().unwrap();
+        click_at(&mut h, rect);
+        h.c.view_model();
+    }
+    h.p.mods = Modifiers { ctrl: true, shift: false, alt: false };
+    let paste = geo(&mut h).paste_button;
+    click_at(&mut h, paste);
+    assert!(h.vm().panel.is_some(), "the options card is up");
+    assert!(h.p.pastes.is_empty());
+}
+
+#[test]
+fn switching_multi_paste_off_while_pinned_forgets_the_choice() {
+    let mut h = H::new(&[Clip::Text("one"), Clip::Text("two")]);
+    let g = h.open();
+    h.send(Event::Key(Key::CtrlK, g));
+    let multi = geo(&mut h).multi_button;
+    click_at(&mut h, multi);
+    let rows = geo(&mut h).rows;
+    click_at(&mut h, rows.iter().flatten().next().copied().unwrap());
+    assert!(h.vm().picked.iter().any(|p| *p));
+    click_at(&mut h, multi);
+    assert!(!h.vm().multi_mode);
+    assert!(h.vm().picked.iter().all(|p| !p), "no Esc to clear it, so the button does");
+}
+
+#[test]
+fn no_bloat_gets_a_paste_button_when_pinned_open() {
+    let mut h = H::no_bloat(&[Clip::Text("a"), Clip::Text("b")]);
+    let g = h.open();
+    assert_eq!(geo(&mut h).paste_button.w, 0.0, "not while it is an ordinary session");
+    h.send(Event::Key(Key::CtrlK, g));
+    let b = geo(&mut h).paste_button;
+    assert!(b.w > 0.0, "the search bar comes up with a Paste button, since there is no card button");
+    h.p.foreground = Some(target(2, "code.exe"));
+    h.p.current = 2;
+    click_at(&mut h, b);
+    assert_eq!(h.p.pastes, vec![PasteKey::CtrlV]);
+    assert!(h.c.is_open());
+}
+
+// ---------------------------------------------------------------- rolls
+
+/// The rotation without the built-in LEFT and RIGHT rolls (for the tests of custom rolls).
+fn only_custom(h: &mut H) {
+    let mut s = h.c.roll_settings().clone();
+    s.left = false;
+    s.right = false;
+    h.c.set_roll_settings(s);
+}
+
+fn texts_of(h: &mut H) -> Vec<String> {
+    h.vm().rows.iter().map(|r| r.title.clone()).collect()
+}
+
+/// Makes custom roll `name` and moves the clips whose text is in `texts` into it.
+fn roll_with(h: &mut H, name: &str, texts: &[&str]) -> i64 {
+    let store = h.c.store();
+    let roll = store.borrow_mut().add_roll(name).unwrap();
+    for t in texts {
+        let id = store
+            .borrow()
+            .search_rows()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.text == *t)
+            .map(|r| r.id)
+            .expect("a clip with that text");
+        store.borrow_mut().set_clip_roll(id, Some(roll)).unwrap();
+    }
+    roll
+}
+
+#[test]
+fn a_session_starts_on_the_main_roll_without_the_clips_that_live_in_another() {
+    let mut h = H::new(&[Clip::Text("a"), Clip::Text("b"), Clip::Text("c")]);
+    roll_with(&mut h, "Work", &["b"]);
+    h.open();
+    let titles = texts_of(&mut h);
+    assert!(titles.iter().any(|t| t.contains('c')) && titles.iter().any(|t| t.contains('a')));
+    assert!(!titles.iter().any(|t| t.contains('b')), "{titles:?}");
+}
+
+#[test]
+fn rolling_goes_through_the_rolls_and_the_ends_join_up() {
+    let mut h = H::new(&[Clip::Text("a"), Clip::Text("b"), Clip::Text("c")]);
+    only_custom(&mut h);
+    roll_with(&mut h, "Work", &["b"]);
+    roll_with(&mut h, "Bills", &["a"]);
+    let g = h.open();
+    assert_eq!(h.vm().roll, Some(pasteroll_render::RollView { name: "Main".into(), position: 1, count: 3, flash: 0 }));
+    h.send(Event::Roll(1, g));
+    assert_eq!(h.vm().roll.map(|r| (r.name, r.position)), Some(("Work".to_owned(), 2)));
+    assert_eq!(newest_text(&mut h), "b");
+    h.send(Event::Roll(1, g));
+    assert_eq!(newest_text(&mut h), "a");
+    h.send(Event::Roll(1, g));
+    assert_eq!(h.vm().roll.map(|r| r.name), Some("Main".to_owned()), "past the last it is the first again");
+    h.send(Event::Roll(-1, g));
+    assert_eq!(h.vm().roll.map(|r| r.name), Some("Bills".to_owned()), "and back before the first it is the last");
+    assert!(h.c.is_open(), "rolling never closes the carousel");
+}
+
+#[test]
+fn with_one_roll_there_is_nothing_to_roll_to() {
+    let mut h = H::new(&[Clip::Text("a")]);
+    only_custom(&mut h);
+    let g = h.open();
+    assert_eq!(h.vm().roll, None, "no indicator");
+    h.send(Event::Roll(1, g));
+    assert!(h.vm().footer.contains("only one roll"), "{}", h.vm().footer);
+}
+
+#[test]
+fn the_computed_rolls_join_the_rotation_when_they_are_switched_on() {
+    let mut h = H::new(&[Clip::Text("a"), Clip::Text("b")]);
+    let mut s = pasteroll_core::config::RollSettings::default();
+    s.left = false;
+    s.right = false;
+    s.most_used = true;
+    s.images = true;
+    h.c.set_roll_settings(s);
+    // paste "a" once so that it has a use
+    let g = h.open();
+    h.step_older(g);
+    h.enter(g);
+    let g = h.open();
+    h.send(Event::Roll(1, g));
+    let v = h.vm().roll.unwrap();
+    assert_eq!((v.name.as_str(), v.position, v.count), ("Most used", 2, 3));
+    assert_eq!(newest_text(&mut h), "a", "the clip that was pasted");
+    h.send(Event::Roll(1, g));
+    assert_eq!(h.vm().roll.unwrap().name, "Images");
+    assert!(h.vm().rows.is_empty(), "no pictures yet");
+}
+
+#[test]
+fn searching_stays_inside_the_roll() {
+    let mut h = H::new(&[Clip::Text("apple pie"), Clip::Text("apple tart"), Clip::Text("banana")]);
+    only_custom(&mut h);
+    roll_with(&mut h, "Work", &["apple tart"]);
+    let g = h.open();
+    for c in "apple".chars() {
+        h.send(Event::Key(Key::Char(c), g));
+    }
+    assert_eq!(texts_of(&mut h).len(), 1, "main has one apple clip");
+    h.send(Event::Roll(1, g));
+    assert_eq!(newest_text(&mut h), "apple tart", "the roll has the other");
+    assert_eq!(h.c.match_counts(), Some((1, 1)));
+}
+
+#[test]
+fn rolling_slides_the_new_picture_in_and_then_settles() {
+    let mut h = H::new(&[Clip::Text("a"), Clip::Text("b")]);
+    roll_with(&mut h, "Work", &["b"]);
+    let g = h.open();
+    h.send(Event::Roll(1, g));
+    assert!(h.p.animating, "the timer runs fast while it slides");
+    assert_eq!(h.vm().roll.unwrap().flash, 1, "an arrow flashes to the right");
+    let frames = h.p.frames;
+    h.p.now_ms += 100;
+    h.send(Event::Tick);
+    assert!(h.p.frames > frames, "a frame in between");
+    assert!(h.p.animating);
+    h.p.now_ms += 400;
+    h.send(Event::Tick);
+    assert!(!h.p.animating, "settled");
+    assert_eq!(h.vm().roll.unwrap().flash, 0, "the arrow is gone again");
+    h.send(Event::Roll(-1, g));
+    assert_eq!(h.vm().roll.unwrap().flash, -1, "and to the left when rolling back");
+}
+
+fn right_click_row(h: &mut H, n: usize) -> pasteroll_render::Rect {
+    let vm = h.vm();
+    let (w, hh) = h.p.window();
+    let rect = pasteroll_render::geometry(&vm, (w as f32, hh as f32), 1.0).rows.into_iter().flatten().nth(n).unwrap();
+    h.mouse(MouseKind::RightDown, (rect.x + 20.0, rect.y + rect.h / 2.0));
+    rect
+}
+
+fn menu_item(h: &mut H, n: usize) -> pasteroll_render::Rect {
+    let vm = h.vm();
+    let (w, hh) = h.p.window();
+    pasteroll_render::geometry(&vm, (w as f32, hh as f32), 1.0).menu_items[n]
+}
+
+#[test]
+fn the_right_click_menu_moves_a_clip_to_a_roll() {
+    let mut h = H::new(&[Clip::Text("a"), Clip::Text("b")]);
+    let work = h.c.store().borrow_mut().add_roll("Work").unwrap();
+    h.open();
+    let before = newest_text(&mut h);
+    right_click_row(&mut h, 0);
+    let items = h.vm().menu.expect("the menu").items;
+    assert_eq!(items.last().map(String::as_str), Some("Move to roll >"));
+    let move_item = menu_item(&mut h, items.len() - 1);
+    click_at(&mut h, move_item);
+    let items = h.vm().menu.expect("the list of rolls").items;
+    assert_eq!(
+        items,
+        vec!["< Back", "LEFT", "Main", "Work", "RIGHT", "New left roll...", "New right roll..."]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    );
+    let work_item = menu_item(&mut h, 3);
+    click_at(&mut h, work_item);
+    assert!(h.vm().menu.is_none());
+    assert!(h.vm().footer.contains("Moved to Work"), "{}", h.vm().footer);
+    assert_ne!(newest_text(&mut h), before, "it has left the main roll");
+    assert_eq!(h.c.store().borrow().roll_len(work).unwrap(), 1);
+}
+
+#[test]
+fn the_menu_always_offers_move_to_roll() {
+    let mut h = H::new(&[Clip::Text("a")]);
+    h.open();
+    right_click_row(&mut h, 0);
+    assert_eq!(h.vm().menu.unwrap().items, vec!["Copy", "Move to roll >"]);
+    // and without LEFT, RIGHT or any custom roll it still leads to Main and a new roll
+    let mut h = H::new(&[Clip::Text("a")]);
+    only_custom(&mut h);
+    h.open();
+    right_click_row(&mut h, 0);
+    let move_item = menu_item(&mut h, 1);
+    click_at(&mut h, move_item);
+    assert_eq!(h.vm().menu.unwrap().items, vec!["< Back", "Main", "New left roll...", "New right roll..."]);
+}
+
+#[test]
+fn a_roll_that_is_deleted_while_open_falls_back_to_main() {
+    let mut h = H::new(&[Clip::Text("a"), Clip::Text("b")]);
+    only_custom(&mut h);
+    let work = roll_with(&mut h, "Work", &["b"]);
+    let g = h.open();
+    h.send(Event::Roll(1, g));
+    assert_eq!(newest_text(&mut h), "b");
+    h.c.store().borrow_mut().delete_roll(work).unwrap();
+    h.send(Event::Roll(1, g)); // reloads the list: only Main is left
+    assert!(h.vm().footer.contains("only one roll"), "{}", h.vm().footer);
+    assert_eq!(newest_text(&mut h), "b", "its clip is back in the main roll, which is newest");
+}
+
+#[test]
+fn the_arrows_in_the_footer_roll_too() {
+    let mut h = H::new(&[Clip::Text("a"), Clip::Text("b")]);
+    only_custom(&mut h);
+    roll_with(&mut h, "Work", &["b"]);
+    h.open();
+    let vm = h.vm();
+    let (w, hh) = h.p.window();
+    let g = pasteroll_render::geometry(&vm, (w as f32, hh as f32), 1.0);
+    assert!(g.roll_next.w > 0.0 && g.roll_prev.w > 0.0);
+    click_at(&mut h, g.roll_next);
+    assert_eq!(h.vm().roll.unwrap().name, "Work");
+    click_at(&mut h, g.roll_prev);
+    assert_eq!(h.vm().roll.unwrap().name, "Main");
+}
+
+#[test]
+fn a_pinned_open_carousel_rolls_with_the_tilt_wheel_over_it() {
+    let mut h = H::new(&[Clip::Text("a"), Clip::Text("b")]);
+    only_custom(&mut h);
+    roll_with(&mut h, "Work", &["b"]);
+    let g = h.open();
+    h.send(Event::Key(Key::CtrlK, g));
+    h.send(Event::OverlayRoll(1));
+    assert_eq!(h.vm().roll.unwrap().name, "Work");
+    assert!(h.c.is_open());
+}
+
+#[test]
+fn left_and_right_are_there_from_the_start_on_either_side_of_main() {
+    let mut h = H::new(&[Clip::Text("a"), Clip::Text("b")]);
+    let g = h.open();
+    let v = h.vm().roll.expect("the indicator");
+    assert_eq!((v.name.as_str(), v.position, v.count), ("Main", 2, 3), "LEFT, Main, RIGHT");
+    h.send(Event::Roll(-1, g));
+    assert_eq!(h.vm().roll.unwrap().name, "LEFT");
+    assert!(h.vm().rows.is_empty(), "nothing in it yet");
+    assert!(h.vm().footer.contains("LEFT is empty"), "{}", h.vm().footer);
+    h.send(Event::Roll(1, g));
+    h.send(Event::Roll(1, g));
+    assert_eq!(h.vm().roll.unwrap().name, "RIGHT");
+    h.send(Event::Roll(1, g));
+    assert_eq!(h.vm().roll.unwrap().name, "LEFT", "the ends join up");
+}
+
+#[test]
+fn clips_moved_to_left_show_there_and_a_hidden_left_keeps_them() {
+    let mut h = H::new(&[Clip::Text("a"), Clip::Text("b")]);
+    let left = pasteroll_core::store::rolls::LEFT_ROLL;
+    let id = h.c.store().borrow().search_rows().unwrap().into_iter().find(|r| r.text == "a").unwrap().id;
+    h.c.store().borrow_mut().set_clip_roll(id, Some(left)).unwrap();
+    let g = h.open();
+    h.send(Event::Roll(-1, g));
+    assert_eq!(newest_text(&mut h), "a");
+    h.send(Event::Key(Key::Escape, g));
+    // hidden (a setting, applied at start-up): it leaves the rotation, never the history
+    let mut s = h.c.roll_settings().clone();
+    s.left = false;
+    h.c.set_roll_settings(s);
+    let g = h.open();
+    assert_eq!(h.vm().roll.unwrap().count, 2, "Main and RIGHT");
+    assert_eq!(newest_text(&mut h), "b", "its clip is not in Main");
+    assert_eq!(h.c.store().borrow().roll_len(left).unwrap(), 1, "but it is still there");
+    h.send(Event::Roll(-1, g));
+    assert_eq!(h.vm().roll.unwrap().name, "RIGHT");
+}
+
+#[test]
+fn a_roll_can_sit_on_either_side_of_main_and_the_menu_follows_that_order() {
+    let mut h = H::new(&[Clip::Text("a"), Clip::Text("b")]);
+    let store = h.c.store();
+    store.borrow_mut().add_roll_on("Before", pasteroll_core::store::RollSide::Left).unwrap();
+    store.borrow_mut().add_roll("After").unwrap();
+    let g = h.open();
+    let v = h.vm().roll.expect("the indicator");
+    assert_eq!((v.name.as_str(), v.position, v.count), ("Main", 3, 5), "LEFT, Before, Main, After, RIGHT");
+    // the menu lists them in the same order
+    right_click_row(&mut h, 0);
+    let items = h.vm().menu.expect("the menu").items;
+    let move_item = menu_item(&mut h, items.len() - 1);
+    click_at(&mut h, move_item);
+    assert_eq!(
+        h.vm().menu.expect("the rolls").items,
+        vec!["< Back", "LEFT", "Before", "Main", "After", "RIGHT", "New left roll...", "New right roll..."]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    );
+    h.send(Event::Roll(-1, g));
+    assert_eq!(h.vm().roll.unwrap().name, "Before", "the left rolls come just before Main");
+    h.send(Event::Roll(-1, g));
+    assert_eq!(h.vm().roll.unwrap().name, "LEFT", "the built-in one is at the far left");
+    h.send(Event::Roll(-1, g));
+    assert_eq!(h.vm().roll.unwrap().name, "RIGHT", "and the ends join up");
+}
+
+#[test]
+fn a_new_roll_made_from_the_left_entry_lands_left_of_main() {
+    let mut h = H::new(&[Clip::Text("a"), Clip::Text("b")]);
+    let g = h.open();
+    right_click_row(&mut h, 0);
+    let items = h.vm().menu.expect("the menu").items;
+    let move_item = menu_item(&mut h, items.len() - 1);
+    click_at(&mut h, move_item);
+    let items = h.vm().menu.expect("the rolls").items;
+    let left = menu_item(&mut h, items.len() - 2);
+    click_at(&mut h, left);
+    assert!(h.vm().footer.contains("left of Main"), "{}", h.vm().footer);
+    type_text(&mut h, g, "Before");
+    h.send(Event::Key(Key::Enter, g));
+    let rolls = h.c.store().borrow().rolls().unwrap();
+    assert_eq!(rolls[0].name, "Before");
+    assert_eq!(rolls[0].side, pasteroll_core::store::RollSide::Left);
+    h.send(Event::Roll(-1, g));
+    assert_eq!(h.vm().roll.unwrap().name, "Before", "it rolls just before Main");
+}
+
+/// Right-clicks the first row, then Move to roll > New roll...
+fn choose_new_roll(h: &mut H) {
+    right_click_row(h, 0);
+    let items = h.vm().menu.expect("the menu").items;
+    let mv = menu_item(h, items.len() - 1);
+    click_at(h, mv);
+    let items = h.vm().menu.expect("the rolls").items;
+    assert_eq!(items.last().map(String::as_str), Some("New right roll..."));
+    // the second-to-last entry makes a roll on the left of Main
+    assert_eq!(items.get(items.len() - 2).map(String::as_str), Some("New left roll..."));
+    let new = menu_item(h, items.len() - 1);
+    click_at(h, new);
+}
+
+#[test]
+fn new_roll_asks_for_a_name_in_the_search_box_and_moves_the_clip_into_it() {
+    let mut h = H::new(&[Clip::Text("a"), Clip::Text("b")]);
+    let g = h.open();
+    let before = newest_text(&mut h);
+    choose_new_roll(&mut h);
+    let vm = h.vm();
+    assert!(vm.placeholder.contains("Name the new roll"), "{}", vm.placeholder);
+    assert!(vm.footer.contains("Esc cancels"));
+    type_text(&mut h, g, "Receipts");
+    h.send(Event::Key(Key::Enter, g));
+    assert!(h.c.is_open());
+    let rolls = h.c.store().borrow().rolls().unwrap();
+    assert_eq!(rolls.len(), 1);
+    assert_eq!(rolls[0].name, "Receipts");
+    assert_eq!(h.c.store().borrow().roll_len(rolls[0].id).unwrap(), 1, "the clip is in it");
+    assert_ne!(newest_text(&mut h), before, "and gone from the main roll");
+    assert!(h.vm().footer.contains("Moved to Receipts"), "{}", h.vm().footer);
+    assert!(h.vm().placeholder != "Name the new roll (or leave it for a number)");
+}
+
+#[test]
+fn a_new_roll_left_unnamed_is_called_new_roll_1_then_new_roll_2() {
+    let mut h = H::new(&[Clip::Text("a"), Clip::Text("b"), Clip::Text("c")]);
+    let g = h.open();
+    choose_new_roll(&mut h);
+    h.send(Event::Key(Key::Enter, g));
+    choose_new_roll(&mut h);
+    h.send(Event::Key(Key::Enter, g));
+    let names: Vec<String> = h.c.store().borrow().rolls().unwrap().into_iter().map(|r| r.name).collect();
+    assert_eq!(names, vec!["New roll 1".to_owned(), "New roll 2".to_owned()]);
+}
+
+#[test]
+fn escape_cancels_naming_a_roll_and_a_bad_name_is_refused_with_a_reason() {
+    let mut h = H::new(&[Clip::Text("a"), Clip::Text("b")]);
+    h.c.store().borrow_mut().add_roll("Work").unwrap();
+    let g = h.open();
+    choose_new_roll(&mut h);
+    type_text(&mut h, g, "work");
+    h.send(Event::Key(Key::Enter, g));
+    assert!(h.vm().footer.contains("already"), "{}", h.vm().footer);
+    assert_eq!(h.c.store().borrow().rolls().unwrap().len(), 1, "nothing made");
+    h.send(Event::Key(Key::Escape, g));
+    assert!(h.c.is_open());
+    assert!(h.vm().placeholder.contains("Search"), "the box is a search box again");
+    assert_eq!(h.c.store().borrow().rolls().unwrap().len(), 1);
+}
+
+#[test]
+fn a_pinned_open_carousel_has_no_new_roll_entry() {
+    let mut h = H::new(&[Clip::Text("a")]);
+    let g = h.open();
+    h.send(Event::Key(Key::CtrlK, g));
+    right_click_row(&mut h, 0);
+    let items = h.vm().menu.unwrap().items;
+    let mv = menu_item(&mut h, items.len() - 1);
+    click_at(&mut h, mv);
+    assert!(!h.vm().menu.unwrap().items.iter().any(|i| i.contains("New roll")), "it has no keyboard to name one");
 }

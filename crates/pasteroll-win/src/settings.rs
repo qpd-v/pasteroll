@@ -6,6 +6,8 @@
 //! every part (capture, limits, exclusions) starts from the same file.
 
 use crate::{app, keystore};
+use pasteroll_core::bindings::TiltAction;
+use pasteroll_core::store::RollSide;
 use pasteroll_core::config::{self, ClickModifier, Config, UiMode, UpdateCheck};
 use pasteroll_core::limits::MB;
 use std::cell::{Cell, RefCell};
@@ -45,6 +47,25 @@ const ID_EX_ADD: i32 = 132;
 const ID_EX_REMOVE: i32 = 133;
 const ID_FL_LIST: i32 = 140;
 const ID_FL_REMOVE: i32 = 141;
+const ID_RL_LIST: i32 = 170;
+const ID_RL_NAME: i32 = 171;
+const ID_RL_ADD: i32 = 172;
+const ID_RL_RENAME: i32 = 173;
+const ID_RL_REMOVE: i32 = 174;
+const ID_RL_MOST: i32 = 175;
+const ID_RL_IMAGES: i32 = 176;
+const ID_RL_LEFT: i32 = 183;
+const ID_RL_RIGHT: i32 = 184;
+const ID_RL_MOVE_LEFT: i32 = 185;
+const ID_RL_MOVE_RIGHT: i32 = 186;
+const ID_RL_SIDE_LEFT: i32 = 187;
+const ID_RL_SIDE_RIGHT: i32 = 188;
+const ID_HK_LEFT: i32 = 177;
+const ID_HK_RIGHT: i32 = 178;
+const ID_HK_LEFT_CLEAR: i32 = 179;
+const ID_HK_RIGHT_CLEAR: i32 = 180;
+const ID_TILT_LEFT: i32 = 181;
+const ID_TILT_RIGHT: i32 = 182;
 const ID_STATUS: i32 = 150;
 const ID_SAVE: i32 = 1;
 /// Looks every second for a choice made elsewhere (see `sync_update_choice`).
@@ -83,6 +104,105 @@ struct State {
     status: HWND,
     exclude: Vec<String>,
     filters: Vec<String>,
+    /// The rolls column: the list (with the changes not yet saved), the name box, the two boxes for
+    /// the computed rolls, the two key boxes and the two tilt buttons.
+    rl_list: HWND,
+    rl_name: HWND,
+    rl_left: HWND,
+    rl_right: HWND,
+    rl_most: HWND,
+    rl_images: HWND,
+    hk: [HWND; 2],
+    tilt_btn: [HWND; 2],
+    tilt: [TiltAction; 2],
+    roll_rows: Vec<RollRow>,
+}
+
+/// One custom roll in the settings list. Nothing reaches the history until Save.
+#[derive(Clone)]
+struct RollRow {
+    /// `None` for a roll made in this window and not saved yet.
+    id: Option<i64>,
+    /// The name it had when the window opened.
+    orig: String,
+    name: String,
+    /// The side of Main it rolls on (the list is kept in rotation order: left rolls first).
+    side: RollSide,
+    removed: bool,
+    /// The side or the place in the list was changed in this window.
+    moved: bool,
+}
+
+/// The list box's lines: each name with the side of Main it rolls on.
+fn roll_names(rows: &[RollRow]) -> Vec<String> {
+    rows.iter()
+        .filter(|r| !r.removed)
+        .map(|r| format!("{}  ({})", r.name, r.side.label()))
+        .collect()
+}
+
+/// Moves a roll to `side`, at the end of that side (nearest Main on the left, farthest on the
+/// right). Returns its new place in the list.
+fn set_roll_side(rows: &mut Vec<RollRow>, row: usize, side: RollSide) -> Option<usize> {
+    if rows.get(row).map_or(true, |r| r.removed) || rows[row].side == side {
+        return None;
+    }
+    let mut r = rows.remove(row);
+    r.side = side;
+    r.moved = true;
+    let at = match side {
+        RollSide::Left => rows.iter().rposition(|x| !x.removed && x.side == RollSide::Left).map_or(0, |i| i + 1),
+        RollSide::Right => rows.len(),
+    };
+    rows.insert(at, r);
+    Some(at)
+}
+
+/// Moves a roll one place through the rotation on its own side. Returns its new place.
+fn move_roll_row(rows: &mut Vec<RollRow>, row: usize, delta: i32) -> Option<usize> {
+    let side = rows.get(row)?.side;
+    let mut j = row as i64 + i64::from(delta);
+    while j >= 0 && (j as usize) < rows.len() {
+        let k = j as usize;
+        if !rows[k].removed && rows[k].side == side {
+            rows.swap(row, k);
+            rows[k].moved = true;
+            return Some(k);
+        }
+        j += i64::from(delta);
+    }
+    None
+}
+
+/// Keeps the list box on `row` after its place changed.
+fn select_roll(list: HWND, rows: &[RollRow], row: usize) {
+    if let Some(i) = live_rolls(rows).iter().position(|x| *x == row) {
+        unsafe {
+            SendMessageW(list, LB_SETCURSEL, Some(WPARAM(i)), Some(LPARAM(0)));
+        }
+    }
+}
+
+/// The rows that are still there, as indices into `rows` (the list box shows them in this order).
+fn live_rolls(rows: &[RollRow]) -> Vec<usize> {
+    rows.iter().enumerate().filter(|(_, r)| !r.removed).map(|(i, _)| i).collect()
+}
+
+fn tilt_text(side: usize, action: TiltAction) -> String {
+    format!("Tilt {}: {}", if side == 0 { "left" } else { "right" }, action.label())
+}
+
+/// Checks a name for a roll against the others in the window.
+fn check_roll_name(rows: &[RollRow], except: Option<usize>, text: &str) -> Result<String, String> {
+    let name = pasteroll_core::store::clean_roll_name(text)?;
+    let others = rows.iter().enumerate().filter(|(i, r)| !r.removed && Some(*i) != except);
+    if others.clone().any(|(_, r)| r.name.to_lowercase() == name.to_lowercase()) {
+        return Err(format!("There is a roll called {name} already."));
+    }
+    if except.is_none() && others.count() >= pasteroll_core::store::rolls::ROLLS_MAX {
+        return Err(format!("There can be at most {} rolls.", pasteroll_core::store::rolls::ROLLS_MAX));
+    }
+    Ok(name)
 }
 
 /// A settings window is open (the one-time update question waits for it to close).
@@ -214,11 +334,12 @@ fn ask(parent: HWND, title: &str, text: &str) -> bool {
 }
 
 /// Size of the window's client area, and the layout of its two columns of cards, in DIP at 96 dpi.
-const WIN_W: i32 = 720;
+const WIN_W: i32 = 1070;
 const WIN_H: i32 = 568;
 const MARGIN: i32 = 16;
 const COL_W: i32 = 338;
 const COL2_X: i32 = MARGIN + COL_W + 12;
+const COL3_X: i32 = COL2_X + COL_W + 12;
 /// Space inside a card, left and right.
 const PAD: i32 = 14;
 /// A label in the quiet colour (see `settingsui::is_muted`).
@@ -232,7 +353,7 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
     unsafe {
         let icc = INITCOMMONCONTROLSEX {
             dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
-            dwICC: ICC_BAR_CLASSES | ICC_STANDARD_CLASSES,
+            dwICC: ICC_BAR_CLASSES | ICC_STANDARD_CLASSES | ICC_HOTKEY_CLASS,
         };
         let _ = InitCommonControlsEx(&icc);
         let hinst = GetModuleHandleW(None)?;
@@ -425,7 +546,7 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
             SendMessageW(tb[i], TBM_SETPOS, Some(WPARAM(1)), Some(LPARAM(cur[i] as isize)));
         }
         label(
-            "When a limit is reached the oldest clips are removed first. Pinned clips are never removed.",
+            "When a limit is reached the oldest clips are removed first. Favorite clips are never removed.",
             cx + PAD,
             cy + 36 + 4 * 28 + 4,
             COL_W - 2 * PAD,
@@ -493,6 +614,95 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
         button("Add", BS_PUSHBUTTON as u32, cx + PAD + 184, cy + 72, 60, 28, ID_EX_ADD);
         button("Remove", BS_PUSHBUTTON as u32, cx + PAD + 250, cy + 72, 60, 28, ID_EX_REMOVE);
 
+        // ---------------------------------------------------------------- third column: rolls
+        let (cx, cy) = (COL3_X, MARGIN);
+        look.cards.push([cx, cy, COL_W, 500]);
+        heading("Rolls", cx, cy);
+        label(
+            "Collections of clips you roll through left and right. Move a clip into one from its right-click menu. New copies always go to Main. LEFT and RIGHT are built in: hide them below, never delete them. A roll can sit on either side of Main and be reordered.",
+            cx + PAD,
+            cy + 34,
+            COL_W - 2 * PAD,
+            78,
+            0,
+            0,
+        );
+        let roll_rows: Vec<RollRow> = app::with_runtime(|rt| rt.controller.store().borrow().rolls().ok())
+            .flatten()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| RollRow {
+                id: Some(r.id),
+                orig: r.name.clone(),
+                name: r.name,
+                side: r.side,
+                removed: false,
+                moved: false,
+            })
+            .collect();
+        look.fields.push([cx + PAD, cy + 116, COL_W - 2 * PAD, 76]);
+        let rl_list = child(hwnd, w!("LISTBOX"), "", lb, 0, (cx + PAD + 4, cy + 120, COL_W - 2 * PAD - 8, 68), ID_RL_LIST, dpi, font);
+        look.fields.push([cx + PAD, cy + 200, 120, 28]);
+        let rl_name = child(
+            hwnd,
+            w!("EDIT"),
+            "",
+            ES_AUTOHSCROLL as u32 | WS_TABSTOP.0,
+            0,
+            (cx + PAD + 8, cy + 205, 104, 18),
+            ID_RL_NAME,
+            dpi,
+            font,
+        );
+        SendMessageW(rl_name, EM_SETCUEBANNER, Some(WPARAM(0)), Some(LPARAM(w!("Roll name").as_ptr() as isize)));
+        SendMessageW(rl_name, EM_SETLIMITTEXT, Some(WPARAM(pasteroll_core::store::rolls::ROLL_NAME_MAX)), Some(LPARAM(0)));
+        SendMessageW(rl_name, EM_SETMARGINS, Some(WPARAM(3)), Some(LPARAM(0)));
+        button("Add", BS_PUSHBUTTON as u32, cx + PAD + 126, cy + 200, 52, 28, ID_RL_ADD);
+        button("Rename", BS_PUSHBUTTON as u32, cx + PAD + 182, cy + 200, 66, 28, ID_RL_RENAME);
+        button("Remove", BS_PUSHBUTTON as u32, cx + PAD + 252, cy + 200, 58, 28, ID_RL_REMOVE);
+        let half = (COL_W - 2 * PAD - 8) / 2;
+        let rl_left = button("Show LEFT roll", BS_AUTOCHECKBOX as u32, cx + PAD, cy + 236, half, 22, ID_RL_LEFT);
+        let rl_right = button("Show RIGHT roll", BS_AUTOCHECKBOX as u32, cx + PAD + half + 8, cy + 236, half, 22, ID_RL_RIGHT);
+        // the selected roll's side and place in the rotation
+        button("◀ Move", BS_PUSHBUTTON as u32, cx + PAD, cy + 312, 60, 28, ID_RL_MOVE_LEFT);
+        button("Move ▶", BS_PUSHBUTTON as u32, cx + PAD + 64, cy + 312, 60, 28, ID_RL_MOVE_RIGHT);
+        button("Left side", BS_PUSHBUTTON as u32, cx + PAD + 128, cy + 312, 82, 28, ID_RL_SIDE_LEFT);
+        button("Right side", BS_PUSHBUTTON as u32, cx + PAD + 214, cy + 312, 90, 28, ID_RL_SIDE_RIGHT);
+        let rl_most = button("Add a Most used roll (what you paste most)", BS_AUTOCHECKBOX as u32, cx + PAD, cy + 260, COL_W - 2 * PAD, 22, ID_RL_MOST);
+        let rl_images = button("Add an Images roll (every picture clip)", BS_AUTOCHECKBOX as u32, cx + PAD, cy + 284, COL_W - 2 * PAD, 22, ID_RL_IMAGES);
+        SendMessageW(rl_left, BM_SETCHECK, Some(WPARAM(usize::from(cfg.rolls.left))), Some(LPARAM(0)));
+        SendMessageW(rl_right, BM_SETCHECK, Some(WPARAM(usize::from(cfg.rolls.right))), Some(LPARAM(0)));
+        SendMessageW(rl_most, BM_SETCHECK, Some(WPARAM(usize::from(cfg.rolls.most_used))), Some(LPARAM(0)));
+        SendMessageW(rl_images, BM_SETCHECK, Some(WPARAM(usize::from(cfg.rolls.images))), Some(LPARAM(0)));
+        label("Keys that roll while the carousel is open:", cx + PAD, cy + 344, COL_W - 2 * PAD, 22, 0, SS_CENTERIMAGE_);
+        let mut hk = [HWND::default(); 2];
+        for (i, (text, id, clear_id, combo)) in [
+            ("Roll left", ID_HK_LEFT, ID_HK_LEFT_CLEAR, cfg.rolls.left_key),
+            ("Roll right", ID_HK_RIGHT, ID_HK_RIGHT_CLEAR, cfg.rolls.right_key),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let y = cy + 368 + 30 * i as i32;
+            label(text, cx + PAD, y + 3, 80, 22, 0, SS_CENTERIMAGE_);
+            hk[i] = child(hwnd, w!("msctls_hotkey32"), "", WS_TABSTOP.0, 0, (cx + PAD + 84, y, 150, 26), id, dpi, font);
+            // a key must come with Ctrl or Alt (or it would take over typing)
+            SendMessageW(hk[i], HKM_SETRULES, Some(WPARAM((HKCOMB_NONE | HKCOMB_S) as usize)), Some(LPARAM(HOTKEYF_CONTROL as isize)));
+            if let Some(c) = combo {
+                let (vk, mods) = crate::rollkeys::hotkey_of(&c);
+                let ext = if matches!(c.key, pasteroll_core::bindings::ComboKey::Char(_) | pasteroll_core::bindings::ComboKey::F(_)) { 0 } else { HOTKEYF_EXT as u16 };
+                SendMessageW(hk[i], HKM_SETHOTKEY, Some(WPARAM(usize::from(vk) | (usize::from(u16::from(mods) | ext) << 8))), Some(LPARAM(0)));
+            }
+            button("None", BS_PUSHBUTTON as u32, cx + PAD + 240, y, 56, 26, clear_id);
+        }
+        label("Sideways wheel clicks (a tilt wheel) do this while it is open; click to change:", cx + PAD, cy + 428, COL_W - 2 * PAD, 32, 0, 0);
+        let tilt = [cfg.rolls.tilt_left, cfg.rolls.tilt_right];
+        let tilt_btn = [
+            button(&tilt_text(0, tilt[0]), BS_PUSHBUTTON as u32, cx + PAD, cy + 460, (COL_W - 2 * PAD - 8) / 2, 30, ID_TILT_LEFT),
+            button(&tilt_text(1, tilt[1]), BS_PUSHBUTTON as u32, cx + PAD + (COL_W - 2 * PAD + 8) / 2, cy + 460, (COL_W - 2 * PAD - 8) / 2, 30, ID_TILT_RIGHT),
+        ];
+        list_fill(rl_list, &roll_names(&roll_rows));
+
         // ---------------------------------------------------------------- bottom bar
         // Clear history sits apart from the cards, at the left of the bottom bar
         button("Clear history...", BS_PUSHBUTTON as u32, MARGIN, 522, 128, 32, ID_CLEAR_HISTORY);
@@ -504,8 +714,11 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
         for e in [img_edit, ex_edit] {
             SendMessageW(e, EM_SETMARGINS, Some(WPARAM(3)), Some(LPARAM(0)));
         }
-        for l in [ex_list, fl_list] {
+        for l in [ex_list, fl_list, rl_list] {
             settingsui::theme_control(l, theme.dark);
+        }
+        for e in [rl_name] {
+            SendMessageW(e, EM_SETMARGINS, Some(WPARAM(3)), Some(LPARAM(0)));
         }
         settingsui::install(look);
 
@@ -545,6 +758,16 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
             status: status_h,
             exclude,
             filters,
+            rl_list,
+            rl_name,
+            rl_left,
+            rl_right,
+            rl_most,
+            rl_images,
+            hk,
+            tilt_btn,
+            tilt,
+            roll_rows,
         };
         ST.with(|c| *c.borrow_mut() = Some(state));
         OPEN.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -640,7 +863,7 @@ fn clear_history(hwnd: HWND) {
     if n == 0 {
         return status("There is no history to clear.");
     }
-    let pinned = if stats.pins > 0 { format!(" The {} pinned clip(s) are kept.", stats.pins) } else { String::new() };
+    let pinned = if stats.pins > 0 { format!(" The {} favorite clip(s) are kept.", stats.pins) } else { String::new() };
     let msg = format!("Delete {n} clip(s) from history, the recycle bin included?{pinned}\n\nThis cannot be undone.");
     if !ask(hwnd, "Clear history", &msg) {
         return;
@@ -727,6 +950,14 @@ struct Snapshot {
     updates: bool,
     exclude: Vec<String>,
     filters: Vec<String>,
+    rolls_left: bool,
+    rolls_right: bool,
+    rolls_most: bool,
+    rolls_images: bool,
+    /// The two hot-key controls: key and modifier bits.
+    hk: [(u8, u8); 2],
+    tilt: [TiltAction; 2],
+    roll_rows: Vec<RollRow>,
 }
 
 fn current_choices() -> Option<Snapshot> {
@@ -752,6 +983,16 @@ fn current_choices() -> Option<Snapshot> {
             updates: check(s.updates),
             exclude: s.exclude.clone(),
             filters: s.filters.clone(),
+            rolls_left: check(s.rl_left),
+            rolls_right: check(s.rl_right),
+            rolls_most: check(s.rl_most),
+            rolls_images: check(s.rl_images),
+            hk: s.hk.map(|h| {
+                let v = unsafe { SendMessageW(h, HKM_GETHOTKEY, Some(WPARAM(0)), Some(LPARAM(0))).0 } as u32;
+                ((v & 0xFF) as u8, ((v >> 8) & 0x07) as u8)
+            }),
+            tilt: s.tilt,
+            roll_rows: s.roll_rows.clone(),
         })
     })
 }
@@ -776,10 +1017,96 @@ fn build_text(snap: &Snapshot, text: &str) -> Result<String, Vec<String>> {
     let text = settings::build_text(&snap.orig, &choice, text)?;
     // the update check is a Windows-only setting: written only when the box was changed (an
     // undecided setting with the box left empty stays undecided, so the one-time question is kept)
-    if snap.updates != (snap.orig.updates == UpdateCheck::On) {
-        return config::set_value(&text, "check_for_updates", &snap.updates.to_string());
+    let text = if snap.updates != (snap.orig.updates == UpdateCheck::On) {
+        config::set_value(&text, "check_for_updates", &snap.updates.to_string())?
+    } else {
+        text
+    };
+    roll_text(snap, &text)
+}
+
+/// The rolls' settings: written only where the window's choice differs from the file's.
+fn roll_text(snap: &Snapshot, text: &str) -> Result<String, Vec<String>> {
+    let o = &snap.orig.rolls;
+    let mut text = text.to_owned();
+    let mut put = |key: &str, val: String| -> Result<(), Vec<String>> {
+        text = config::set_value(&text, key, &val)?;
+        Ok(())
+    };
+    if snap.rolls_left != o.left {
+        put("left_roll", snap.rolls_left.to_string())?;
+    }
+    if snap.rolls_right != o.right {
+        put("right_roll", snap.rolls_right.to_string())?;
+    }
+    if snap.rolls_most != o.most_used {
+        put("most_used", snap.rolls_most.to_string())?;
+    }
+    if snap.rolls_images != o.images {
+        put("images", snap.rolls_images.to_string())?;
+    }
+    for ((vk, mods), key, label, before) in [
+        (snap.hk[0], "roll_left_key", "Roll left", o.left_key),
+        (snap.hk[1], "roll_right_key", "Roll right", o.right_key),
+    ] {
+        let now = crate::rollkeys::combo_of(vk, mods).map_err(|e| vec![format!("{label}: {e}")])?;
+        if now != before {
+            put(key, now.map(|c| c.text()).unwrap_or_default())?;
+        }
+    }
+    if snap.tilt[0] != o.tilt_left {
+        put("tilt_left", snap.tilt[0].key().to_owned())?;
+    }
+    if snap.tilt[1] != o.tilt_right {
+        put("tilt_right", snap.tilt[1].key().to_owned())?;
     }
     Ok(text)
+}
+
+/// Makes the roll changes made in the window: removals first (their clips go back to Main), then
+/// renames, then new rolls, then every roll's side and place (the list is in rotation order).
+fn apply_rolls(rows: &[RollRow]) -> Result<(), String> {
+    let result = app::with_runtime(|rt| {
+        let store = rt.controller.store();
+        let mut st = store.borrow_mut();
+        for r in rows.iter().filter(|r| r.removed) {
+            if let Some(id) = r.id {
+                st.delete_roll(id).map_err(|e| e.to_string())?;
+            }
+        }
+        for r in rows.iter().filter(|r| !r.removed && r.id.is_some() && r.name != r.orig) {
+            st.rename_roll(r.id.unwrap_or(0), &r.name).map_err(|e| e.to_string())?;
+        }
+        let mut ids: Vec<(i64, RollSide)> = Vec::new();
+        for r in rows.iter().filter(|r| !r.removed) {
+            let id = match r.id {
+                Some(id) => id,
+                None => st.add_roll_on(&r.name, r.side).map_err(|e| e.to_string())?,
+            };
+            ids.push((id, r.side));
+        }
+        let (mut left, mut right) = (0i64, 0i64);
+        for (id, side) in ids {
+            let pos = match side {
+                RollSide::Left => {
+                    left += 1;
+                    left
+                }
+                RollSide::Right => {
+                    right += 1;
+                    right
+                }
+            };
+            st.place_roll(id, side, pos).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    });
+    result.unwrap_or(Ok(()))
+}
+
+/// Did the window change the list of rolls, their names, sides or order?
+fn rolls_changed(rows: &[RollRow]) -> bool {
+    rows.iter().any(|r| r.removed && r.id.is_some() || !r.removed && (r.id.is_none() || r.name != r.orig || r.moved))
 }
 
 /// Applies the "start with Windows" box if it changed (a registry entry, not part of config.toml).
@@ -856,6 +1183,11 @@ fn save() {
         Err(problems) => return status(&problems.join(" ")),
     };
     if new_text == text {
+        if rolls_changed(&snap.roll_rows) {
+            if let Err(e) = apply_rolls(&snap.roll_rows) {
+                return status(&e);
+            }
+        }
         close();
         return;
     }
@@ -873,7 +1205,7 @@ fn save() {
     if let Some(p) = plan {
         if p.clips > 0 {
             let msg = format!(
-                "Saving will delete {} clip(s), {:.1} MB ({} of them only because of age). Pinned clips are kept.\n\nDelete them?",
+                "Saving will delete {} clip(s), {:.1} MB ({} of them only because of age). Favorite clips are kept.\n\nDelete them?",
                 p.clips,
                 p.bytes as f64 / MB as f64,
                 p.by_age
@@ -881,6 +1213,11 @@ fn save() {
             if !ask(snap.hwnd, "Pasteroll", &msg) {
                 return;
             }
+        }
+    }
+    if rolls_changed(&snap.roll_rows) {
+        if let Err(e) = apply_rolls(&snap.roll_rows) {
+            return status(&e);
         }
     }
     if let Err(e) = keystore::write_config_text(&snap.db, &new_text) {
@@ -973,7 +1310,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                     let theme = settingsui::Theme::current();
                     settingsui::with(|l| l.retheme(theme));
                     settingsui::apply_title_bar(hwnd, theme.dark);
-                    let lists = ST.with(|c| c.try_borrow().ok().and_then(|g| g.as_ref().map(|s| [s.ex_list, s.fl_list])));
+                    let lists = ST.with(|c| c.try_borrow().ok().and_then(|g| g.as_ref().map(|s| [s.ex_list, s.fl_list, s.rl_list])));
                     for l in lists.into_iter().flatten() {
                         settingsui::theme_control(l, theme.dark);
                     }
@@ -1024,6 +1361,114 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                                         list_fill(s.ex_list, &s.exclude);
                                     }
                                 }
+                            }
+                        }
+                    }),
+                    ID_RL_LIST if (wparam.0 >> 16) & 0xFFFF == LBN_SELCHANGE as usize => ST.with(|c| {
+                        if let Ok(g) = c.try_borrow() {
+                            if let Some(s) = g.as_ref() {
+                                let live = live_rolls(&s.roll_rows);
+                                if let Some(r) = list_selected(s.rl_list).and_then(|i| live.get(i)).and_then(|i| s.roll_rows.get(*i)) {
+                                    set_text(s.rl_name, &r.name);
+                                }
+                            }
+                        }
+                    }),
+                    ID_RL_ADD | ID_RL_RENAME => {
+                        let outcome = ST.with(|c| {
+                            let Ok(mut g) = c.try_borrow_mut() else { return None };
+                            let s = g.as_mut()?;
+                            let text = get_text(s.rl_name);
+                            let target = if id == ID_RL_RENAME {
+                                let live = live_rolls(&s.roll_rows);
+                                match list_selected(s.rl_list).and_then(|i| live.get(i).copied()) {
+                                    Some(i) => Some(i),
+                                    None => return Some(Err("Choose a roll in the list to rename.".to_owned())),
+                                }
+                            } else {
+                                None
+                            };
+                            let name = match check_roll_name(&s.roll_rows, target, &text) {
+                                Ok(n) => n,
+                                Err(e) => return Some(Err(e)),
+                            };
+                            match target {
+                                Some(i) => s.roll_rows[i].name = name,
+                                None => s.roll_rows.push(RollRow {
+                                    id: None,
+                                    orig: name.clone(),
+                                    name,
+                                    side: RollSide::Right,
+                                    removed: false,
+                                    moved: true,
+                                }),
+                            }
+                            list_fill(s.rl_list, &roll_names(&s.roll_rows));
+                            if target.is_none() {
+                                set_text(s.rl_name, "");
+                            }
+                            Some(Ok(()))
+                        });
+                        if let Some(Err(e)) = outcome {
+                            status(&e);
+                        }
+                    }
+                    ID_RL_REMOVE => ST.with(|c| {
+                        if let Ok(mut g) = c.try_borrow_mut() {
+                            if let Some(s) = g.as_mut() {
+                                let live = live_rolls(&s.roll_rows);
+                                if let Some(i) = list_selected(s.rl_list).and_then(|i| live.get(i).copied()) {
+                                    if s.roll_rows[i].id.is_some() {
+                                        s.roll_rows[i].removed = true;
+                                    } else {
+                                        s.roll_rows.remove(i);
+                                    }
+                                    list_fill(s.rl_list, &roll_names(&s.roll_rows));
+                                    set_text(s.rl_name, "");
+                                }
+                            }
+                        }
+                    }),
+                    ID_RL_SIDE_LEFT | ID_RL_SIDE_RIGHT | ID_RL_MOVE_LEFT | ID_RL_MOVE_RIGHT => {
+                        let msg = ST.with(|c| -> Option<String> {
+                            let mut g = c.try_borrow_mut().ok()?;
+                            let s = g.as_mut()?;
+                            let live = live_rolls(&s.roll_rows);
+                            let Some(row) = list_selected(s.rl_list).and_then(|i| live.get(i).copied()) else {
+                                return Some("Choose a roll in the list first.".to_owned());
+                            };
+                            let moved = match id {
+                                ID_RL_SIDE_LEFT => set_roll_side(&mut s.roll_rows, row, RollSide::Left),
+                                ID_RL_SIDE_RIGHT => set_roll_side(&mut s.roll_rows, row, RollSide::Right),
+                                ID_RL_MOVE_LEFT => move_roll_row(&mut s.roll_rows, row, -1),
+                                _ => move_roll_row(&mut s.roll_rows, row, 1),
+                            }?;
+                            let name = s.roll_rows[moved].name.clone();
+                            let side = s.roll_rows[moved].side;
+                            list_fill(s.rl_list, &roll_names(&s.roll_rows));
+                            select_roll(s.rl_list, &s.roll_rows, moved);
+                            Some(format!("{name} rolls on the {} of Main.", side.label()))
+                        });
+                        if let Some(m) = msg {
+                            status(&m);
+                        }
+                    }
+                    ID_HK_LEFT_CLEAR | ID_HK_RIGHT_CLEAR => ST.with(|c| {
+                        if let Ok(g) = c.try_borrow() {
+                            if let Some(s) = g.as_ref() {
+                                let h = s.hk[usize::from(id == ID_HK_RIGHT_CLEAR)];
+                                SendMessageW(h, HKM_SETHOTKEY, Some(WPARAM(0)), Some(LPARAM(0)));
+                            }
+                        }
+                    }),
+                    ID_TILT_LEFT | ID_TILT_RIGHT => ST.with(|c| {
+                        if let Ok(mut g) = c.try_borrow_mut() {
+                            if let Some(s) = g.as_mut() {
+                                let side = usize::from(id == ID_TILT_RIGHT);
+                                let all = TiltAction::ALL;
+                                let at = all.iter().position(|a| *a == s.tilt[side]).unwrap_or(0);
+                                s.tilt[side] = all[(at + 1) % all.len()];
+                                set_text(s.tilt_btn[side], &tilt_text(side, s.tilt[side]));
                             }
                         }
                     }),
@@ -1079,6 +1524,33 @@ pub fn snapshot(db: &std::path::Path, out: &std::path::Path) -> Result<(), Strin
 mod tests {
     use super::*;
 
+    impl Snapshot {
+        fn clone_for_test(&self) -> Snapshot {
+            Snapshot {
+                hwnd: self.hwnd,
+                db: self.db.clone(),
+                orig: self.orig.clone(),
+                limits: self.limits,
+                size: self.size,
+                paused: self.paused,
+                warn: self.warn,
+                modifier: self.modifier,
+                image_folder: self.image_folder.clone(),
+                mode: self.mode,
+                updates: self.updates,
+                exclude: self.exclude.clone(),
+                filters: self.filters.clone(),
+                rolls_most: self.rolls_most,
+                rolls_images: self.rolls_images,
+                rolls_left: self.rolls_left,
+                rolls_right: self.rolls_right,
+                hk: self.hk,
+                tilt: self.tilt,
+                roll_rows: self.roll_rows.clone(),
+            }
+        }
+    }
+
     #[test]
     fn only_changed_values_are_written() {
         let orig = config::parse("").unwrap();
@@ -1097,6 +1569,13 @@ mod tests {
             updates: false,
             exclude: vec![],
             filters: vec![],
+            rolls_most: false,
+            rolls_images: false,
+            rolls_left: true,
+            rolls_right: true,
+            hk: [(0x25, 2), (0x27, 2)],
+            tilt: [TiltAction::RollLeft, TiltAction::RollRight],
+            roll_rows: vec![],
         };
         let text = "# my notes\n[limits]\nmax_clips = 1000\n";
         assert_eq!(build_text(&snap, text).unwrap(), text, "nothing changed, nothing rewritten");
@@ -1129,6 +1608,13 @@ mod tests {
             updates: false,
             exclude: vec![],
             filters: vec![],
+            rolls_most: false,
+            rolls_images: false,
+            rolls_left: true,
+            rolls_right: true,
+            hk: [(0x25, 2), (0x27, 2)],
+            tilt: [TiltAction::RollLeft, TiltAction::RollRight],
+            roll_rows: vec![],
         };
         assert_eq!(build_text(&snap, "").unwrap(), "", "untouched, nothing written");
         let slim = Snapshot { mode: UiMode::NoBloat, ..snap };
@@ -1155,6 +1641,13 @@ mod tests {
                 updates,
                 exclude: vec![],
                 filters: vec![],
+                rolls_most: false,
+                rolls_images: false,
+            rolls_left: true,
+            rolls_right: true,
+                hk: [(0x25, 2), (0x27, 2)],
+                tilt: [TiltAction::RollLeft, TiltAction::RollRight],
+                roll_rows: vec![],
             }
         };
         // undecided and left unticked: nothing is written, so the one-time question still comes
@@ -1188,10 +1681,100 @@ mod tests {
             updates: false,
             exclude: vec!["bitwarden.exe".into()],
             filters: vec![],
+            rolls_most: false,
+            rolls_images: false,
+            rolls_left: true,
+            rolls_right: true,
+            hk: [(0x25, 2), (0x27, 2)],
+            tilt: [TiltAction::RollLeft, TiltAction::RollRight],
+            roll_rows: vec![],
         };
         let out = build_text(&snap, &base).unwrap();
         let c = config::parse(&out).unwrap();
         assert_eq!(c.exclude_apps, vec!["bitwarden.exe".to_string()]);
         assert!(c.custom_filters.is_empty());
+    }
+    #[test]
+    fn the_rolls_settings_are_written_only_where_they_changed() {
+        let orig = config::parse("").unwrap();
+        let lim = orig.limits;
+        let snap = Snapshot {
+            hwnd: HWND::default(),
+            db: PathBuf::new(),
+            orig: orig.clone(),
+            limits: (lim.max_clips, lim.max_bytes / MB, lim.max_age_days, lim.max_clip_bytes / MB),
+            size: 100,
+            paused: false,
+            warn: true,
+            modifier: ClickModifier::Ctrl,
+            image_folder: String::new(),
+            mode: UiMode::Complete,
+            updates: false,
+            exclude: vec![],
+            filters: vec![],
+            rolls_most: false,
+            rolls_images: false,
+            rolls_left: true,
+            rolls_right: true,
+            hk: [(0x25, 2), (0x27, 2)],
+            tilt: [TiltAction::RollLeft, TiltAction::RollRight],
+            roll_rows: vec![],
+        };
+        assert_eq!(build_text(&snap, "").unwrap(), "", "the defaults as they are: nothing written");
+        // Alt+Q to roll left, no key to roll right, the left tilt does nothing, Most used on
+        let snap2 = Snapshot {
+            hk: [(0x51, 4), (0, 0)],
+            tilt: [TiltAction::None, TiltAction::RollRight],
+            rolls_most: true,
+            ..snap.clone_for_test()
+        };
+        let c = config::parse(&build_text(&snap2, "").unwrap()).unwrap();
+        assert_eq!(c.rolls.left_key.unwrap().text(), "alt+q");
+        assert_eq!(c.rolls.right_key, None);
+        assert_eq!(c.rolls.tilt_left, TiltAction::None);
+        assert_eq!(c.rolls.tilt_right, TiltAction::RollRight);
+        assert!(c.rolls.most_used && !c.rolls.images);
+        // a key the carousel needs is refused with the reason
+        let bad = Snapshot { hk: [(0x43, 2), (0x27, 2)], ..snap.clone_for_test() };
+        let err = build_text(&bad, "").unwrap_err().join(" ");
+        assert!(err.contains("Roll left") && err.contains("Ctrl+C"), "{err}");
+    }
+
+    #[test]
+    fn roll_names_are_checked_against_the_others_in_the_window() {
+        let row = |id: i64, name: &str, side: RollSide, removed: bool| RollRow {
+            id: Some(id),
+            orig: name.into(),
+            name: name.into(),
+            side,
+            removed,
+            moved: false,
+        };
+        let rows = vec![row(1, "Work", RollSide::Left, false), row(2, "Gone", RollSide::Right, true)];
+        assert_eq!(check_roll_name(&rows, None, "  Bills ").unwrap(), "Bills");
+        assert!(check_roll_name(&rows, None, "work").is_err(), "a roll is called that already");
+        assert!(check_roll_name(&rows, None, "Gone").is_ok(), "a removed roll's name is free again");
+        assert!(check_roll_name(&rows, Some(0), "WORK").is_ok(), "renaming a roll to its own name");
+        assert!(check_roll_name(&rows, None, "Main").is_err());
+        assert_eq!(live_rolls(&rows), vec![0]);
+        assert_eq!(roll_names(&rows), vec!["Work  (left)".to_owned()]);
+        assert!(rolls_changed(&rows), "a removed roll is a change");
+        assert!(!rolls_changed(&rows[..1]));
+
+        // placing a roll on a side, and moving it through the rotation
+        let mut rows = vec![
+            row(1, "Work", RollSide::Left, false),
+            row(2, "Bills", RollSide::Left, false),
+            row(3, "Tax", RollSide::Right, false),
+        ];
+        assert_eq!(set_roll_side(&mut rows, 0, RollSide::Right), Some(2), "it joins the right side");
+        assert_eq!(
+            rows.iter().map(|r| (r.name.as_str(), r.side)).collect::<Vec<_>>(),
+            vec![("Bills", RollSide::Left), ("Tax", RollSide::Right), ("Work", RollSide::Right)]
+        );
+        assert!(rows[2].moved && rolls_changed(&rows));
+        assert_eq!(move_roll_row(&mut rows, 0, 1), None, "nothing else is left of Main");
+        assert_eq!(move_roll_row(&mut rows, 2, -1), Some(1), "toward Main, past Tax");
+        assert_eq!(rows[1].name, "Work");
     }
 }
