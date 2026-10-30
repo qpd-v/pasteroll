@@ -1,4 +1,7 @@
 pasteroll-update-latest 1
-version 0.1.0-beta.17
-note Fixes "Download and install" refusing to update with "pasteroll-update exists and is not Pasteroll's update folder".
-note No other changes since 0.1.0-beta.16.
+version 0.1.0-beta.18
+note Rolls: separate collections of clips you roll through left and right, with LEFT and RIGHT built in on either side of Main.
+note Drag the carousel by its empty margins; pin it open so it stays above other windows while you use them.
+note Pins are now Favorites everywhere, and Ctrl+F makes a favorite (the star still works in the expanded viewer).
+note Multi-paste and the Paste button work while the carousel is pinned open.
+note Set which side of Main each roll sits on, and its order, in Settings.
