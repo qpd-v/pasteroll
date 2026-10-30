@@ -100,6 +100,20 @@ The colour you give a favorite clip's tile is kept in another small plain-text f
 the data folder: only the clip's number and a colour code, never the clip's content. It is deleted with
 the other data files when you choose to delete your data on uninstall.
 
+## Coding agents (MCP)
+
+`pasteroll mcp` is a local, read-only server that a coding harness (Claude Code, Codex or OpenCode)
+starts. It reads only the rolls listed in `[brain]` and writes them to that harness on stdout.
+Pasteroll makes no network connection for it, and the server has no tool that writes, copies, pastes
+or deletes anything. The brain is off by default, every shared roll is opt-in, pictures are off by
+default, and each call is capped.
+
+Once a harness reads a clip, that harness may send it to its model provider, exactly as if you had
+pasted it into the chat. That transfer is the harness's, not Pasteroll's. This is why the feature is
+off by default and why the README says to share only rolls you are comfortable giving that agent.
+Clipboard text is untrusted data; the server labels it as such and a harness should never follow
+instructions found inside a clip.
+
 *Extract text* in the expanded viewer recognises text on this computer only (Windows' built-in
 recognition, or Tesseract on Linux, which reads the picture through a pipe, not a file). *Save
 as* writes a file only where you choose.

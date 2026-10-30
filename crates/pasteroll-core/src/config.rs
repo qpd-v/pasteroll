@@ -126,6 +126,48 @@ impl Default for RollSettings {
     }
 }
 
+/// The rolls a coding agent may read through the MCP server (`pasteroll mcp`). It is read-only:
+/// the server has no tool that writes, copies or deletes anything.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrainSettings {
+    /// The MCP server answers at all. Off until the person turns it on.
+    pub enabled: bool,
+    /// Roll names: "main", "left", "right", "most used", "images", or a custom roll's name.
+    pub rolls: Vec<String>,
+    /// Most clips one call may return (the server also caps each call's own `limit`).
+    pub max_clips: usize,
+    /// Pictures may be returned as MCP image content. Off by default: they are the easiest way to
+    /// leak something a person did not mean to share.
+    pub include_images: bool,
+    /// Longest text of one clip, in characters (the rest is cut and marked).
+    pub max_clip_chars: usize,
+    /// Largest picture the server returns, in kilobytes.
+    pub max_image_kb: usize,
+}
+
+/// The range `max_clips` may take.
+pub const BRAIN_CLIPS_MIN: usize = 1;
+pub const BRAIN_CLIPS_MAX: usize = 500;
+/// The range `max_clip_chars` may take.
+pub const BRAIN_CHARS_MIN: usize = 1_000;
+pub const BRAIN_CHARS_MAX: usize = 1_000_000;
+/// The range `max_image_kb` may take.
+pub const BRAIN_IMAGE_KB_MIN: usize = 64;
+pub const BRAIN_IMAGE_KB_MAX: usize = 16_384;
+
+impl Default for BrainSettings {
+    fn default() -> Self {
+        BrainSettings {
+            enabled: false,
+            rolls: vec!["main".to_owned()],
+            max_clips: 20,
+            include_images: false,
+            max_clip_chars: 20_000,
+            max_image_kb: 1_024,
+        }
+    }
+}
+
 /// Whether Pasteroll may look for a newer version on the internet. This is the only thing in the
 /// program that ever makes a network request, so nothing happens until the person says yes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -162,6 +204,8 @@ pub struct Config {
     pub updates: UpdateCheck,
     /// The rolls' settings.
     pub rolls: RollSettings,
+    /// What the local MCP server may show a coding agent.
+    pub brain: BrainSettings,
 }
 
 /// The range the carousel size may take, in percent.
@@ -184,6 +228,7 @@ impl Default for Config {
             mode: UiMode::Complete,
             updates: UpdateCheck::Ask,
             rolls: RollSettings::default(),
+            brain: BrainSettings::default(),
         }
     }
 }
@@ -243,6 +288,17 @@ roll_right_key = "ctrl+right"
 # is open: "roll-left", "roll-right" or "none".
 tilt_left = "roll-left"
 tilt_right = "roll-right"
+
+[brain]
+# A local, read-only MCP server (`pasteroll mcp`) that Claude Code, Codex and OpenCode can use.
+# It only sees the rolls named here: "main", "left", "right", "most used", "images", or a custom
+# roll's name. Off until you turn it on. Images off: they are the easiest way to share too much.
+enabled = false
+rolls = ["main"]
+max_clips = 20
+include_images = false
+max_clip_chars = 20000
+max_image_kb = 1024
 
 [updates]
 # Pasteroll never uses the internet unless you allow it here. true: once a day it asks GitHub
@@ -501,6 +557,61 @@ pub fn parse(text: &str) -> Result<Config, Vec<String>> {
                     }
                 }
             }
+            "brain" => {
+                let Some(t) = item.as_table() else {
+                    problems.push("[brain] must be a table".into());
+                    continue;
+                };
+                for (k, v) in t.iter() {
+                    match k {
+                        "enabled" => match v.as_bool() {
+                            Some(b) => cfg.brain.enabled = b,
+                            None => problems.push("enabled must be true or false".into()),
+                        },
+                        "include_images" => match v.as_bool() {
+                            Some(b) => cfg.brain.include_images = b,
+                            None => problems.push("include_images must be true or false".into()),
+                        },
+                        "rolls" => match strings(v, "rolls") {
+                            Ok(names) => {
+                                let names: Vec<String> = names
+                                    .iter()
+                                    .map(|s| s.trim().to_owned())
+                                    .filter(|s| !s.is_empty())
+                                    .collect();
+                                if names.len() > 64 || names.iter().any(|n| n.chars().count() > 64) {
+                                    problems.push("rolls may name at most 64 rolls of at most 64 characters".into());
+                                } else {
+                                    cfg.brain.rolls = names;
+                                }
+                            }
+                            Err(e) => problems.push(e),
+                        },
+                        "max_clips" => match int(v, k) {
+                            Ok(n) if (BRAIN_CLIPS_MIN as u64..=BRAIN_CLIPS_MAX as u64).contains(&n) => {
+                                cfg.brain.max_clips = n as usize
+                            }
+                            Ok(_) => problems.push(format!("max_clips must be {BRAIN_CLIPS_MIN} .. {BRAIN_CLIPS_MAX}")),
+                            Err(e) => problems.push(e),
+                        },
+                        "max_clip_chars" => match int(v, k) {
+                            Ok(n) if (BRAIN_CHARS_MIN as u64..=BRAIN_CHARS_MAX as u64).contains(&n) => {
+                                cfg.brain.max_clip_chars = n as usize
+                            }
+                            Ok(_) => problems.push(format!("max_clip_chars must be {BRAIN_CHARS_MIN} .. {BRAIN_CHARS_MAX}")),
+                            Err(e) => problems.push(e),
+                        },
+                        "max_image_kb" => match int(v, k) {
+                            Ok(n) if (BRAIN_IMAGE_KB_MIN as u64..=BRAIN_IMAGE_KB_MAX as u64).contains(&n) => {
+                                cfg.brain.max_image_kb = n as usize
+                            }
+                            Ok(_) => problems.push(format!("max_image_kb must be {BRAIN_IMAGE_KB_MIN} .. {BRAIN_IMAGE_KB_MAX}")),
+                            Err(e) => problems.push(e),
+                        },
+                        other => problems.push(format!("unknown setting [brain] {other}")),
+                    }
+                }
+            }
             "updates" => {
                 let Some(t) = item.as_table() else {
                     problems.push("[updates] must be a table".into());
@@ -535,6 +646,9 @@ pub fn parse(text: &str) -> Result<Config, Vec<String>> {
 /// `max_total_mb`, `max_age_days`, `max_clip_mb`, `max_pins`, `paused` (with or without its section
 /// prefix). The result is validated before it is returned; on error nothing changes.
 pub fn set_value(text: &str, key: &str, val: &str) -> Result<String, Vec<String>> {
+    if let Some(key) = key.strip_prefix("brain.") {
+        return set_brain_value(text, key, val);
+    }
     let key = key
         .strip_prefix("limits.")
         .or_else(|| key.strip_prefix("capture."))
@@ -628,6 +742,66 @@ pub fn set_value(text: &str, key: &str, val: &str) -> Result<String, Vec<String>
         },
         other => return Err(vec![format!("unknown setting {other}")]),
     };
+    write_item(text, section, key, item)
+}
+
+/// Sets one `[brain]` setting. `rolls` takes comma-separated roll names.
+fn set_brain_value(text: &str, key: &str, val: &str) -> Result<String, Vec<String>> {
+    let flag = |key: &str| match val.trim().to_ascii_lowercase().as_str() {
+        "true" | "yes" | "on" => Ok(true),
+        "false" | "no" | "off" => Ok(false),
+        _ => Err(vec![format!("{key} must be true or false (got {val:?})")]),
+    };
+    let (item, key) = match key {
+        "enabled" => (value(flag(key)?), key),
+        "include_images" => (value(flag(key)?), key),
+        "max_clips" => {
+            let n: i64 = val
+                .trim()
+                .parse()
+                .map_err(|_| vec![format!("max_clips must be a whole number (got {val:?})")])?;
+            (value(n), key)
+        }
+        "max_clip_chars" => {
+            let n: i64 = val
+                .trim()
+                .replace(',', "")
+                .parse()
+                .map_err(|_| vec![format!("max_clip_chars must be a whole number (got {val:?})")])?;
+            (value(n), key)
+        }
+        "max_image_kb" => {
+            let n: i64 = val
+                .trim()
+                .replace(',', "")
+                .parse()
+                .map_err(|_| vec![format!("max_image_kb must be a whole number (got {val:?})")])?;
+            (value(n), key)
+        }
+        "rolls" => (value(roll_array(val.split(',').map(str::trim))), key),
+        other => return Err(vec![format!("unknown setting brain.{other}")]),
+    };
+    write_item(text, "brain", key, item)
+}
+
+/// Writes the whole list of rolls a coding agent may read (used by `pasteroll brain add/remove`).
+pub fn set_brain_rolls(text: &str, rolls: &[String]) -> Result<String, Vec<String>> {
+    write_item(text, "brain", "rolls", value(roll_array(rolls.iter().map(String::as_str))))
+}
+
+fn roll_array<'a>(names: impl Iterator<Item = &'a str>) -> Array {
+    let mut a = Array::new();
+    for name in names {
+        let name = name.trim();
+        if !name.is_empty() {
+            a.push(name);
+        }
+    }
+    a
+}
+
+/// Puts one item in its section and checks the whole file still loads.
+fn write_item(text: &str, section: &str, key: &str, item: Item) -> Result<String, Vec<String>> {
     let mut doc: DocumentMut = if text.trim().is_empty() {
         TEMPLATE.parse().expect("template is valid")
     } else {
@@ -807,6 +981,38 @@ mod tests {
         let c = parse(TEMPLATE).unwrap();
         assert_eq!(c.limits, Limits::default());
         assert!(!c.paused && c.exclude_apps.is_empty() && c.custom_filters.is_empty());
+    }
+
+    #[test]
+    fn the_agent_brain_is_off_by_default_and_its_limits_are_checked() {
+        let c = parse("").unwrap();
+        assert_eq!(c.brain, BrainSettings::default());
+        assert!(!c.brain.enabled);
+        assert_eq!(c.brain.rolls, vec!["main".to_owned()]);
+        assert_eq!(parse(TEMPLATE).unwrap().brain, BrainSettings::default());
+
+        let c = parse("[brain]\nenabled = true\nrolls = [\"Main\", \"Work\"]\nmax_clips = 10\ninclude_images = true\nmax_clip_chars = 2000\nmax_image_kb = 512\n").unwrap();
+        assert!(c.brain.enabled && c.brain.include_images);
+        assert_eq!(c.brain.rolls, vec!["Main".to_owned(), "Work".to_owned()]);
+        assert_eq!((c.brain.max_clips, c.brain.max_clip_chars, c.brain.max_image_kb), (10, 2000, 512));
+
+        assert!(parse("[brain]\nenabled = 1\n").is_err());
+        assert!(parse("[brain]\nrolls = \"main\"\n").is_err());
+        assert!(parse("[brain]\nmax_clips = 0\n").is_err());
+        assert!(parse("[brain]\nmax_clip_chars = 10\n").is_err());
+        assert!(parse("[brain]\nmax_image_kb = 999999\n").is_err());
+        assert!(parse("[brain]\nother = true\n").is_err());
+
+        let out = set_value("", "brain.enabled", "yes").unwrap();
+        assert!(parse(&out).unwrap().brain.enabled);
+        let out = set_value(&out, "brain.rolls", "main, Work").unwrap();
+        assert_eq!(parse(&out).unwrap().brain.rolls, vec!["main".to_owned(), "Work".to_owned()]);
+        assert!(set_value("", "brain.max_clips", "501").is_err(), "validated by parse");
+        assert!(set_value("", "brain.nope", "1").is_err());
+
+        // the CLI's list keeps a comma inside a roll name as one name
+        let out = set_brain_rolls("", &["Work, Ltd".to_owned(), "Main".to_owned()]).unwrap();
+        assert_eq!(parse(&out).unwrap().brain.rolls, vec!["Work, Ltd".to_owned(), "Main".to_owned()]);
     }
 
     #[test]

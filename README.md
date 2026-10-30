@@ -91,6 +91,12 @@ the experimental packages; it does not indicate broader Wayland compatibility.
   choose the keys and what each sideways click does. Search, filters, choosing and pasting work in
   every roll. Clips in a custom roll are not removed by the limits, like favorites. A pinned-open
   carousel rolls with the tilt wheel over it. Windows only for now.
+- **Agent brain (MCP)**: a local, read-only MCP server (`pasteroll mcp`) lets Claude Code, Codex and
+  OpenCode read the rolls you choose. Turn it on with `pasteroll brain on`, share rolls with
+  `pasteroll brain add Work`, and print the three harness entries with `pasteroll mcp-config`. It is
+  part of the same program (no separate download), uses no port and sends nothing itself: each
+  harness starts its own copy against the same encrypted history. Images are off by default.
+  Windows only for now.
 - **Pin it open**: the pin button in the search bar (or Ctrl+K) keeps the carousel on top of the other
   windows while you use them. The keyboard and the wheel go back to the window you are using; the wheel
   over the carousel turns it, the bar's Paste button and the favorite tiles paste into the window that
@@ -264,9 +270,39 @@ carousel size, the key for the image editor, programs to ignore and custom filte
 
 ```
 pasteroll run | status | config [show|path|init|set KEY VALUE] | exclude PROGRAM
+          | brain [status|on|off|add ROLL|remove ROLL] | mcp | mcp-config
           | clear --yes | repair --yes | rotate-key | key-export --out FILE | key-import --in FILE
           | stop | install | uninstall [--remove-data --yes] | autostart [on|off] | --version
 ```
+
+### Coding agents (MCP)
+
+`pasteroll mcp` is a local MCP server over stdio. It is read-only: it can list, read and search the
+rolls you share, and it has no tool that copies, pastes, writes or deletes anything. It is in the
+same program, so there is no companion download and no version to keep in step.
+
+```
+pasteroll brain on                 # master switch (off by default)
+pasteroll brain add Work           # share a roll; "Main", "LEFT", "RIGHT", "Most used", "Images"
+pasteroll brain remove Work        # stop sharing it
+pasteroll brain status             # what is shared, with clip counts
+pasteroll mcp-config               # exact entries for Claude Code, Codex and OpenCode
+```
+
+The server is started by each harness, so all of them can use it at the same time. They read the
+current history and the current `[brain]` settings on every call: adding or removing a roll in
+Pasteroll (or with `brain add/remove`) takes effect without restarting the harnesses. The
+`mcp-config` command prints the Claude Code command, the Codex `~/.codex/config.toml` table and the
+OpenCode `opencode.json` entry with this program's full path filled in.
+
+What a harness can read is only what you shared. Text is returned up to `max_clip_chars`; file clips
+return their paths; pictures are not sent unless `include_images = true` and they fit `max_image_kb`.
+The server caps every call at `max_clips`. Look at the `[brain]` section of `config.toml` for all of
+the limits. Nothing is written to the history by an agent.
+
+Privacy: the server itself sends nothing. But when a harness reads a clip, the harness may send that
+text to its model provider, exactly as if you had pasted it into the chat. That is why the brain is
+off by default and every roll is opt-in.
 
 ## Your data and recovery
 

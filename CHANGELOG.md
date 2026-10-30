@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.0-beta.19 (Windows only)
+
+- **Agent brain (MCP).** A local, read-only MCP server, `pasteroll mcp`, lets Claude Code, Codex and
+  OpenCode read the rolls you choose. It is part of the same program: no companion download, no
+  port, no network use. Turn it on with `pasteroll brain on`, share rolls with
+  `pasteroll brain add Work` (or `Main`, `LEFT`, `RIGHT`, `Most used`, `Images`), and print the
+  exact entries for all three harnesses with `pasteroll mcp-config`. Each harness starts its own
+  copy against the same encrypted history, and changes to the shared rolls take effect on the next
+  call without restarting them. The server exposes only `brain_status`, `brain_read`,
+  `brain_search` and `brain_get`; it has no tool that writes, copies, pastes or deletes. Text and
+  file paths are capped, pictures are off unless `include_images` is enabled, and the brain is off
+  by default. When a harness reads a clip, that harness may send it to its model provider; Pasteroll
+  itself sends nothing. Windows only for now.
+
 ## 0.1.0-beta.18 (Windows only)
 
 - **Rolls.** Separate collections of clips that you roll through left and right, with a slide between

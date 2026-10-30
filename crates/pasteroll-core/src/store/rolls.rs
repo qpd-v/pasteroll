@@ -230,6 +230,29 @@ impl Store {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    /// The clips of the main roll (the history less everything moved into another roll), newest
+    /// first, up to `limit`.
+    pub fn main_items(&self, limit: usize) -> Result<Vec<Item>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, ord FROM clips c WHERE c.trashed IS NULL \
+             AND NOT EXISTS(SELECT 1 FROM roll_clips r WHERE r.clip_id = c.id) \
+             ORDER BY c.ord DESC, c.id DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit.min(i64::MAX as usize) as i64], |r| Ok(Item { id: r.get(0)?, order: r.get(1)? }))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// How many clips are in the main roll.
+    pub fn main_len(&self) -> Result<usize, StoreError> {
+        let n: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM clips c WHERE c.trashed IS NULL \
+             AND NOT EXISTS(SELECT 1 FROM roll_clips r WHERE r.clip_id = c.id)",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(n as usize)
+    }
+
     /// The clips of custom roll `roll`, newest first.
     pub fn roll_items(&self, roll: i64) -> Result<Vec<Item>, StoreError> {
         let mut stmt = self.conn.prepare(

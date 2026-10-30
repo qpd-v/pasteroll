@@ -151,6 +151,28 @@ pub fn render_config(cfg: &Config) -> Result<String, String> {
     text.push_str("[appearance]\n");
     text.push_str(&format!("mode = \"{}\"\n", cfg.mode.key()));
     text.push_str(&format!("size = {}\n", cfg.size_percent));
+    text.push_str("\n[rolls]\n");
+    text.push_str(&format!("left_roll = {}\n", cfg.rolls.left));
+    text.push_str(&format!("right_roll = {}\n", cfg.rolls.right));
+    text.push_str(&format!("most_used = {}\n", cfg.rolls.most_used));
+    text.push_str(&format!("images = {}\n", cfg.rolls.images));
+    text.push_str(&format!(
+        "roll_left_key = {}\n",
+        quote(&cfg.rolls.left_key.map(|c| c.text()).unwrap_or_default())
+    ));
+    text.push_str(&format!(
+        "roll_right_key = {}\n",
+        quote(&cfg.rolls.right_key.map(|c| c.text()).unwrap_or_default())
+    ));
+    text.push_str(&format!("tilt_left = \"{}\"\n", cfg.rolls.tilt_left.key()));
+    text.push_str(&format!("tilt_right = \"{}\"\n", cfg.rolls.tilt_right.key()));
+    text.push_str("\n[brain]\n");
+    text.push_str(&format!("enabled = {}\n", cfg.brain.enabled));
+    text.push_str(&format!("rolls = {}\n", strings(&cfg.brain.rolls)));
+    text.push_str(&format!("max_clips = {}\n", cfg.brain.max_clips));
+    text.push_str(&format!("include_images = {}\n", cfg.brain.include_images));
+    text.push_str(&format!("max_clip_chars = {}\n", cfg.brain.max_clip_chars));
+    text.push_str(&format!("max_image_kb = {}\n", cfg.brain.max_image_kb));
     for filter in &cfg.custom_filters {
         text.push_str("\n[[filters]]\n");
         text.push_str(&format!("name = {}\n", quote(&filter.name)));

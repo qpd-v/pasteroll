@@ -12,6 +12,7 @@
 //! - [`imgedit`] / [`imgfx`] / [`imgout`]  the Advanced Image Paste editor: adjustments, pixel operations, file formats
 
 pub mod bindings;
+pub mod brain;
 pub mod config;
 pub mod export;
 pub mod hdrop;
@@ -19,6 +20,7 @@ pub mod image;
 pub mod imgedit;
 pub mod imgfx;
 pub mod imgout;
+pub mod json;
 pub mod keyring;
 pub mod keystore;
 pub mod limits;
