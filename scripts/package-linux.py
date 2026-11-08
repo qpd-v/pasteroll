@@ -64,7 +64,7 @@ def main():
         # comparison requires a platform-independent marker in Linux archives.
         (archive_root / "install-source.txt").write_text(
             (ROOT / "packaging/linux/install-source.txt").read_text(), newline="\n")
-        copy(ROOT / "packaging/README-linux.txt", archive_root / "README.txt")
+        (archive_root / "README.txt").write_text((ROOT / "packaging/README-linux.txt").read_text().replace('@VERSION@', version))
         desktop = (ROOT / "packaging/linux/pasteroll.desktop").read_text()
         (archive_root / "pasteroll.desktop").write_text(desktop.replace("@BINDIR@", "/usr/local/bin"))
         for name in DOCS:
@@ -106,7 +106,7 @@ def main():
             copy(ROOT / f"crates/pasteroll-core/assets/logo-{size}.png", deb / f"usr/share/icons/hicolor/{size}x{size}/apps/pasteroll.png")
         for name in DOCS:
             copy(ROOT / name, deb / "usr/share/doc/pasteroll" / name)
-        copy(ROOT / "packaging/README-linux.txt", deb / "usr/share/doc/pasteroll/README.txt")
+        (deb / "usr/share/doc/pasteroll/README.txt").write_text((ROOT / "packaging/README-linux.txt").read_text().replace('@VERSION@', version))
         if args.with_gnome:
             (deb/'usr/share/doc/pasteroll/README.txt').write_text((ROOT/'packaging/README-linux-gnome.txt').read_text().replace('@VERSION@',version))
             copy(helper,deb/'usr/libexec/pasteroll-input',0o755)
@@ -141,7 +141,11 @@ def main():
         )
         if args.with_gnome:
             for name in ('postinst','prerm','postrm'):
-                copy(ROOT/'packaging/linux'/name,deb/'DEBIAN'/name,0o755)
+                # Windows checkouts may bring CRLF; a CRLF shebang makes dpkg
+                # unable to execute the maintainer script.
+                destination = deb/'DEBIAN'/name
+                destination.write_text((ROOT/'packaging/linux'/name).read_text(), newline='\n')
+                destination.chmod(0o755)
         deb_path = dist / f"pasteroll_{version}_amd64{flavor}.deb"
         env = dict(os.environ, SOURCE_DATE_EPOCH=str(epoch))
         run("dpkg-deb", "--root-owner-group", "-Zxz", "-z9", "--build", str(deb), str(deb_path), env=env, stdout=subprocess.DEVNULL)
