@@ -3,14 +3,13 @@
 Build in Linux or Ubuntu/WSL from the repository root:
 
 ```sh
-bash scripts/package-linux.sh
-python3 scripts/test-linux-packaging.py
+bash scripts/build-linux-candidates.sh
 ```
 
 Prerequisites are a recent Rust toolchain with `x86_64-unknown-linux-musl` already installed,
 `musl-tools`, Python 3 (3.11+ for the package tests), binutils, and `dpkg-deb`. The scripts never
-install tools or download dependencies. Cargo builds with `--locked --offline`. The generated files
-are `dist/pasteroll-0.1.0-beta.3-linux-x86_64.tar.gz` and `dist/pasteroll_0.1.0-beta.3_amd64.deb`.
+install tools or download dependencies. Cargo builds with `--locked --offline`. Both X11 and GNOME 46 candidates and SHA256SUMS are collected in `dist/linux/`. The X11 files
+are `dist/pasteroll-0.1.0-beta.19-linux-x86_64.tar.gz` and `dist/pasteroll_0.1.0-beta.19_amd64.deb`.
 
 The build uses `dpkg-deb` because it is a standard Debian/Ubuntu tool and needs no added Cargo
 dependency. It verifies the executable has no ELF interpreter or shared-library dependencies.
@@ -20,8 +19,8 @@ Build paths are remapped, archive owner names are omitted, and the Debian payloa
 ## Archive
 
 ```sh
-tar xzf pasteroll-0.1.0-beta.3-linux-x86_64.tar.gz
-cd pasteroll-0.1.0-beta.3-linux-x86_64
+tar xzf pasteroll-0.1.0-beta.19-linux-x86_64.tar.gz
+cd pasteroll-0.1.0-beta.19-linux-x86_64
 ./install.sh                      # per-user install using the app's existing installer
 sudo ./install.sh --system        # alternative: all users, under /usr/local
 ```
@@ -56,7 +55,7 @@ archive installer. To remove a portable copy, quit it and remove its folder.
 ## Debian / Ubuntu
 
 ```sh
-sudo dpkg -i pasteroll_0.1.0-beta.3_amd64.deb
+sudo dpkg -i pasteroll_0.1.0-beta.19_amd64.deb
 sudo dpkg -r pasteroll            # keeps all accounts' data
 ```
 
@@ -66,7 +65,7 @@ has no `Depends` field. Both removal and purge keep all user data. `Recommends: 
 describes optional local OCR and dialogs. `dpkg -i` makes no downloads; if you choose a different
 package-manager frontend, its handling of recommendations follows that frontend's settings.
 
-Debian metadata uses `0.1.0~beta.2`: Debian's `~` orders the beta before the stable `0.1.0`. The
+Debian metadata uses `0.1.0~beta.19`: Debian's `~` orders the beta before the stable `0.1.0`. The
 download filename retains the requested Cargo version. The maintainer field contains the project
 brand, with no private identity or invented contact address.
 
@@ -83,3 +82,10 @@ is available for filesystem staging; desktop entries still point to the final `/
 
 These checks do not replace a clean Ubuntu X11 desktop test, real system installation with sudo,
 tray/menu integration, optional OCR/dialog tools, or Phase 4 personal-string scans and checksums.
+
+## Repeatable validation
+
+`.github/workflows/linux.yml` builds both variants and runs Rust, packaging, isolated X11,
+and headless GNOME tests. Local desktop harnesses use synthetic profiles and private displays.
+These are beta release gates; no manual testing is required from the maintainer. GNOME remains
+experimental and restricted to GNOME 46. Publish only the verified artifacts from the intended commit.

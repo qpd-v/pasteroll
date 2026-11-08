@@ -10,15 +10,25 @@ please [report them](https://github.com/qpd-v/pasteroll/issues).
 
 | | Windows 10 / 11 | Linux (X11) |
 |---|---|---|
-| Download | [Setup EXE](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.18/pasteroll-0.1.0-beta.18-windows-x64-setup.exe) · [Portable ZIP](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.18/pasteroll-0.1.0-beta.18-windows-x64-portable.zip) | [Static archive](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/pasteroll-0.1.0-beta.4-linux-x86_64.tar.gz) · [Debian/Ubuntu .deb](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/pasteroll_0.1.0-beta.4_amd64.deb) |
+| Download | [Setup EXE](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.18/pasteroll-0.1.0-beta.18-windows-x64-setup.exe) Â· [Portable ZIP](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.18/pasteroll-0.1.0-beta.18-windows-x64-portable.zip) | [Static archive](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/pasteroll-0.1.0-beta.4-linux-x86_64.tar.gz) Â· [Debian/Ubuntu .deb](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/pasteroll_0.1.0-beta.4_amd64.deb) |
 | Tray icon | yes | StatusNotifier (KDE, GNOME with AppIndicator, Ubuntu) or XEmbed |
 | Wayland | n/a | experimental GNOME 46; separate packages and setup below |
 | macOS | not available | |
 
-Windows: [release notes and testing status](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.18) ·
+Windows: [release notes and testing status](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.18) Â·
 [SHA256SUMS](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.18/SHA256SUMS)
-Linux: [release notes and testing status](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.4) ·
+Linux: [release notes and testing status](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.4) Â·
 [SHA256SUMS](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/SHA256SUMS)
+
+
+## Linux catch-up candidate (this branch)
+
+The current Linux source targets feature parity with Windows beta.19 for X11 and experimental
+GNOME 46 Wayland: No Bloat, multi-paste, image editing, favorite tiles/colors, rolls, dragging,
+pinning open, and the local MCP agent brain. GNOME requires the matched protocol-4 companion.
+Build all four candidates with `bash scripts/build-linux-candidates.sh`; outputs and SHA256SUMS
+are in `dist/linux/`. These candidates have not been published; the download links above still
+point to the last published Linux release. See [catch-up validation](packaging/linux/CATCHUP.md).
 
 ## Beta.5 improvements (Windows only)
 
@@ -164,7 +174,7 @@ For portable use, extract `pasteroll-0.1.0-beta.18-windows-x64-portable.zip` and
 Its included `portable.txt` keeps application data in the adjacent `data` folder.
 
 > **"Windows protected your PC"**: the beta is **not code-signed yet**, so SmartScreen shows
-> this for new programs. Click **More info → Run anyway** after checking the checksum. Some
+> this for new programs. Click **More info â†’ Run anyway** after checking the checksum. Some
 > antivirus programs are also wary of anything that watches the keyboard and clipboard (which a
 > clipboard manager must); the source is here for you to read and build yourself.
 
@@ -195,7 +205,7 @@ The X11 backend does not provide full native Wayland support.
 | | |
 |---|---|
 | **Ctrl+Shift+middle-click** | open the carousel at the pointer |
-| mouse wheel / ↑ ↓ | move through clips |
+| mouse wheel / â†‘ â†“ | move through clips |
 | type | search |
 | Tab | choose a filter |
 | Enter, or click the target | paste |

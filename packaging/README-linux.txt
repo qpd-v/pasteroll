@@ -1,4 +1,4 @@
-Pasteroll for Linux (X11) - 0.1.0-beta.4
+Pasteroll for Linux (X11) - @VERSION@
 ========================================
 
 Pasteroll keeps a history of what you copy and lets you paste it again: scroll through
@@ -11,7 +11,7 @@ Requirements
   older XEmbed tray); the program works without one.
 
 Install (for your account, no root)
-  Extract pasteroll-0.1.0-beta.4-linux-x86_64.tar.gz, enter its folder, then run ./install.sh.
+  Extract pasteroll-@VERSION@-linux-x86_64.tar.gz, enter its folder, then run ./install.sh.
   This delegates to ./pasteroll install: ~/.local/bin, application menu entry and icon.
   Make sure ~/.local/bin is in your PATH. Start it from the menu or with:  pasteroll run
 
@@ -22,7 +22,7 @@ Install (all users, root required)
   Quit and restart running copies after an upgrade. Existing marked installs can be upgraded.
 
 Debian / Ubuntu package
-  sudo dpkg -i pasteroll_0.1.0-beta.4_amd64.deb
+  sudo dpkg -i pasteroll_@VERSION@_amd64.deb
   Installs /usr/bin/pasteroll, a menu entry, icons and licenses. No scripts run at install time.
   The binary is static and has no package dependencies. Optional recommendations are
   tesseract-ocr (local text extraction) and zenity (save dialogs); install them separately if wanted.
@@ -34,8 +34,10 @@ Use
   type                         search (file names too)
   Tab                          choose a filter (Text, Image, Document...)
   Enter                        paste the clip; double-click or drag first to paste only that part
-  Ctrl+P                       pin a clip      Delete   recycle a clip      Esc  close
-  Tray icon                    pause, settings, quit
+  Ctrl+F                       favorite a clip (Ctrl+P also works)      Delete   recycle a clip      Esc  close
+  Ctrl+K                       pin the carousel open
+  Ctrl+Left / Ctrl+Right        move between rolls
+  Tray icon                    history, settings, rolls, version, pause and quit
 
 Terminals
   Most terminals paste with Ctrl+Shift+V, xterm-family terminals with Shift+Insert; both
@@ -64,12 +66,17 @@ Remove
 
 Command line
   pasteroll status | config show | config set KEY VALUE | exclude PROGRAM | stop | autostart on|off
+  pasteroll brain on|off|status|add ROLL|remove ROLL | mcp | mcp-config
 
 License
   MIT or Apache-2.0, at your option (LICENSE-MIT, LICENSE-APACHE).
   Source and issues: https://github.com/qpd-v/pasteroll
 
-Beta.4 notes
-  Freehand OCR areas and copied-text history/refresh use the shared viewer.
-  OCR accuracy can be inconsistent; improvements are deferred. Linux tray/About
-  parity with Windows is deferred. Additional manual acceptance is not complete.
+Linux catch-up beta
+  Includes No Bloat, multi-paste, image editing, rolls, favorites, dragging,
+  pinning the carousel open and the optional local MCP agent brain.
+  Settings > Rolls / appearance manages rolls, bindings and display options.
+  Updates are installed using the archive installer or your package manager.
+  Automated tests use isolated desktops and synthetic data. Physical devices,
+  real login/lock/suspend and mixed-monitor configurations are not release gates.
+  Report bugs at https://github.com/qpd-v/pasteroll/issues.

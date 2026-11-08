@@ -1,10 +1,12 @@
 # Releasing Pasteroll
 
-Current version: **0.1.0-beta.18** (Windows only; Linux stays on **0.1.0-beta.4**), experimental
-prerelease. A Windows-only release uses `--windows-only` for checksums and verification, publishes
+Current source version: **0.1.0-beta.19** (Linux catch-up candidate; the published Windows
+release is **0.1.0-beta.18**), experimental prerelease. A Windows-only release uses
+`--windows-only` for checksums and verification, publishes
 just Setup, the portable ZIP and their SHA256SUMS, and leaves the Linux links on beta.4.
 Use a reviewed source commit and build all six packages fresh. Never select assets
-with a dist wildcard. There is no CI. The only network use in the program is the optional update
+with a dist wildcard. The Linux workflow builds and tests both Linux package families; Windows
+release checks remain local. The only network use in the program is the optional update
 check and "Download and install" (Windows), so every release also carries a signed update manifest:
 `python scripts/make-update-manifest.py` (before `checksums.py --windows-only`; it also writes
 `dist/update-latest.txt`, the "newest version" note, from the `## In short` section of the release
@@ -21,12 +23,14 @@ subject starts with `Update pointer`.
 The user approved this beta with further manual testing deferred. Record missing
 physical/helper/login/lock/suspend and clean-machine Windows UAC/startup/uninstall
 checks as NOT TESTED. Existing Pop mixed-display geometry acceptance is limited
-to the recorded setup. Linux OCR accuracy and tray/panel/About parity are deferred.
-Do not carry this exception forward to a later release without a new decision.
+to the recorded setup. Linux X11 and GNOME candidates use the automated suites in
+`.github/workflows/linux.yml` and `packaging/linux/CATCHUP.md`; physical GNOME helper
+devices, login/lock/suspend and mixed-DPI layouts remain NOT TESTED and are documented
+limitations, with user bug reports handled on GitHub.
 
 All five crate versions/path dependencies and Cargo.lock must agree. Public
 README/packaging text, notes and actual artifacts must agree. Match GNOME app and
-companion protocol 3; reload the companion after upgrades. Standard X11 and GNOME
+companion protocol 4; reload the companion after upgrades. Standard X11 and GNOME
 Debian packages are alternatives. Windows builds remain unsigned.
 
 ## Automated checks
@@ -54,11 +58,11 @@ Linux needs an existing Rust musl target, musl-gcc, binutils, dpkg-deb, Python 3
 and the GNU helper build prerequisites. Scripts never download missing tools.
 
 ```sh
-bash scripts/package-linux.sh
-python3 scripts/test-linux-packaging.py
-PASTEROLL_PACKAGE_OUTPUT="$PWD/dist" bash scripts/package-gnome.sh
-PASTEROLL_PACKAGE_OUTPUT="$PWD/dist" python3 scripts/test-gnome-packaging.py
+bash scripts/build-linux-candidates.sh
 ```
+
+This builds and checks the X11 and GNOME archives and Debian packages, runs both
+packaging suites, scans all four artifacts and writes `dist/linux/SHA256SUMS`.
 
 Use fresh output/build directories or clean only the relevant app release outputs
 before building. Windows-managed worktrees built in WSL require SOURCE_DATE_EPOCH

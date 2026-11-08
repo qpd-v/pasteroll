@@ -49,8 +49,13 @@ Testing status and limitations
   Mixed-scale display/viewer/editor checks passed on one physical Pop!_OS setup.
   Further manual acceptance, including helper input, lock/login and suspend, is
   deferred. GNOME remains experimental and supports version 46 only.
-  App and companion must both use protocol 3; reload the companion after upgrade.
-  OCR accuracy improvements and Linux tray/panel/About parity are deferred.
+  App and companion must both use protocol 4; reload the companion after upgrade.
+  This beta includes rolls, favorites, pin-open, dragging, No Bloat, multi-paste,
+  image editing and the optional local MCP agent brain. The panel offers settings,
+  rolls/appearance and version information. OCR uses optional local Tesseract.
+  Automated checks use isolated desktops and synthetic data; physical-device,
+  login/lock/suspend and mixed-monitor acceptance is not required for this beta.
+  Report bugs at https://github.com/qpd-v/pasteroll/issues.
 
 License: MIT or Apache-2.0, at your option. See the included licenses/notices.
 Source: https://github.com/qpd-v/pasteroll

@@ -1,0 +1,42 @@
+name: Linux
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+jobs:
+  test-and-package:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build and isolated desktop test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools binutils libevdev-dev xvfb xdotool xterm xclip x11-apps imagemagick dbus-x11 gnome-shell gir1.2-gtk-4.0 python3-gi bubblewrap
+          rustup target add x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - name: Fetch locked dependencies
+        run: cargo fetch --locked
+      - name: Rust tests
+        run: cargo test --locked --offline -p pasteroll-core -p pasteroll-render -p pasteroll-app -p pasteroll-linux
+      - name: Build and verify both package variants
+        run: bash scripts/build-linux-candidates.sh
+      - name: X11 desktop checks
+        run: |
+          bash scripts/test-linux-x11.sh
+          bash scripts/test-linux-x11.sh multi
+      - name: GNOME native desktop checks
+        run: |
+          export PASTEROLL_TEST_APP_BINARY="$PWD/target/x86_64-unknown-linux-musl/release/pasteroll"
+          bash scripts/wayland-spike/run-rootless.sh --phase3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-candidates
+          path: dist/linux/
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-test-evidence
+          path: |
+            target-dev/linux-x11-smoke/
+            target-dev/linux-x11-multi/
+            target-dev/wayland-phase3/
