@@ -41,7 +41,7 @@ const DOWNLOAD_TIME: Duration = Duration::from_secs(300);
 const SMALL_TIME: Duration = Duration::from_secs(45);
 const MAX_HOPS: usize = 3;
 /// A cached gateway error can stick to one exact URL. Restarting with a new query key avoids it.
-const MAX_TRANSIENT_RETRIES: usize = 2;
+const MAX_TRANSIENT_RETRIES: usize = 4;
 
 const FILE_HEADERS: &str = "Accept: application/octet-stream";
 
@@ -202,6 +202,7 @@ fn download_within(
                 }
                 transient_retries += 1;
                 hops = 0;
+                std::thread::sleep(Duration::from_millis(if cfg!(test) { 1 } else { 200 }));
                 let separator = if original.contains('?') { '&' } else { '?' };
                 current = format!("{original}{separator}pasteroll_retry={}", started.elapsed().as_nanos());
             }
