@@ -1783,7 +1783,11 @@ impl Controller {
         match m.kind {
             MouseKind::Down | MouseKind::DoubleClick => {
                 let hit = self.renderer.hit_test(vm, size, scale, x, y);
-                // Ctrl+click chooses a clip, a click on the right-click menu acts on it
+                // The image modifier on a picture opens the editor from the carousel itself.
+                if self.image_clip_opens_editor(p, hit, vm, now) {
+                    return;
+                }
+                // The same modifier chooses text and file clips for a multiple paste.
                 if self.multi_mouse(p, m, hit, scale, now) {
                     return;
                 }
@@ -1873,6 +1877,37 @@ impl Controller {
             }
             MouseKind::Leave => {}
         }
+    }
+
+    /// Ctrl+click (or the configured image key) on a picture row opens Advanced Image Paste.
+    /// The picture is made current first, so the editor and its card are the clip that was clicked.
+    fn image_clip_opens_editor(&mut self, p: &mut dyn Platform, hit: Hit, vm: &ViewModel, now: u64) -> bool {
+        if self.open.is_none() || self.editor.is_some() || self.viewer.is_some() {
+            return false;
+        }
+        if !p.modifiers_now().has(self.advanced_modifier) {
+            return false;
+        }
+        let (ids, active) = self.row_ids();
+        let row = match hit {
+            Hit::Row(i) => i,
+            Hit::Body { .. } => active,
+            _ => return false,
+        };
+        let Some(id) = ids.get(row).copied() else { return false };
+        if self.store.borrow().kind(id).ok().flatten() != Some(Kind::Image) {
+            return false;
+        }
+        self.activate_row(p, row, vm);
+        let dest = self.open.as_ref().and_then(|o| {
+            if o.kept || o.browse_only {
+                p.foreground()
+            } else {
+                Some(o.target.clone())
+            }
+        });
+        self.open_editor(p, now, dest);
+        true
     }
 
     fn activate_row(&mut self, p: &mut dyn Platform, i: usize, vm: &ViewModel) {

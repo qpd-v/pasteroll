@@ -292,7 +292,7 @@ impl Controller {
         let Some(o) = self.open.as_ref() else { return };
         let picks = o.ui.picks.clone();
         if picks.len() < 2 {
-            self.flash("Choose two or more clips first (Ctrl+click, or Shift+Down)", now);
+            self.flash("Choose two or more text clips first (Ctrl+click text, or Shift+Down)", now);
             return;
         }
         let pieces = match self.load_pieces(&picks, p.line_break()) {

@@ -5,18 +5,18 @@ clip, press **Ctrl+Shift+middle-click**, scroll through your history right where
 and paste the whole clip, or select just a part of it and paste only that.
 
 **Status: public beta.** Windows and Linux (X11 and experimental GNOME 46 Wayland) are at
-`0.1.0-beta.19`. It works and is tested, but it is young. Expect rough edges and
+`0.1.0-beta.20`. It works and is tested, but it is young. Expect rough edges and
 please [report them](https://github.com/qpd-v/pasteroll/issues).
 
 | | Windows 10 / 11 | Linux (X11) |
 |---|---|---|
-| Download | [Setup EXE](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.19/pasteroll-0.1.0-beta.19-windows-x64-setup.exe) Â· [Portable ZIP](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.19/pasteroll-0.1.0-beta.19-windows-x64-portable.zip) | [Static archive](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.19/pasteroll-0.1.0-beta.19-linux-x86_64.tar.gz) Â· [Debian/Ubuntu .deb](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.19/pasteroll_0.1.0-beta.19_amd64.deb) |
+| Download | [Setup EXE](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.20/pasteroll-0.1.0-beta.20-windows-x64-setup.exe) Â· [Portable ZIP](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.20/pasteroll-0.1.0-beta.20-windows-x64-portable.zip) | [Static archive](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.20/pasteroll-0.1.0-beta.20-linux-x86_64.tar.gz) Â· [Debian/Ubuntu .deb](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.20/pasteroll_0.1.0-beta.20_amd64.deb) |
 | Tray icon | yes | StatusNotifier (KDE, GNOME with AppIndicator, Ubuntu) or XEmbed |
 | Wayland | n/a | experimental GNOME 46; separate packages and setup below |
 | macOS | not available | |
 
-[Release notes and testing status](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.19) ·
-[one SHA256SUMS for all six packages](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.19/SHA256SUMS)
+[Release notes and testing status](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.20) ·
+[one SHA256SUMS for all six packages](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.20/SHA256SUMS)
 
 
 ## Beta.19 improvements
@@ -47,8 +47,8 @@ checks, is deferred; this remains experimental. Automated
 headless sessions and synthetic kernel input passed; treat this backend as experimental.
 Other GNOME versions and other Wayland compositors are not supported.
 
-- [GNOME 46 experimental archive](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.19/pasteroll-0.1.0-beta.19-linux-x86_64-gnome-development.tar.gz)
-- [GNOME 46 experimental Debian/Ubuntu package](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.19/pasteroll_0.1.0-beta.19_amd64-gnome-development.deb)
+- [GNOME 46 experimental archive](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.20/pasteroll-0.1.0-beta.20-linux-x86_64-gnome-development.tar.gz)
+- [GNOME 46 experimental Debian/Ubuntu package](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.20/pasteroll_0.1.0-beta.20_amd64-gnome-development.deb)
 
 The X11 and GNOME Debian packages are alternatives, not coinstallable. The GNOME
 helper stays disabled after a fresh package install. The development suffix identifies
@@ -103,17 +103,19 @@ the experimental packages; it does not indicate broader Wayland compatibility.
   chooses clips, Paste pastes them, Ctrl+click Paste opens the options card). There is no typing into
   the search box, and no expanded viewer or image editor, while it is pinned open. Press the open
   gesture to bring a fresh carousel to the pointer instead.
-- **Advanced Image Paste**: Ctrl+click the desktop or any window (the key is a setting) with an
-  image chosen and the picture grows into an editor instead of being saved or pasted at once:
+- **Advanced Image Paste**: Ctrl+click an image clip in the carousel to open it in the editor, or
+  hold Ctrl (the key is a setting) while clicking the desktop or any window with an image chosen.
+  The picture grows into an editor instead of being saved or pasted at once:
   outline, resize, crop, rounded corners, drop shadow, background removal or fill, padding, rotate
   and flip, drawing and writing on the picture (pen, brush, circle, arrow, text), PNG / JPG / WebP / BMP with quality, a file name and folder of your choice (Settings sets
   the folder pictures go to unless you pick another; it starts as the Desktop), undo and
   redo, and presets you can reuse. In a window you choose what is pasted: the picture, the saved
   file's path, or its name. A plain click still saves (desktop) or pastes (window) the picture
   immediately. The clip itself is never changed.
-- **Several clips at once** (Complete mode): Ctrl+click clips in the list to choose them (Ctrl+Shift+click
-  chooses everything from the last one you chose), or press the **Multi-paste** button beside the filter
-  and simply click each clip (Shift+click for a range; press the button again to go back to normal
+- **Several clips at once** (Complete mode): Ctrl+click text and file clips in the list to choose them
+  (Ctrl+Shift+click chooses everything from the last one you chose). Ctrl+clicking an image opens
+  Advanced Image Paste instead. The **Multi-paste** button beside the filter makes a plain click
+  choose any clip (Shift+click for a range; press the button again to go back to normal clicks).
   clicks). Ctrl+M turns Multi-paste on from the keyboard; then hold Shift and press Down (or Up) to
   choose the clip shown and the ones you walk to (walking back takes them out again), or hold Ctrl and
   press the arrows to add each clip you land on, Space chooses the clip shown, and Ctrl+A chooses
@@ -153,13 +155,13 @@ the experimental packages; it does not indicate broader Wayland compatibility.
 
 ### Windows
 
-1. Download `pasteroll-0.1.0-beta.19-windows-x64-setup.exe` and `SHA256SUMS` from the
-   [beta.19 release](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.19) and
+1. Download `pasteroll-0.1.0-beta.20-windows-x64-setup.exe` and `SHA256SUMS` from the
+   [beta.19 release](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.20) and
    [verify the checksum](#verify-your-download).
 2. Run the setup wizard. **Only for me** is the default and needs no administrator rights;
    **For all users** needs UAC. Start menu is on by default; desktop shortcut and autostart are off.
 
-For portable use, extract `pasteroll-0.1.0-beta.19-windows-x64-portable.zip` and run `pasteroll.exe`.
+For portable use, extract `pasteroll-0.1.0-beta.20-windows-x64-portable.zip` and run `pasteroll.exe`.
 Its included `portable.txt` keeps application data in the adjacent `data` folder.
 
 > **"Windows protected your PC"**: the beta is **not code-signed yet**, so SmartScreen shows
@@ -170,14 +172,14 @@ Its included `portable.txt` keeps application data in the adjacent `data` folder
 ### Linux
 
 ```sh
-tar xzf pasteroll-0.1.0-beta.19-linux-x86_64.tar.gz
-cd pasteroll-0.1.0-beta.19-linux-x86_64
+tar xzf pasteroll-0.1.0-beta.20-linux-x86_64.tar.gz
+cd pasteroll-0.1.0-beta.20-linux-x86_64
 ./install.sh              # per-user: ~/.local/bin, menu entry and icon
 pasteroll run
 ```
 
 For all users, use `sudo ./install.sh --system`. On Debian/Ubuntu, an alternative is
-`sudo dpkg -i pasteroll_0.1.0-beta.19_amd64.deb`. Neither installer enables autostart.
+`sudo dpkg -i pasteroll_0.1.0-beta.20_amd64.deb`. Neither installer enables autostart.
 Remove an archive install with `./install.sh --uninstall` (add `--system` and sudo for a system
 install), or a Debian package with `sudo dpkg -r pasteroll`. These operations keep history/settings.
 The app's own `install` and `uninstall` commands manage per-user installs only.
@@ -226,13 +228,12 @@ In the expanded viewer:
 
 ### Advanced Image Paste
 
-With an image chosen in the carousel, a click on the desktop saves it as a PNG right away, and a
-click in a window pastes it. Hold **Ctrl** while you click (Settings lets you pick Shift or Alt
-instead) and the picture opens in the editor, on the desktop or in any window. (The click also
-reaches the window you click, so a Ctrl+click can do what it normally does there, such as follow a
-link; pick another key in Settings if that gets in the way.) The settings are grouped in the panel on the right, one section open at a time; the
-switch on a section's row turns the effect on or off, and the preview on the left follows every
-change.
+With an image in the carousel, hold **Ctrl** and click the image clip to open it in Advanced Image
+Paste. A plain click on the desktop saves it as a PNG right away, and a plain click in a window
+pastes it. To edit while choosing a destination, hold **Ctrl** and click the desktop or any window
+(Settings lets you pick Shift or Alt instead). The click also reaches the window you click, so a
+Ctrl+click can do what it normally does there, such as follow a link; pick another key in Settings
+if that gets in the way.
 
 | | |
 |---|---|
@@ -340,7 +341,7 @@ Each release has a `SHA256SUMS` file.
 
 ```powershell
 # Windows
-Get-FileHash .\pasteroll-0.1.0-beta.19-windows-x64-setup.exe -Algorithm SHA256
+Get-FileHash .\pasteroll-0.1.0-beta.20-windows-x64-setup.exe -Algorithm SHA256
 ```
 ```sh
 # Linux

@@ -78,6 +78,25 @@ fn ctrl_clicking_the_clip_that_is_shown_chooses_it_too() {
 }
 
 #[test]
+fn ctrl_click_on_an_image_clip_opens_the_image_editor() {
+    let (mut h, _) = H::desktop_session(&[Clip::Text("text"), Clip::Color(10)]);
+    h.open();
+    h.click_row(0, CTRL);
+    assert!(h.c.editor_is_open(), "an image clip opens Advanced Image Paste");
+    assert!(h.chosen().is_empty(), "the image is not chosen for text multi-paste");
+    assert!(h.c.is_open(), "the carousel stays behind the editor");
+}
+
+#[test]
+fn ctrl_click_on_an_image_row_makes_it_current_before_opening_the_editor() {
+    let (mut h, _) = H::desktop_session(&[Clip::Color(10), Clip::Text("text")]);
+    h.open();
+    h.click_row(1, CTRL);
+    assert!(h.c.editor_is_open(), "the image row opens Advanced Image Paste");
+    assert!(h.chosen().is_empty());
+}
+
+#[test]
 fn a_plain_click_still_moves_to_the_clip_and_keeps_the_choice() {
     let mut h = four();
     h.open();
@@ -166,8 +185,9 @@ fn a_files_clip_gives_one_path_per_line() {
 fn pictures_are_left_out_of_the_text() {
     let mut h = H::new(&[Clip::Text("first"), Clip::Image, Clip::Text("last")]);
     let g = h.open();
+    h.click_multi_button();
     for i in [2, 1, 0] {
-        h.click_row(i, CTRL);
+        h.click_row(i, Modifiers::default());
     }
     h.click_to_paste(g);
     assert_eq!(h.pasted_texts(), vec!["first\nlast"]);
@@ -178,8 +198,9 @@ fn pictures_are_left_out_of_the_text() {
 fn only_pictures_chosen_pastes_nothing_and_says_why() {
     let mut h = H::new(&[Clip::Color(10), Clip::Color(200), Clip::Text("t")]);
     let g = h.open();
-    h.click_row(1, CTRL);
-    h.click_row(2, CTRL);
+    h.click_multi_button();
+    h.click_row(1, Modifiers::default());
+    h.click_row(2, Modifiers::default());
     h.enter(g);
     assert!(h.p.clipboard.is_empty() && h.p.pastes.is_empty());
     assert!(h.c.is_open(), "still there to choose again");
@@ -190,7 +211,8 @@ fn only_pictures_chosen_pastes_nothing_and_says_why() {
 fn one_chosen_picture_is_pasted_as_a_picture() {
     let mut h = H::new(&[Clip::Text("t"), Clip::Color(10)]);
     let g = h.open();
-    h.click_row(0, CTRL);
+    h.click_multi_button();
+    h.click_row(0, Modifiers::default());
     h.click_to_paste(g);
     assert!(matches!(h.p.clipboard.as_slice(), [Payload::Image(_)]));
     assert_eq!(h.p.pastes.len(), 1);

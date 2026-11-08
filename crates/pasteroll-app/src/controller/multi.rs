@@ -1,7 +1,7 @@
 //! Choosing several clips in the Complete carousel and pasting or copying them together.
 //!
-//! Ctrl+click chooses or un-chooses a clip, Ctrl+Shift+click chooses everything from the last clip
-//! chosen to the one clicked. The Multi-paste button switches on the same thing for plain clicks
+//! Ctrl+click chooses or un-chooses a text or file clip; image clips open Advanced Image Paste.
+//! Ctrl+Shift+click chooses everything from the last clip chosen to the one clicked. The Multi-paste button switches on the same thing for plain clicks
 //! (Shift+click for a range). The chosen text clips are joined, one per line, in the order they were
 //! chosen. Clicking where the text should go pastes it, Ctrl+C (or Copy in the right-click menu)
 //! puts it on the clipboard instead. Pictures cannot be joined into text and are left out. No Bloat
@@ -93,7 +93,7 @@ pub(super) fn footer_text(n: usize, multi_on: bool, kept: bool) -> String {
     match (n, multi_on) {
         (0, _) => "Multi-paste: click clips, or hold Shift and press Down. Ctrl+A chooses all.".to_owned(),
         (1, true) => "1 chosen. Click or Shift+Down for more. Click where to paste.".to_owned(),
-        (1, false) => "1 chosen. Ctrl+click more. Click where to paste, Ctrl+C copies.".to_owned(),
+        (1, false) => "1 chosen. Ctrl+click text or files. Click where to paste, Ctrl+C copies.".to_owned(),
         _ => format!("{n} chosen. Click where to paste (hold Ctrl for options), Ctrl+C copies."),
     }
 }

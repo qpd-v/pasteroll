@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0-beta.20 (Windows and Linux)
+
+- **Ctrl+click an image clip to edit it.** In Complete mode, Ctrl+clicking a picture row or the large
+  picture card makes it current and opens Advanced Image Paste. The configured image modifier applies.
+  Ctrl+clicking a text or file clip still chooses it for Multi-paste; pictures remain excluded from
+  joined text. The one-clip hint and join-card error now describe that split.
+- **Transient update failures retry.** Windows updater downloads retry HTTP 502, 503 and 504 up to four
+  times with a fresh query key and a short pause. Signature and checksum verification are unchanged.
+
 ## 0.1.0-beta.19 (Windows and Linux)
 
 - **Agent brain (MCP).** A local, read-only MCP server, `pasteroll mcp`, lets Claude Code, Codex and
