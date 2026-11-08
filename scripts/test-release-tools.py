@@ -106,13 +106,13 @@ class ReleaseTools(unittest.TestCase):
                 list(scan_binary.payloads(gzip.compress(b"x" * 128), "fixture", [0]))
         self.assertEqual(self.scan(b"!<arch>\nbroken").returncode, 2)
 
-    def test_manifest_contains_exactly_four_current_files_and_ignores_stale_outputs(self):
+    def test_manifest_contains_exactly_five_current_files_and_ignores_stale_outputs(self):
         names = artifact_names("0.1.0-beta.2")
         for index, name in enumerate(names):
             (self.temp / name).write_bytes(f"fixture {index}".encode())
         (self.temp / "pasteroll-windows-x64.zip").write_bytes(b"stale archive")
         content = write_checksums(self.temp, names)
-        self.assertEqual(len(content.splitlines()), 4)
+        self.assertEqual(len(content.splitlines()), 5)
         self.assertNotIn("  pasteroll-windows-x64.zip", content)
         verify_checksums(self.temp, names)
         (self.temp / names[0]).write_bytes(b"tampered")
@@ -128,7 +128,7 @@ class ReleaseTools(unittest.TestCase):
 
     def test_gnome_manifest_requires_both_optional_packages(self):
         names = artifact_names("0.1.0-beta.3", with_gnome=True)
-        self.assertEqual(len(names), 6)
+        self.assertEqual(len(names), 7)
         for name in names[:-1]:
             (self.temp / name).write_bytes(b"fixture")
         with self.assertRaises(ValueError):

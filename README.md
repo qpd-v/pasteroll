@@ -4,38 +4,27 @@ A clipboard history you can scroll with the mouse wheel. Copy as usual; when you
 clip, press **Ctrl+Shift+middle-click**, scroll through your history right where you are working,
 and paste the whole clip, or select just a part of it and paste only that.
 
-**Status: public beta.** Windows is at `0.1.0-beta.18`; Linux is still at `0.1.0-beta.4` and
-catches up in a later release. It works and is tested, but it is young. Expect rough edges and
+**Status: public beta.** Windows and Linux (X11 and experimental GNOME 46 Wayland) are at
+`0.1.0-beta.19`. It works and is tested, but it is young. Expect rough edges and
 please [report them](https://github.com/qpd-v/pasteroll/issues).
 
 | | Windows 10 / 11 | Linux (X11) |
 |---|---|---|
-| Download | [Setup EXE](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.18/pasteroll-0.1.0-beta.18-windows-x64-setup.exe) Â· [Portable ZIP](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.18/pasteroll-0.1.0-beta.18-windows-x64-portable.zip) | [Static archive](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/pasteroll-0.1.0-beta.4-linux-x86_64.tar.gz) Â· [Debian/Ubuntu .deb](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/pasteroll_0.1.0-beta.4_amd64.deb) |
+| Download | [Setup EXE](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.19/pasteroll-0.1.0-beta.19-windows-x64-setup.exe) Â· [Portable ZIP](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.19/pasteroll-0.1.0-beta.19-windows-x64-portable.zip) | [Static archive](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.19/pasteroll-0.1.0-beta.19-linux-x86_64.tar.gz) Â· [Debian/Ubuntu .deb](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.19/pasteroll_0.1.0-beta.19_amd64.deb) |
 | Tray icon | yes | StatusNotifier (KDE, GNOME with AppIndicator, Ubuntu) or XEmbed |
 | Wayland | n/a | experimental GNOME 46; separate packages and setup below |
 | macOS | not available | |
 
-Windows: [release notes and testing status](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.18) Â·
-[SHA256SUMS](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.18/SHA256SUMS)
-Linux: [release notes and testing status](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.4) Â·
-[SHA256SUMS](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/SHA256SUMS)
+[Release notes and testing status](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.19) ·
+[one SHA256SUMS for all six packages](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.19/SHA256SUMS)
 
 
-## Linux catch-up candidate (this branch)
+## Beta.19 improvements
 
-The current Linux source targets feature parity with Windows beta.19 for X11 and experimental
-GNOME 46 Wayland: No Bloat, multi-paste, image editing, favorite tiles/colors, rolls, dragging,
-pinning open, and the local MCP agent brain. GNOME requires the matched protocol-4 companion.
-Build all four candidates with `bash scripts/build-linux-candidates.sh`; outputs and SHA256SUMS
-are in `dist/linux/`. These candidates have not been published; the download links above still
-point to the last published Linux release. See [catch-up validation](packaging/linux/CATCHUP.md).
-
-## Beta.5 improvements (Windows only)
-
-A *No Bloat* look that shows only the current clip (every feature still works and its controls
-appear when you use them), switched from the tray menu or Settings. Advanced Image Paste now works
-on any window, not only the desktop, and can paste the edited picture, its file's path or its
-file name. Linux keeps beta.4 until its catch-up release.
+The **Agent brain (MCP)** is now on Windows and Linux. Linux also catches up from beta.4: the
+*No Bloat* look, multi-paste, the image editor, favorite tiles and colours, rolls, dragging the
+carousel, pinning it open and the agent brain are in the X11 and experimental GNOME 46 Wayland
+packages. GNOME needs the matched protocol-4 companion.
 
 ## Beta.4 improvements
 
@@ -44,12 +33,12 @@ for history and double click for Settings. Both platforms include freehand OCR a
 in the regular expanded image viewer, copied viewer text in history, and immediate
 carousel refresh when returning from the viewer. The original image stays unchanged.
 GNOME 46 gets corrected mixed-scale monitor geometry and full-resolution viewer
-transfers. Linux tray/panel/About interaction parity is deferred to the next version.
+transfers. Linux has tray, panel and About controls in beta.19.
 Linux OCR accuracy remains inconsistent; recognition improvements are deferred too.
 
 ## Experimental GNOME 46 Wayland support
 
-Native GNOME 46 Wayland support uses a matched protocol-3 Shell companion.
+Native GNOME 46 Wayland support uses a matched protocol-4 Shell companion.
 Ctrl+Shift+middle-click requires the optional administrator-enabled host input helper;
 explicit keyboard mode uses Ctrl+Shift+Space. See [GNOME setup](extensions/INPUT_HELPER.md).
 **Mixed-scale display/viewer/editor checks passed on one Pop!_OS GNOME 46 setup.**
@@ -58,8 +47,8 @@ checks, is deferred; this remains experimental. Automated
 headless sessions and synthetic kernel input passed; treat this backend as experimental.
 Other GNOME versions and other Wayland compositors are not supported.
 
-- [GNOME 46 experimental archive](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/pasteroll-0.1.0-beta.4-linux-x86_64-gnome-development.tar.gz)
-- [GNOME 46 experimental Debian/Ubuntu package](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.4/pasteroll_0.1.0-beta.4_amd64-gnome-development.deb)
+- [GNOME 46 experimental archive](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.19/pasteroll-0.1.0-beta.19-linux-x86_64-gnome-development.tar.gz)
+- [GNOME 46 experimental Debian/Ubuntu package](https://github.com/qpd-v/pasteroll/releases/download/v0.1.0-beta.19/pasteroll_0.1.0-beta.19_amd64-gnome-development.deb)
 
 The X11 and GNOME Debian packages are alternatives, not coinstallable. The GNOME
 helper stays disabled after a fresh package install. The development suffix identifies
@@ -69,7 +58,7 @@ the experimental packages; it does not indicate broader Wayland compatibility.
 
 - **Two looks**: *Complete* (everything on show) or *No Bloat* (just the current clip, in a
   smaller window; every feature still works from the keyboard and its controls appear when you
-  use them). Switch from the tray menu or Settings. Windows only for now.
+  use them). Switch from the tray menu or Settings.
 - **Scroll your history** with the mouse wheel or arrow keys; the carousel opens at the pointer.
 - **Search as you type** (file names too) and filter by Text, Document, Image, Video, Audio,
   Compressed, Favorites, or filters you define.
@@ -82,10 +71,10 @@ the experimental packages; it does not indicate broader Wayland compatibility.
   the list (a picture's tile is the picture cropped to a square; text, files, video and audio get a
   symbol). Click a tile to paste it; rest the pointer on it for a second to see the whole clip in a
   popup that follows the pointer; right-click to paste, remove it from favorites or colour it. The
-  colours are kept in `pin-colors.txt` in the data folder. Windows only for now.
+  colours are kept in `pin-colors.txt` in the data folder.
 - **Move the carousel**: press on an empty part of it (the margins and the gaps between things) and
   drag it anywhere on the screen. Clicking elsewhere still pastes there and closes it, as usual.
-  Windows only for now.
+
 - **Rolls**: separate collections of clips that you roll through left and right, with a slide
   between them, the way you roll through clips. The main roll is your history and new copies always
   land there. Two rolls are built in, **LEFT** and **RIGHT**, one on each side of Main (Settings can
@@ -100,20 +89,20 @@ the experimental packages; it does not indicate broader Wayland compatibility.
   sideways clicks of a tilt wheel (Logitech's thumb wheel, a tilting scroll wheel); Settings lets you
   choose the keys and what each sideways click does. Search, filters, choosing and pasting work in
   every roll. Clips in a custom roll are not removed by the limits, like favorites. A pinned-open
-  carousel rolls with the tilt wheel over it. Windows only for now.
+  carousel rolls with the tilt wheel over it.
 - **Agent brain (MCP)**: a local, read-only MCP server (`pasteroll mcp`) lets Claude Code, Codex and
   OpenCode read the rolls you choose. Turn it on with `pasteroll brain on`, share rolls with
   `pasteroll brain add Work`, and print the three harness entries with `pasteroll mcp-config`. It is
   part of the same program (no separate download), uses no port and sends nothing itself: each
   harness starts its own copy against the same encrypted history. Images are off by default.
-  Windows only for now.
+
 - **Pin it open**: the pin button in the search bar (or Ctrl+K) keeps the carousel on top of the other
   windows while you use them. The keyboard and the wheel go back to the window you are using; the wheel
   over the carousel turns it, the bar's Paste button and the favorite tiles paste into the window that
   is in front, and the pin button closes it. Multi-paste works with the mouse (the Multi-paste button
   chooses clips, Paste pastes them, Ctrl+click Paste opens the options card). There is no typing into
   the search box, and no expanded viewer or image editor, while it is pinned open. Press the open
-  gesture to bring a fresh carousel to the pointer instead. Windows only for now.
+  gesture to bring a fresh carousel to the pointer instead.
 - **Advanced Image Paste**: Ctrl+click the desktop or any window (the key is a setting) with an
   image chosen and the picture grows into an editor instead of being saved or pasted at once:
   outline, resize, crop, rounded corners, drop shadow, background removal or fill, padding, rotate
@@ -164,13 +153,13 @@ the experimental packages; it does not indicate broader Wayland compatibility.
 
 ### Windows
 
-1. Download `pasteroll-0.1.0-beta.18-windows-x64-setup.exe` and `SHA256SUMS` from the
-   [beta.18 release](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.18) and
+1. Download `pasteroll-0.1.0-beta.19-windows-x64-setup.exe` and `SHA256SUMS` from the
+   [beta.19 release](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.19) and
    [verify the checksum](#verify-your-download).
 2. Run the setup wizard. **Only for me** is the default and needs no administrator rights;
    **For all users** needs UAC. Start menu is on by default; desktop shortcut and autostart are off.
 
-For portable use, extract `pasteroll-0.1.0-beta.18-windows-x64-portable.zip` and run `pasteroll.exe`.
+For portable use, extract `pasteroll-0.1.0-beta.19-windows-x64-portable.zip` and run `pasteroll.exe`.
 Its included `portable.txt` keeps application data in the adjacent `data` folder.
 
 > **"Windows protected your PC"**: the beta is **not code-signed yet**, so SmartScreen shows
@@ -181,14 +170,14 @@ Its included `portable.txt` keeps application data in the adjacent `data` folder
 ### Linux
 
 ```sh
-tar xzf pasteroll-0.1.0-beta.4-linux-x86_64.tar.gz
-cd pasteroll-0.1.0-beta.4-linux-x86_64
+tar xzf pasteroll-0.1.0-beta.19-linux-x86_64.tar.gz
+cd pasteroll-0.1.0-beta.19-linux-x86_64
 ./install.sh              # per-user: ~/.local/bin, menu entry and icon
 pasteroll run
 ```
 
 For all users, use `sudo ./install.sh --system`. On Debian/Ubuntu, an alternative is
-`sudo dpkg -i pasteroll_0.1.0-beta.4_amd64.deb`. Neither installer enables autostart.
+`sudo dpkg -i pasteroll_0.1.0-beta.19_amd64.deb`. Neither installer enables autostart.
 Remove an archive install with `./install.sh --uninstall` (add `--system` and sudo for a system
 install), or a Debian package with `sudo dpkg -r pasteroll`. These operations keep history/settings.
 The app's own `install` and `uninstall` commands manage per-user installs only.
@@ -351,7 +340,7 @@ Each release has a `SHA256SUMS` file.
 
 ```powershell
 # Windows
-Get-FileHash .\pasteroll-0.1.0-beta.18-windows-x64-setup.exe -Algorithm SHA256
+Get-FileHash .\pasteroll-0.1.0-beta.19-windows-x64-setup.exe -Algorithm SHA256
 ```
 ```sh
 # Linux

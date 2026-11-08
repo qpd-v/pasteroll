@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0-beta.19 (Windows only)
+## 0.1.0-beta.19 (Windows and Linux)
 
 - **Agent brain (MCP).** A local, read-only MCP server, `pasteroll mcp`, lets Claude Code, Codex and
   OpenCode read the rolls you choose. It is part of the same program: no companion download, no
@@ -12,7 +12,13 @@
   `brain_search` and `brain_get`; it has no tool that writes, copies, pastes or deletes. Text and
   file paths are capped, pictures are off unless `include_images` is enabled, and the brain is off
   by default. When a harness reads a clip, that harness may send it to its model provider; Pasteroll
-  itself sends nothing. Windows only for now.
+  itself sends nothing.
+
+- **Linux catch-up.** X11 and experimental GNOME 46 Wayland now include No Bloat, multi-paste,
+  the image editor, favorite tiles and colours, rolls, dragging the carousel, pinning it open,
+  the Rolls / appearance settings page and the local agent brain. An existing beta.4 history,
+  key and settings are read without conversion. Linux packages update by hand.
+- **GNOME bridge protocol 4.** The app and its Shell companion must be upgraded together.
 
 ## 0.1.0-beta.18 (Windows only)
 
@@ -128,7 +134,7 @@
   (Shift+click for a range), then click where to paste. It starts off each time Pasteroll opens, and is
   not in No Bloat.
 
-## Linux, not released yet (Linux is still on beta.4)
+## Linux, included in 0.1.0-beta.19
 
 - The picture folder setting and choosing several clips (Ctrl+click, Ctrl+Shift+click, Ctrl+C, right-click
   Copy) are in the Linux code and pass an isolated X11 test (a private Xvfb screen under WSL). Not tried

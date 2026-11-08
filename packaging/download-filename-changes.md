@@ -1,14 +1,6 @@
-# Beta.4 download filenames
+# Beta.19 download filenames
 
-Beta.18 is a Windows-only release: tag v0.1.0-beta.18 carries only Windows files (Setup, portable ZIP, program file, update manifest and signature) and a
-SHA256SUMS that covers the three Windows packages. The X11 and GNOME downloads below stay on v0.1.0-beta.4.
-
-Use release tag v0.1.0-beta.4 for all six packages and SHA256SUMS after publication.
-Windows: pasteroll-0.1.0-beta.4-windows-x64-setup.exe and
-pasteroll-0.1.0-beta.4-windows-x64-portable.zip.
-X11: pasteroll-0.1.0-beta.4-linux-x86_64.tar.gz and pasteroll_0.1.0-beta.4_amd64.deb.
-GNOME: pasteroll-0.1.0-beta.4-linux-x86_64-gnome-development.tar.gz and
-pasteroll_0.1.0-beta.4_amd64-gnome-development.deb.
-
-Update visible versions, links and checksum commands together. Remove feature
-video players and empty media slots; keep original media locally for later work.
+Beta.19 is a Windows and Linux release. Tag v0.1.0-beta.19 carries the Windows Setup, portable
+ZIP and bare program file; the X11 archive and Debian package; the experimental GNOME 46
+development archive and Debian package; the update manifest and its signature; and one
+SHA256SUMS covering the seven program packages.

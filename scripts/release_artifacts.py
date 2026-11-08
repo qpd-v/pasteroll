@@ -28,11 +28,12 @@ def artifact_names(version, *, with_gnome=False, windows_only=False):
         raise ValueError("Windows-only releases cannot include GNOME packages.")
     names = (f"pasteroll-{version}-windows-x64-setup.exe",
             f"pasteroll-{version}-windows-x64-portable.zip",
-            f"pasteroll-{version}-linux-x86_64.tar.gz",
-            f"pasteroll_{version}_amd64.deb")
+            # The bare program file is used by portable self-updates.
+            f"pasteroll-{version}-windows-x64.exe")
     if windows_only:
-        # Setup, the portable ZIP, and the bare program file the updater uses for portable copies
-        return names[:2] + (f"pasteroll-{version}-windows-x64.exe",)
+        return names
+    names += (f"pasteroll-{version}-linux-x86_64.tar.gz",
+              f"pasteroll_{version}_amd64.deb")
     if with_gnome:
         names += (f"pasteroll-{version}-linux-x86_64-gnome-development.tar.gz",
                   f"pasteroll_{version}_amd64-gnome-development.deb")

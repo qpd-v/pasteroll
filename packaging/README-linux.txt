@@ -26,7 +26,7 @@ Debian / Ubuntu package
   Installs /usr/bin/pasteroll, a menu entry, icons and licenses. No scripts run at install time.
   The binary is static and has no package dependencies. Optional recommendations are
   tesseract-ocr (local text extraction) and zenity (save dialogs); install them separately if wanted.
-  The internal Debian version is 0.1.0~beta.4 so the beta sorts before the stable 0.1.0.
+  The internal Debian version is 0.1.0~beta.19 so the beta sorts before the stable 0.1.0.
 
 Use
   Ctrl+Shift+middle-click      open the carousel at the pointer
