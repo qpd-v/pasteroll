@@ -341,6 +341,28 @@ impl Client {
             .map_err(transport)
     }
 
+    pub fn keep(&self, generation: u64, on: bool) -> Result<(), Error> {
+        self.proxy()?.call("Keep", &(generation, on)).map_err(transport)
+    }
+
+    pub fn open_preferences(&self, state: &str, status: &str) -> Result<(), Error> {
+        self.proxy()?.call("OpenPreferences", &(state, status)).map_err(transport)
+    }
+
+    pub fn preferences_result(&self) -> Result<String, Error> {
+        let text: String = self.proxy()?.call("PreferencesResult", &()).map_err(transport)?;
+        if text.len() > 16_384 { return Err(Error::Bounds); }
+        Ok(text)
+    }
+
+    pub fn move_overlay(&self, generation: u64, begin: bool) -> Result<(i32, i32), Error> {
+        self.proxy()?.call("MoveOverlay", &(generation, begin)).map_err(transport)
+    }
+
+    pub fn raise_overlay(&self, generation: u64) -> Result<(), Error> {
+        self.proxy()?.call("RaiseOverlay", &(generation,)).map_err(transport)
+    }
+
     pub fn viewer_show(
         &self,
         generation: u64,

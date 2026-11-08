@@ -5,9 +5,15 @@ set -euo pipefail
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 test_uid=$(id -u)
 test_gid=$(id -g)
+test_script=test-linux-x11.py
+case ${1:-} in
+    '') ;;
+    multi) test_script=test-linux-x11-multi.py ;;
+    *) printf '%s\n' 'Expected no argument or multi' >&2; exit 2 ;;
+esac
 exec sudo -n unshare --mount --net --fork sh -eu -c '
     mount --make-rprivate /
     mount -t tmpfs -o mode=1777 tmpfs /tmp
     mkdir -m 1777 /tmp/.X11-unix
-    exec setpriv --reuid "$1" --regid "$2" --clear-groups python3 "$3/scripts/test-linux-x11.py"
-' pasteroll-private-x11 "$test_uid" "$test_gid" "$root"
+    exec setpriv --reuid "$1" --regid "$2" --clear-groups python3 "$3/scripts/$4"
+' pasteroll-private-x11 "$test_uid" "$test_gid" "$root" "$test_script"

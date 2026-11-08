@@ -213,6 +213,8 @@ pub trait Platform {
     /// Brings the overlay back above the other topmost windows (without activating it). Called now
     /// and then while the carousel is pinned open.
     fn overlay_raise(&mut self) {}
+    /// Keep the overlay interactive after releasing global input capture.
+    fn overlay_keep(&mut self, _on: bool) {}
     fn overlay_drag_begin(&mut self) {}
     /// Moves the carousel window so it keeps the same place under the pointer. `None` when this
     /// backend cannot move the window.

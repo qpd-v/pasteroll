@@ -334,6 +334,8 @@ fn run_inner(
     ));
     controller.set_advanced_modifier(cfg.advanced_image_modifier);
     controller.set_image_folder(&cfg.image_folder);
+    controller.set_roll_settings(cfg.rolls.clone());
+    platform.set_roll_settings(cfg.rolls.clone());
     controller.init_ui_mode(cfg.mode);
     pasteroll_app::Platform::ui_mode_changed(&mut platform, cfg.mode);
     controller.set_custom_filters(cfg.custom_filters.clone());
@@ -381,6 +383,11 @@ fn run_inner(
                 .to_string()
         })?;
         for event in events {
+            if let Some(mapped) = platform.map_roll_event(event) {
+                controller.handle(&mut platform, mapped);
+                continue;
+            }
+            if event.0 == 17 || event.0 == 18 { continue; } // disabled tilt mapping
             match event.0 {
                 20 => controller.handle(&mut platform, Event::Activate),
                 21 => {
@@ -428,6 +435,27 @@ fn run_inner(
                         settings_since = None;
                         let _ = publish_state(&client, &cfg, controller.is_paused(), false);
                         log("first-run notice acknowledged");
+                    }
+                }
+                30 | 31 => {
+                    let status = if event.0 == 31 {
+                        match client.preferences_result() {
+                            Ok(command) => crate::preferences::apply(&db, &mut controller.store().borrow_mut(), &command)
+                                .err().unwrap_or_else(|| "Saved.".into()),
+                            Err(_) => "Could not read the settings change.".into(),
+                        }
+                    } else { String::new() };
+                    if let Ok(updated) = ks::load_config(&db) {
+                        controller.set_ui_mode(&mut platform, updated.mode);
+                        controller.set_roll_settings(updated.rolls.clone());
+                        controller.set_image_folder(&updated.image_folder);
+                        controller.set_advanced_modifier(updated.advanced_image_modifier);
+                        platform.set_roll_settings(updated.rolls.clone());
+                        cfg = updated;
+                    }
+                    let _ = publish_state(&client, &cfg, controller.is_paused(), first_run);
+                    if let Ok(data) = crate::preferences::state(&db, &controller.store().borrow()) {
+                        let _ = client.open_preferences(&data, &status);
                     }
                 }
                 26 => controller.clipboard_changed(),
@@ -536,11 +564,12 @@ fn run_inner(
                                 text,
                                 plan,
                             });
-                            if client
-                                .confirm_settings(plan.clips as u32, plan.bytes, plan.by_age as u32)
-                                .is_err()
-                            {
-                                log("the prune confirmation could not be shown");
+                            if let Err(e) = client.confirm_settings(
+                                plan.clips as u32,
+                                plan.bytes,
+                                plan.by_age as u32,
+                            ) {
+                                log(&format!("the prune confirmation could not be shown: {e}"));
                                 pending = None;
                                 awaiting_settings = false;
                             }

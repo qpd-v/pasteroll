@@ -89,7 +89,7 @@ def session():
         # The fixture has now received an actual Wayland input serial.
         rejected = False
         try:
-            call('com.pasteroll.Gnome', 'Handshake', GLib.Variant('(u)', (3,)),
+            call('com.pasteroll.Gnome', 'Handshake', GLib.Variant('(u)', (4,)),
                 path='/com/pasteroll/Gnome', interface='com.pasteroll.Gnome.Bridge2')
         except GLib.Error as error:
             rejected = 'AccessDenied' in str(error)

@@ -67,6 +67,7 @@ impl Controller {
         self.kept_wheel.reset();
         self.last_activity_ms = now;
         self.last_raise_ms = now;
+        p.overlay_keep(true);
         p.input_active(false);
         self.status = Some(Status {
             text: "Pinned open. The Paste button pastes into the window you were using; click the pin to close.".into(),

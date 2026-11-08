@@ -32,6 +32,7 @@ pub enum SniEvent {
     /// One of the two looks was chosen in the menu.
     Mode(UiMode),
     Settings,
+    About,
     Folder,
     Quit,
     /// The watcher left the bus (the extension was turned off): fall back to the XEmbed tray.
@@ -155,6 +156,8 @@ const ID_QUIT: i32 = 5;
 const ID_COMPLETE: i32 = 6;
 const ID_NO_BLOAT: i32 = 7;
 const ID_SEP2: i32 = 8;
+const ID_ABOUT: i32 = 9;
+const ID_BROWSE: i32 = 10;
 
 struct Menu {
     shared: Arc<Shared>,
@@ -203,6 +206,8 @@ fn item_props(id: i32, paused: bool, no_bloat: bool) -> Vec<(&'static str, Value
         ID_SEP2 => vec![("type", Value::from("separator".to_string())), ("visible", Value::from(true))],
         ID_PAUSE => label(if paused { "Resume recording" } else { "Pause recording" }),
         ID_SETTINGS => label("Settings..."),
+        ID_ABOUT => label("About / Rolls..."),
+        ID_BROWSE => label("Open history"),
         ID_FOLDER => label("Open data folder"),
         ID_SEP => vec![("type", Value::from("separator".to_string())), ("visible", Value::from(true))],
         ID_QUIT => label("Quit Pasteroll"),
@@ -231,7 +236,7 @@ impl Menu {
 
     fn get_layout(&self, _parent: i32, _depth: i32, _names: Vec<String>) -> (u32, Value<'static>) {
         let (paused, no_bloat) = self.shared.state();
-        let kids = [ID_PAUSE, ID_SETTINGS, ID_FOLDER, ID_SEP, ID_COMPLETE, ID_NO_BLOAT, ID_SEP2, ID_QUIT]
+        let kids = [ID_BROWSE, ID_PAUSE, ID_SETTINGS, ID_ABOUT, ID_FOLDER, ID_SEP, ID_COMPLETE, ID_NO_BLOAT, ID_SEP2, ID_QUIT]
             .iter()
             .map(|&id| node(id, &item_props(id, paused, no_bloat), Vec::new()))
             .collect();
@@ -264,6 +269,8 @@ impl Menu {
             ID_COMPLETE => self.shared.send(SniEvent::Mode(UiMode::Complete)),
             ID_NO_BLOAT => self.shared.send(SniEvent::Mode(UiMode::NoBloat)),
             ID_SETTINGS => self.shared.send(SniEvent::Settings),
+            ID_ABOUT => self.shared.send(SniEvent::About),
+            ID_BROWSE => self.shared.send(SniEvent::Activate),
             ID_FOLDER => self.shared.send(SniEvent::Folder),
             ID_QUIT => self.shared.send(SniEvent::Quit),
             _ => {}
@@ -454,7 +461,7 @@ mod tests {
     }
 
     #[test]
-    fn the_menu_has_eight_entries_under_the_root() {
+    fn the_menu_includes_history_settings_and_about() {
         let (tx, _rx) = mpsc::channel();
         let m = Menu { shared: shared(true, tx), revision: Mutex::new(1) };
         let (rev, root) = m.get_layout(0, -1, Vec::new());
@@ -463,7 +470,7 @@ mod tests {
         let f = s.fields();
         assert_eq!(f.len(), 3);
         let Value::Array(kids) = &f[2] else { panic!("children are an array") };
-        assert_eq!(kids.len(), 8);
+        assert_eq!(kids.len(), 10);
         let g = m.get_group_properties(vec![ID_PAUSE], Vec::new());
         assert_eq!(g[0].1.get("label"), Some(&Value::from("Resume recording".to_string())));
     }

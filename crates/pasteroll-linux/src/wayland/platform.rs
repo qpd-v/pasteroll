@@ -40,6 +40,8 @@ pub struct GnomePlatform {
     generation: u64,
     overlay_generation: u64,
     active: bool,
+    kept: bool,
+    roll_settings: pasteroll_core::config::RollSettings,
     overlay_visible: bool,
     viewer_visible: bool,
     viewer_mode: bool,
@@ -145,6 +147,18 @@ fn local_tm(secs: i64) -> libc::tm {
 }
 
 impl GnomePlatform {
+    pub fn set_roll_settings(&mut self, settings: pasteroll_core::config::RollSettings) { self.roll_settings = settings; }
+
+    pub fn map_roll_event(&self, event: super::protocol::WireEvent) -> Option<pasteroll_app::Event> {
+        if self.viewer_mode || event.1 != self.generation { return None; }
+        let direction = if event.0 == 2 {
+            crate::bindings::roll_key(event.2 as u32, event.4, &self.roll_settings)
+        } else if event.0 == 17 || event.0 == 18 {
+            crate::bindings::roll_wheel(event.2 > 0, &self.roll_settings)
+        } else { None }?;
+        Some(if self.kept { pasteroll_app::Event::OverlayRoll(direction) } else { pasteroll_app::Event::Roll(direction, self.generation) })
+    }
+
     pub fn new(
         client: Client,
         db: PathBuf,
@@ -168,6 +182,8 @@ impl GnomePlatform {
             generation: 0,
             overlay_generation: 0,
             active: false,
+            kept: false,
+            roll_settings: Default::default(),
             overlay_visible: false,
             viewer_visible: false,
             viewer_mode: false,
@@ -294,6 +310,11 @@ impl Platform for GnomePlatform {
         self.remember_context(context.clone());
         let target = target_from_context(&context);
         self.session_target = target.clone();
+        if self.kept {
+            self.authorized = target.clone().map(|target| AuthorizedPaste {
+                generation: self.generation, target, expires: Some(Instant::now() + PASTE_WINDOW),
+            });
+        }
         target
     }
 
@@ -420,6 +441,7 @@ impl Platform for GnomePlatform {
     }
 
     fn overlay_hide(&mut self) {
+        self.kept = false;
         if self.overlay_visible && self.overlay_generation != 0 {
             if let Err(e) = self.client.hide(self.overlay_generation) {
                 self.log(&format!("could not hide the GNOME carousel: {e}"));
@@ -428,6 +450,27 @@ impl Platform for GnomePlatform {
         self.overlay_visible = false;
         self.mark_pending_expiry();
     }
+
+    fn overlay_keep(&mut self, on: bool) {
+        if self.client.keep(self.generation, on).is_ok() { self.kept = on; }
+    }
+
+    fn overlay_raise(&mut self) { let _ = self.client.raise_overlay(self.generation); }
+
+    fn overlay_drag_begin(&mut self) { let _ = self.client.move_overlay(self.generation, true); }
+
+    fn overlay_drag_update(&mut self) -> Option<pasteroll_app::OverlayMoved> {
+        let (x,y) = self.client.move_overlay(self.generation, false).ok()?;
+        let context = self.client.context().ok()?;
+        self.overlay.origin_px = (device(x, self.stage_scale), device(y, self.stage_scale));
+        self.overlay.monitor_px = device_rect(context.monitor, self.stage_scale);
+        self.overlay.work_px = device_rect(context.work, self.stage_scale);
+        Some(pasteroll_app::OverlayMoved { origin_px: self.overlay.origin_px,
+            monitor_px: self.overlay.monitor_px, work_px: self.overlay.work_px })
+    }
+
+    fn load_pin_colors(&self) -> String { crate::sys::load_pin_colors(&self.db) }
+    fn save_pin_colors(&mut self, text: &str) -> Result<(), String> { crate::sys::save_pin_colors(&self.db, text) }
 
     fn viewer_show(&mut self, rect: (i32, i32, u32, u32), rounded: bool) {
         if self.generation == 0 {

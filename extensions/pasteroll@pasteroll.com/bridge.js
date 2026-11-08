@@ -12,12 +12,12 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import {createPanel} from './panel.js';
 import {stageScaleForMonitor, ViewerTransfer} from './geometry.js';
 import {InputHelper} from './input-helper.js';
-import {showConfirmation, showSettings, showWelcome} from './settings-ui.js';
+import {showConfirmation, showSettings, showWelcome, showPreferences} from './settings-ui.js';
 
 const NAME = 'com.pasteroll.Gnome';
 const PATH = '/com/pasteroll/Gnome';
 const IFACE = 'com.pasteroll.Gnome.Bridge2';
-const VERSION = 3;
+const VERSION = 4;
 
 const CLIPBOARD = 1;
 const OVERLAY = 2;
@@ -76,6 +76,9 @@ const XML = `<node><interface name="${IFACE}">
  <method name="Current"><arg type="t" direction="in"/><arg type="u" direction="in"/><arg type="b" direction="out"/></method>
  <method name="Privileged"><arg type="t" direction="in"/><arg type="u" direction="in"/><arg type="b" direction="out"/></method>
  <method name="InputActive"><arg type="b" direction="in"/><arg type="t" direction="out"/></method>
+ <method name="Keep"><arg type="t" direction="in"/><arg type="b" direction="in"/></method>
+ <method name="MoveOverlay"><arg type="t" direction="in"/><arg type="b" direction="in"/><arg type="i" direction="out"/><arg type="i" direction="out"/></method>
+ <method name="RaiseOverlay"><arg type="t" direction="in"/></method>
  <method name="Modes"><arg type="t" direction="in"/><arg type="b" direction="in"/><arg type="b" direction="in"/></method>
  <method name="ViewerShow"><arg type="t" direction="in"/><arg type="i" direction="in"/>
   <arg type="i" direction="in"/><arg type="u" direction="in"/><arg type="u" direction="in"/><arg type="b" direction="in"/></method>
@@ -99,6 +102,8 @@ const XML = `<node><interface name="${IFACE}">
   <arg type="b" direction="in"/><arg type="as" direction="in"/><arg type="b" direction="in"/>
   <arg type="b" direction="in"/></method>
  <method name="OpenSettings"/>
+ <method name="OpenPreferences"><arg type="s" direction="in"/><arg type="s" direction="in"/></method>
+ <method name="PreferencesResult"><arg type="s" direction="out"/></method>
  <method name="SettingsResult"><arg type="b" direction="out"/><arg type="b" direction="out"/>
   <arg type="b" direction="out"/><arg type="u" direction="out"/><arg type="u" direction="out"/>
   <arg type="t" direction="out"/><arg type="u" direction="out"/><arg type="t" direction="out"/>
@@ -180,6 +185,8 @@ export class Bridge {
         this._events = [];
         this._reads = new Set();
         this._inputActive = false;
+        this._kept = false;
+        this._dragOffset = null;
         this._keyboardArmed = false;
         this._accelerator = 0;
         this._suspended = false;
@@ -985,6 +992,8 @@ export class Bridge {
 
     _setInputActive(on) {
         if (on) {
+            this._kept = false;
+            this._dragOffset = null;
             this._newGeneration();
             this._inputActive = true;
             this._events = [];
@@ -1001,12 +1010,42 @@ export class Bridge {
         } else {
             this._inputActive = false;
             if (this._actor)
-                this._actor.reactive = false;
+                this._actor.reactive = Boolean(this._kept);
             this._viewerMode = false;
             this._modal = false;
             this._releaseGrab();
             this._extendAuth();
         }
+    }
+
+    KeepAsync([generation, on], invocation) {
+        if (!this._authorize(invocation) || !this._secure(invocation)) return;
+        if (!this._currentGeneration(generation) || !this._actor) { fail(invocation, 'Stale'); return; }
+        this._kept = Boolean(on);
+        if (on) { this._pasteAuth = null; this._actor.reactive = true; }
+        invocation.return_value(null);
+    }
+
+    MoveOverlayAsync([generation, begin], invocation) {
+        if (!this._authorize(invocation) || !this._secure(invocation)) return;
+        if (!this._currentGeneration(generation) || !this._actor) { fail(invocation, 'Stale'); return; }
+        const [px, py] = this._pointerCoords();
+        if (begin) this._dragOffset = [px - this._actor.x, py - this._actor.y];
+        else if (this._dragOffset) {
+            const monitor = this._monitorAt(px, py);
+            const work = this._workFor(monitor);
+            this._actor.set_position(clamp(px - this._dragOffset[0], work.x, work.x + Math.max(0, work.width - this._actor.width)),
+                clamp(py - this._dragOffset[1], work.y, work.y + Math.max(0, work.height - this._actor.height)));
+        }
+        invocation.return_value(new GLib.Variant('(ii)', [Math.round(this._actor.x), Math.round(this._actor.y)]));
+    }
+
+    RaiseOverlayAsync([generation], invocation) {
+        if (!this._authorize(invocation) || !this._secure(invocation)) return;
+        if (!this._currentGeneration(generation)) { fail(invocation, 'Stale'); return; }
+        const parent = this._actor?.get_parent();
+        if (parent) parent.set_child_above_sibling(this._actor, null);
+        invocation.return_value(null);
     }
 
     ModesAsync([generation, viewer, modal], invocation) {
@@ -1394,6 +1433,8 @@ export class Bridge {
     }
 
     _destroyOverlay() {
+        this._kept = false;
+        this._dragOffset = null;
         if (this._grabActor === this._actor)
             this._releaseGrab();
         this._removeOverlayFromStage();
@@ -1857,8 +1898,15 @@ export class Bridge {
                 this._enqueue(kind, 0, 0, this._lastMods);
             return Clutter.EVENT_STOP;
         }
-        if (!this._inputActive && !this._viewerMode)
+        if (!this._inputActive && !this._viewerMode && !this._kept)
             return Clutter.EVENT_PROPAGATE;
+        if (this._kept) {
+            if (type === Clutter.EventType.KEY_PRESS || type === Clutter.EventType.KEY_RELEASE)
+                return Clutter.EVENT_PROPAGATE;
+            const [px, py] = event.get_coords();
+            if (!this._overlayPoint(px, py) && !this._dragOffset)
+                return Clutter.EVENT_PROPAGATE;
+        }
 
         let mods = this._lastMods;
         try {
@@ -1890,8 +1938,10 @@ export class Bridge {
             if (this._viewerMode) {
                 if (this._viewerPoint(x, y))
                     this._enqueue(8, delta, horizontal, mods);
-            } else if (this._inputActive && this._actor && !horizontal) {
-                this._enqueue(1, delta > 0 ? -1 : 1, 0, mods);
+            } else if (this._actor) {
+                if (horizontal) this._enqueue(this._kept ? 17 : 18, Math.sign(delta), 0, mods);
+                else if (this._kept) this._enqueue(16, delta, 0, mods);
+                else if (this._inputActive) this._enqueue(1, delta > 0 ? -1 : 1, 0, mods);
             }
             return Clutter.EVENT_STOP;
         }
@@ -1902,9 +1952,8 @@ export class Bridge {
                 if (point)
                     this._enqueueMotion(11, point[0], point[1], mods);
             } else {
-                const point = this._overlayPoint(x, y);
-                if (point)
-                    this._enqueueMotion(5, point[0], point[1], mods);
+                const point = this._overlayPoint(x, y) || (this._dragOffset ? [Math.round((x-this._actor.x)*this._scale), Math.round((y-this._actor.y)*this._scale)] : null);
+                if (point) this._enqueueMotion(5, point[0], point[1], mods);
             }
             return Clutter.EVENT_STOP;
         }
@@ -1936,11 +1985,19 @@ export class Bridge {
             return Clutter.EVENT_STOP;
         }
 
-        if (this._overlayPoint(x, y)) {
+        if (this._overlayPoint(x, y) || this._dragOffset) {
+            const point = this._overlayPoint(x, y) || [0, 0];
             if (event.get_button() === 1) {
-                const point = this._overlayPoint(x, y);
-                this._enqueue(type === Clutter.EventType.BUTTON_PRESS ? 3 : 4,
-                    point[0], point[1], mods);
+                if (type === Clutter.EventType.BUTTON_RELEASE) {
+                    this._dragOffset = null;
+                    if (this._kept) {
+                        const target = this._foregroundInfo();
+                        this._pasteAuth = target && !target.desktop ? {generation: this._generation, target, expires: this._nowMs() + AUTH_MS} : null;
+                    }
+                }
+                this._enqueue(type === Clutter.EventType.BUTTON_PRESS ? 3 : 4, point[0], point[1], mods);
+            } else if (event.get_button() === 3 && type === Clutter.EventType.BUTTON_PRESS) {
+                this._enqueue(15, point[0], point[1], mods);
             }
             return Clutter.EVENT_STOP;
         }
@@ -2066,6 +2123,12 @@ export class Bridge {
         this._dialog = showSettings({
             work,
             state: this._settingsState,
+            onPreferences: dialog => {
+                // The settings dialog must be gone before the preferences page can
+                // take the modal slot.
+                dialog?.close();
+                this._enqueue(30, 0, 0, 0, 0);
+            },
             onApply: result => {
                 this._pendingSettings = {...result};
                 this._completedSettings = {...result, changed: true, confirmed: false};
@@ -2077,6 +2140,24 @@ export class Bridge {
             onClose: () => this._dialogClosed(),
         });
         return true;
+    }
+
+    OpenPreferencesAsync([text, status], invocation) {
+        if (!this._authorize(invocation) || !this._secure(invocation)) return;
+        if (text.length > 16384 || status.length > 4096 || !this._prepareDialog()) { fail(invocation, 'Bounds'); return; }
+        try {
+            this._dialog = showPreferences({work: this._dialogWork(), state: JSON.parse(text), status,
+                onApply: command => { this._preferenceResult = JSON.stringify(command); this._enqueue(31, 0, 0, 0, 0); },
+                onClose: () => this._dialogClosed()});
+            invocation.return_value(null);
+        } catch (_) { fail(invocation, 'Protocol'); }
+    }
+
+    PreferencesResultAsync(_args, invocation) {
+        if (!this._authorize(invocation) || !this._secure(invocation)) return;
+        const result = this._preferenceResult || '';
+        this._preferenceResult = '';
+        invocation.return_value(new GLib.Variant('(s)', [result]));
     }
 
     OpenSettingsAsync(_args, invocation) {
@@ -2185,6 +2266,7 @@ export class Bridge {
             return;
         if (!this._pendingSettings || !validFinite(clips) || !validFinite(bytes) ||
             !validFinite(byAge)) {
+            console.error(`Pasteroll confirmation rejected: pending=${Boolean(this._pendingSettings)} clips=${clips} bytes=${bytes} byAge=${byAge}`);
             fail(invocation, 'Protocol');
             return;
         }
@@ -2194,7 +2276,8 @@ export class Bridge {
                 return;
             }
             invocation.return_value(null);
-        } catch (_) {
+        } catch (error) {
+            console.error(`Pasteroll confirmation dialog failed: ${error}`);
             this._dialog = null;
             fail(invocation, 'Protocol');
         }
@@ -2280,6 +2363,8 @@ export class Bridge {
         if (this._generation)
             this._revokedGeneration = this._generation;
         this._inputActive = false;
+        this._kept = false;
+        this._dragOffset = null;
         this._viewerMode = false;
         this._modal = false;
         this._suspended = false;

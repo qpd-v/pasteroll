@@ -4,7 +4,8 @@ set -euo pipefail
 spike_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
 spike_uid=$(id -u)
 spike_gid=$(id -g)
-exec sudo -n unshare --mount --net --pid --fork --mount-proc sh -eu -c '
+exec sudo -n PASTEROLL_TEST_APP_BINARY="${PASTEROLL_TEST_APP_BINARY:-}" \
+    unshare --mount --net --pid --fork --mount-proc sh -eu -c '
     mount --make-rprivate /
     mount -t tmpfs -o mode=1777 tmpfs /tmp
     mount -t tmpfs -o mode=755 tmpfs /run
@@ -15,6 +16,7 @@ exec sudo -n unshare --mount --net --pid --fork --mount-proc sh -eu -c '
     spike_gid="$2"
     spike_script="$3/scripts/wayland-spike/run.py"
     shift 3
+    test_binary="${PASTEROLL_TEST_APP_BINARY:-}"
     case " $* " in
         *" --mouse "*)
             mkdir -p /dev/input
@@ -23,5 +25,6 @@ exec sudo -n unshare --mount --net --pid --fork --mount-proc sh -eu -c '
     esac
     exec setpriv --reuid "$spike_uid" --regid "$spike_gid" --clear-groups \
         env -i PATH=/usr/bin:/bin LANG=C.UTF-8 \
-        PASTEROLL_WAYLAND_SPIKE=1 python3 "$spike_script" "$@"
+        PASTEROLL_WAYLAND_SPIKE=1 PASTEROLL_TEST_APP_BINARY="$test_binary" \
+        python3 "$spike_script" "$@"
 ' pasteroll-wayland "$spike_uid" "$spike_gid" "$spike_root" "$@"

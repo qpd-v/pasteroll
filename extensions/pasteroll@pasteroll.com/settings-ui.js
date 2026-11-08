@@ -265,7 +265,8 @@ export function showWelcome({work, onAcknowledge, onClose}) {
     });
 }
 
-export function showSettings({work, state, onApply, onCancel, onClose}) {
+export function showSettings({work, state, onApply, onCancel, onClose, onPreferences}) {
+    let dialog = null;
     const draft = {
         paused: Boolean(state.paused),
         size: Number(state.size),
@@ -284,6 +285,17 @@ export function showSettings({work, state, onApply, onCancel, onClose}) {
         'Changes are checked by the application before anything is written. ' +
         'Saving restarts Pasteroll to apply the new limits.',
         'pasteroll-dialog-note'));
+
+    if (onPreferences) {
+        const extras = new St.Button({
+            label: 'Rolls / appearance / About…',
+            can_focus: true,
+            style_class: 'pasteroll-small-button',
+        });
+        extras.connect('clicked', () => onPreferences(dialog));
+        content.add_child(row('Rolls and appearance',
+            'Manage rolls, shortcuts, tile colors and the local agent brain.', extras));
+    }
 
     content.add_child(section('Recording'));
     content.add_child(row('Pause recording',
@@ -368,7 +380,7 @@ export function showSettings({work, state, onApply, onCancel, onClose}) {
         'Custom filters are added from the carousel filter menu.',
         'pasteroll-dialog-note'));
 
-    return showDialog({
+    dialog = showDialog({
         work,
         title: 'Pasteroll settings',
         width: 700,
@@ -402,6 +414,7 @@ export function showSettings({work, state, onApply, onCancel, onClose}) {
             },
         ],
     });
+    return dialog;
 }
 
 export function showConfirmation({work, clips, bytes, byAge, onConfirm, onCancel, onClose}) {
@@ -435,4 +448,54 @@ export function showConfirmation({work, clips, bytes, byAge, onConfirm, onCancel
             },
         ],
     });
+}
+
+export function showPreferences({work, state, status, onApply, onClose}) {
+    const content = contentBox();
+    const draft = {...state, command: 'settings'};
+    let dialog;
+    const submit = command => { onApply(command); dialog.close(); };
+    const button = (title, handler) => {
+        const b = new St.Button({label: title, can_focus: true, style_class: 'pasteroll-small-button'});
+        b.connect('clicked', handler); return b;
+    };
+    content.add_child(wrapLabel(`Pasteroll ${state.version} · Linux · Experimental GNOME 46 Wayland`));
+    content.add_child(wrapLabel(status || 'Choose rolls and appearance. Your clipboard history stays on this computer.'));
+    content.add_child(row('No Bloat', 'Show only the current clip.', toggleControl(state.mode === 'no-bloat', on => { draft.mode = on ? 'no-bloat' : 'complete'; })));
+    for (const [key, title] of [['left', 'LEFT roll'], ['right', 'RIGHT roll'], ['most_used', 'Most used'], ['images', 'Images']])
+        content.add_child(row(title, 'Include this roll in the carousel.', toggleControl(state[key], on => { draft[key] = on; })));
+    for (const [key, title] of [['left_key', 'Roll left shortcut'], ['right_key', 'Roll right shortcut'], ['image_folder', 'Picture folder']]) {
+        const entry = new St.Entry({text: state[key], can_focus: true, x_expand: true});
+        entry.clutter_text.connect('text-changed', () => { draft[key] = entry.get_text(); });
+        content.add_child(row(title, key === 'image_folder' ? 'Empty uses the Desktop.' : 'For example ctrl+left; empty disables it.', entry));
+    }
+    for (const key of ['tilt_left', 'tilt_right', 'modifier']) {
+        const choices = key === 'modifier' ? ['ctrl', 'shift', 'alt'] : ['roll-left', 'roll-right', 'none'];
+        const b = button(state[key], () => { draft[key] = choices[(choices.indexOf(draft[key]) + 1) % choices.length]; b.label = draft[key]; });
+        content.add_child(row(key === 'modifier' ? 'Advanced image key' : key === 'tilt_left' ? 'Tilt left' : 'Tilt right', '', b));
+    }
+    content.add_child(section('Custom rolls'));
+    content.add_child(wrapLabel('Roll actions apply immediately. Removing a roll returns its clips to Main.'));
+    for (const roll of state.rolls) {
+        const line = new St.BoxLayout({style: 'spacing: 6px;'});
+        const entry = new St.Entry({text: roll.name, can_focus: true, x_expand: true});
+        line.add_child(entry);
+        for (const [label, command] of [['Rename', 'rename'], [roll.side === 'left' ? 'Left → Right' : 'Right → Left', roll.side === 'left' ? 'right' : 'left'], ['↑', 'up'], ['↓', 'down'], ['Remove', 'remove']])
+            line.add_child(button(label, () => submit({command, id: roll.id, name: entry.get_text()})));
+        content.add_child(line);
+    }
+    const newRow = new St.BoxLayout({style: 'spacing: 6px;'});
+    const name = new St.Entry({hint_text: 'New roll name', can_focus: true, x_expand: true});
+    newRow.add_child(name); newRow.add_child(button('New roll', () => submit({command: 'add', name: name.get_text()})));
+    content.add_child(newRow);
+    content.add_child(wrapLabel('Agent sharing: use pasteroll brain and pasteroll mcp-config.'));
+    let confirmed = false;
+    const clear = button('Clear history…', () => {
+        if (confirmed) submit({command: 'clear', confirmed: true});
+        else { confirmed = true; clear.label = 'Confirm clear history (keeps favorites)'; }
+    });
+    content.add_child(clear);
+    dialog = showDialog({work, title: 'Rolls and appearance', width: 760, height: Math.min(760, work.height - 32), content, onClose,
+        buttons: [{label: 'Close', handler: () => {}}, {label: 'Save preferences', styleClass: 'pasteroll-button-primary', handler: () => onApply(draft)}]});
+    return dialog;
 }

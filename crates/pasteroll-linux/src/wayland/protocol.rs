@@ -3,7 +3,7 @@ use pasteroll_app::{Captured, Event, Key, MouseEvent, MouseKind, Payload, Skip, 
 use pasteroll_core::Step;
 use zeroize::Zeroize;
 
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 pub const CLIPBOARD: u32 = 1;
 pub const OVERLAY: u32 = 2;
 pub const INPUT: u32 = 4;
@@ -288,7 +288,8 @@ pub fn event(
                     0x65 | 0x45 => Some(Key::CtrlE),
                     0x66 | 0x46 => Some(Key::CtrlF),
                     0x69 | 0x49 => Some(Key::CtrlI),
-                    0x70 | 0x50 => Some(Key::CtrlP),
+                    0x70 | 0x50 => Some(Key::CtrlF), // compatibility with beta.4
+                    0x6b | 0x4b => Some(Key::CtrlK),
                     0x6d | 0x4d => Some(Key::CtrlM),
                     0x73 | 0x53 => Some(Key::CtrlS),
                     0x79 | 0x59 => Some(Key::CtrlY),
@@ -340,6 +341,9 @@ pub fn event(
         14 => Some(Event::ClickOutside(generation)),
         // a right click on the list (the Copy menu)
         15 => Some(Event::Mouse(MouseEvent { kind: MouseKind::RightDown, x: a as f32, y: b as f32 })),
+        16 => Some(Event::OverlayWheel(a.clamp(i16::MIN as i32, i16::MAX as i32) as i16)),
+        17 => Some(Event::OverlayRoll(a.signum() as i8)),
+        18 => Some(Event::Roll(a.signum() as i8, generation)),
         _ => return Err(Error::Protocol),
     })
 }

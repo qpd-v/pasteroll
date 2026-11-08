@@ -12,6 +12,44 @@ use std::path::{Path, PathBuf};
 
 pub struct LinuxOs;
 
+pub fn load_pin_colors(db: &Path) -> String {
+    std::fs::read_to_string(db.with_file_name("pin-colors.txt")).unwrap_or_default()
+}
+
+pub fn save_pin_colors(db: &Path, text: &str) -> Result<(), String> {
+    use std::io::Write;
+    let path = db.with_file_name("pin-colors.txt");
+    let tmp = db.with_file_name(format!("pin-colors.{}.tmp", std::process::id()));
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600)
+            .open(&tmp).map_err(|e| e.to_string())?;
+        file.write_all(text.as_bytes()).and_then(|_| file.sync_all()).map_err(|e| e.to_string())?;
+        LinuxOs::replace_file(&tmp, &path)
+    })();
+    let _ = std::fs::remove_file(tmp);
+    result
+}
+
+#[cfg(test)]
+mod preference_file_tests {
+    use super::*;
+
+    #[test]
+    fn favorite_colors_are_private_and_replace_atomically() {
+        let dir = std::env::temp_dir().join(format!("pasteroll-pin-colors-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("history.db");
+        let colors = db.with_file_name("pin-colors.txt");
+        assert_eq!(load_pin_colors(&db), "");
+        save_pin_colors(&db, "12:red\n").unwrap();
+        save_pin_colors(&db, "12:blue\n").unwrap();
+        assert_eq!(load_pin_colors(&db), "12:blue\n");
+        let mode = std::fs::metadata(&colors).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
 /// Held while the cross-process lock is wanted; the lock goes away with the file descriptor.
 pub struct FileLock {
     _file: std::fs::File,

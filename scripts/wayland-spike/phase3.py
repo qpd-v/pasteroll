@@ -516,7 +516,7 @@ def session():
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
         wire_text = (wire.stdout + wire.stderr).decode('utf-8', 'replace')
         record('real binary completes Bridge2 handshake',
-               wire.returncode == 0 and 'protocol 3' in wire_text and 'global-mouse=false' in wire_text,
+               wire.returncode == 0 and 'protocol 4' in wire_text and 'global-mouse=false' in wire_text,
                detail=wire_text[-1200:])
         record('Bridge2 reports paste, viewer and settings capabilities',
                all(token in wire_text for token in ('paste=true', 'viewer=true', 'settings=true')))
@@ -857,6 +857,15 @@ size = 100
         record('settings keep a custom filter saved after process startup',
                'Synthetic design' in settings_app.config.read_text() and
                'extensions = ["psd", "ai"]' in settings_app.config.read_text())
+
+        open_settings()
+        click_actor(wait(lambda: find_ui('Rolls / appearance / About…'),
+                         'the settings page has no rolls button', 6))
+        wait(lambda: find_ui('Custom rolls'), 'the rolls and appearance page did not open', 8)
+        snapshot('snap-preferences')
+        click_actor(wait(lambda: find_ui('Close', exact=True), 'the rolls page has no Close', 6))
+        wait(lambda: find_ui('Custom rolls') is None, 'Close did not close the rolls page', 6)
+        record('the rolls and appearance page opens from Settings', True)
 
         autostart = Path(os.environ['XDG_CONFIG_HOME']) / 'autostart/pasteroll.desktop'
         runs = settings_app.log().count('running with the native GNOME Wayland backend')

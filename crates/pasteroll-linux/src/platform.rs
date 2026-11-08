@@ -125,6 +125,8 @@ pub struct LinuxPlatform {
     overlay_pos: (i32, i32),
     overlay_size: (u32, u32),
     mapped: bool,
+    drag_offset: (i32, i32),
+    roll_settings: pasteroll_core::config::RollSettings,
     last_frame: Option<(Vec<u8>, u32, u32)>,
     generation: u64,
     active: bool,
@@ -196,7 +198,8 @@ impl LinuxPlatform {
         conn.change_window_attributes(
             overlay,
             &ChangeWindowAttributesAux::new()
-                .event_mask(EventMask::EXPOSURE | EventMask::POINTER_MOTION | EventMask::LEAVE_WINDOW),
+                .event_mask(EventMask::EXPOSURE | EventMask::POINTER_MOTION | EventMask::LEAVE_WINDOW
+                    | EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE),
         )?;
         let viewer = conn.generate_id()?;
         conn.create_window(
@@ -213,7 +216,8 @@ impl LinuxPlatform {
             &CreateWindowAux::new()
                 .override_redirect(1)
                 .background_pixel(screen.black_pixel)
-                .event_mask(EventMask::EXPOSURE | EventMask::POINTER_MOTION | EventMask::LEAVE_WINDOW),
+                .event_mask(EventMask::EXPOSURE | EventMask::POINTER_MOTION | EventMask::LEAVE_WINDOW
+                    | EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE),
         )?;
 
         // a never-mapped window that owns the clipboard while we serve a paste
@@ -267,6 +271,8 @@ impl LinuxPlatform {
             overlay_pos: (0, 0),
             overlay_size: (WIDTH as u32, HEIGHT as u32),
             mapped: false,
+            drag_offset: (0, 0),
+            roll_settings: Default::default(),
             last_frame: None,
             generation: 0,
             active: false,
@@ -332,7 +338,7 @@ impl LinuxPlatform {
             self.log("could not grab the keyboard; typing into the search box will not work this time");
         }
         let events = mask(&[EventMask::BUTTON_PRESS, EventMask::BUTTON_RELEASE, EventMask::BUTTON_MOTION]);
-        for b in [ButtonIndex::M1, ButtonIndex::M2, ButtonIndex::M3, ButtonIndex::M4, ButtonIndex::M5] {
+        for b in [ButtonIndex::M1, ButtonIndex::M2, ButtonIndex::M3, ButtonIndex::M4, ButtonIndex::M5, ButtonIndex::from(6u8), ButtonIndex::from(7u8)] {
             let _ = self.conn.grab_button(
                 false,
                 self.root,
@@ -351,7 +357,7 @@ impl LinuxPlatform {
     fn release_session(&mut self) {
         let _ = self.conn.allow_events(Allow::ASYNC_POINTER, CURRENT_TIME);
         let _ = self.conn.ungrab_keyboard(CURRENT_TIME);
-        for b in [ButtonIndex::M1, ButtonIndex::M2, ButtonIndex::M3, ButtonIndex::M4, ButtonIndex::M5] {
+        for b in [ButtonIndex::M1, ButtonIndex::M2, ButtonIndex::M3, ButtonIndex::M4, ButtonIndex::M5, ButtonIndex::from(6u8), ButtonIndex::from(7u8)] {
             let _ = self.conn.ungrab_button(b, self.root, ModMask::ANY);
         }
         self.keyboard_grabbed = false;
@@ -441,6 +447,10 @@ impl LinuxPlatform {
 
     // ------------------------------------------------------------------ event translation
 
+    pub fn set_roll_settings(&mut self, settings: pasteroll_core::config::RollSettings) {
+        self.roll_settings = settings;
+    }
+
     pub fn reload_keymap(&mut self) {
         if let Ok(k) = Keymap::load(&self.conn) {
             self.keymap = k;
@@ -456,7 +466,7 @@ impl LinuxPlatform {
                     self.viewer_dragging = false;
                     let (x, y) = self.viewer_local(i32::from(e.root_x), i32::from(e.root_y));
                     out.push(Action::Event(Event::ViewerMouse(MouseEvent { kind: MouseKind::Up, x, y })));
-                } else if self.active && self.dragging && e.detail == 1 {
+                } else if self.mapped && self.dragging && e.detail == 1 {
                     self.dragging = false;
                     let (x, y) = self.local(i32::from(e.root_x), i32::from(e.root_y));
                     out.push(Action::Event(Event::Mouse(MouseEvent { kind: MouseKind::Up, x, y })));
@@ -467,13 +477,13 @@ impl LinuxPlatform {
                 if self.active && self.viewer_dragging {
                     let (x, y) = self.viewer_local(rx, ry);
                     out.push(Action::Event(Event::ViewerMouse(MouseEvent { kind: MouseKind::Move, x, y })));
-                } else if self.active && self.dragging {
+                } else if self.mapped && self.dragging {
                     let (x, y) = self.local(rx, ry);
                     out.push(Action::Event(Event::Mouse(MouseEvent { kind: MouseKind::Move, x, y })));
                 } else if self.active && e.event == self.viewer {
                     let (x, y) = (f32::from(e.event_x), f32::from(e.event_y));
                     out.push(Action::Event(Event::ViewerMouse(MouseEvent { kind: MouseKind::Move, x, y })));
-                } else if self.active && e.event == self.overlay {
+                } else if self.mapped && e.event == self.overlay {
                     let (x, y) = (f32::from(e.event_x), f32::from(e.event_y));
                     out.push(Action::Event(Event::Mouse(MouseEvent { kind: MouseKind::Move, x, y })));
                 }
@@ -482,13 +492,17 @@ impl LinuxPlatform {
                 let m = MouseEvent { kind: MouseKind::Leave, x: 0.0, y: 0.0 };
                 if self.active && e.event == self.viewer {
                     out.push(Action::Event(Event::ViewerMouse(m)));
-                } else if self.active && e.event == self.overlay {
+                } else if self.mapped && e.event == self.overlay {
                     out.push(Action::Event(Event::Mouse(m)));
                 }
             }
             XEvent::KeyPress(e) => {
                 if self.active {
-                    if let Some(k) = keys::classify(&self.keymap, e.detail, u16::from(e.state)) {
+                    let roll = (!self.viewer_mode).then(|| crate::bindings::roll_key(
+                        self.keymap.sym(e.detail, 0), u32::from(u16::from(e.state)), &self.roll_settings)).flatten();
+                    if let Some(direction) = roll {
+                        out.push(Action::Event(Event::Roll(direction, self.generation)));
+                    } else if let Some(k) = keys::classify(&self.keymap, e.detail, u16::from(e.state)) {
                         out.push(Action::Event(Event::Key(k, self.generation)));
                     }
                 }
@@ -532,9 +546,8 @@ impl LinuxPlatform {
 
     fn button_press(&mut self, e: &ButtonPressEvent, out: &mut Vec<Action>) {
         let (rx, ry) = (i32::from(e.root_x), i32::from(e.root_y));
-        if !self.active {
-            // the activation gesture (async grab: nothing to release)
-            if e.detail == 2 {
+        if !self.active && !(self.mapped && e.event == self.overlay) {
+            if e.detail == 2 && u16::from(e.state) & (keys::CONTROL | keys::SHIFT) == keys::CONTROL | keys::SHIFT {
                 out.push(Action::Event(Event::Activate));
             }
             return;
@@ -547,6 +560,7 @@ impl LinuxPlatform {
         let inside = self.inside_overlay(rx, ry);
         let mut replay = false;
         match e.detail {
+            4 | 5 if !self.active => out.push(Action::Event(Event::OverlayWheel(if e.detail == 4 { 120 } else { -120 }))),
             4 => out.push(Action::Event(Event::Step(pasteroll_core::Step::Newer, gen))),
             5 => out.push(Action::Event(Event::Step(pasteroll_core::Step::Older, gen))),
             1 if inside => {
@@ -580,7 +594,11 @@ impl LinuxPlatform {
                 replay = true;
                 out.push(Action::Event(Event::ClickCancel(gen)));
             }
-            6 | 7 => {}
+            6 | 7 => {
+                if let Some(direction) = crate::bindings::roll_wheel(e.detail == 7, &self.roll_settings) {
+                    out.push(Action::Event(if self.active { Event::Roll(direction, gen) } else { Event::OverlayRoll(direction) }));
+                } else { replay = self.active; }
+            }
             _ if !inside => replay = true,
             _ => {}
         }
@@ -860,6 +878,34 @@ impl Platform for LinuxPlatform {
     }
 
 
+
+    fn overlay_raise(&mut self) {
+        if self.mapped {
+            let _ = self.conn.configure_window(self.overlay, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE));
+            let _ = self.conn.flush();
+        }
+    }
+
+    fn overlay_drag_begin(&mut self) {
+        let at = self.cursor();
+        self.drag_offset = (at.0 - self.overlay_pos.0, at.1 - self.overlay_pos.1);
+    }
+
+    fn overlay_drag_update(&mut self) -> Option<pasteroll_app::OverlayMoved> {
+        if !self.mapped { return None; }
+        let at = self.cursor();
+        let (mx, my, mw, mh) = self.monitor_at(at);
+        let x = (at.0 - self.drag_offset.0).clamp(mx, mx + (mw - self.overlay_size.0 as i32).max(0));
+        let y = (at.1 - self.drag_offset.1).clamp(my, my + (mh - self.overlay_size.1 as i32).max(0));
+        self.overlay_pos = (x, y);
+        let _ = self.conn.configure_window(self.overlay, &ConfigureWindowAux::new().x(x).y(y));
+        let _ = self.conn.flush();
+        let monitor = (mx, my, mw.max(1) as u32, mh.max(1) as u32);
+        Some(pasteroll_app::OverlayMoved { origin_px: (x,y), monitor_px: monitor, work_px: monitor })
+    }
+
+    fn load_pin_colors(&self) -> String { crate::sys::load_pin_colors(&self.db) }
+    fn save_pin_colors(&mut self, text: &str) -> Result<(), String> { crate::sys::save_pin_colors(&self.db, text) }
 
     fn viewer_show(&mut self, rect: (i32, i32, u32, u32), rounded: bool) {
         let (w, h) = (rect.2.max(1), rect.3.max(1));

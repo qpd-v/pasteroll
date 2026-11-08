@@ -24,6 +24,9 @@ use x11rb::CURRENT_TIME;
 #[derive(Debug)]
 pub enum ShellAction {
     TogglePause,
+    Browse,
+    Preferences,
+    PreferenceCommand(String),
     /// The look chosen in the tray menu (Complete or No Bloat).
     SetMode(config::UiMode),
     Quit,
@@ -173,6 +176,9 @@ const ID_FOLDER: u32 = 3;
 const ID_QUIT: u32 = 4;
 const ID_COMPLETE: u32 = 5;
 const ID_NO_BLOAT: u32 = 6;
+const ID_ABOUT: u32 = 7;
+const ID_BROWSE: u32 = 8;
+const S_EXTRAS: u32 = 180;
 
 const S_SLIDER: [u32; 4] = [101, 102, 103, 104];
 const S_PAUSE: u32 = 120;
@@ -205,6 +211,7 @@ struct SettingsWin {
     gc: Gcontext,
     scale: f32,
     orig: Config,
+    extras: Option<crate::preferences::Editor>,
     steps: Steps,
     pos: [usize; 4],
     size_choices: Vec<u32>,
@@ -305,7 +312,9 @@ impl Shell {
         }
         for e in events {
             match e {
-                SniEvent::Activate | SniEvent::Settings => self.open_settings(p),
+                SniEvent::Activate => out.push(ShellAction::Browse),
+                SniEvent::Settings => self.open_settings(p),
+                SniEvent::About => out.push(ShellAction::Preferences),
                 SniEvent::ContextMenu(x, y) => self.open_menu(p, (x, y)),
                 SniEvent::Pause => out.push(ShellAction::TogglePause),
                 SniEvent::Mode(m) => out.push(ShellAction::SetMode(m)),
@@ -485,9 +494,11 @@ impl Shell {
         let w = 208.0f32;
         let pause_text = if self.paused { "Resume recording" } else { "Pause recording" };
         // (id, text, has the dot): the two looks are radio items
-        let rows: [(u32, &str, bool); 6] = [
+        let rows: [(u32, &str, bool); 8] = [
             (ID_PAUSE, pause_text, false),
+            (ID_BROWSE, "Open history", false),
             (ID_SETTINGS, "Settings...", false),
+            (ID_ABOUT, "About / Rolls...", false),
             (ID_FOLDER, "Open data folder", false),
             (ID_COMPLETE, config::UiMode::Complete.label(), self.mode == config::UiMode::Complete),
             (ID_NO_BLOAT, config::UiMode::NoBloat.label(), self.mode == config::UiMode::NoBloat),
@@ -576,6 +587,24 @@ impl Shell {
 
     // ------------------------------------------------------------------ settings window
 
+    pub fn open_preferences(&mut self, p: &LinuxPlatform, data: &str, status: &str) {
+        if self.settings.is_none() { self.open_settings(p); }
+        if let (Some(s), Ok(mut extra)) = (self.settings.as_mut(), crate::preferences::Editor::new(data)) {
+            extra.status = status.into(); s.extras = Some(extra);
+        }
+        self.paint_settings(p);
+    }
+
+    /// Keep the standard Settings page from writing values the Rolls / appearance
+    /// page has just changed (the mode and the picture folder).
+    pub fn sync_from_config(&mut self, cfg: &Config) {
+        if let Some(s) = self.settings.as_mut() {
+            s.orig = cfg.clone();
+            s.image_folder = cfg.image_folder.clone();
+            s.modifier = cfg.advanced_image_modifier;
+        }
+    }
+
     pub fn open_settings(&mut self, p: &LinuxPlatform) {
         if let Some(s) = &self.settings {
             // already open: raise it
@@ -657,6 +686,7 @@ impl Shell {
             exclude: cfg.exclude_apps.clone(),
             filters: cfg.custom_filters.iter().map(|f| f.name.clone()).collect(),
             orig: cfg,
+            extras: None,
             ex_sel: None,
             fl_sel: None,
             ex_top: 0,
@@ -689,6 +719,7 @@ impl Shell {
 
     fn settings_view(&self) -> Option<UiView> {
         let s = self.settings.as_ref()?;
+        if let Some(extras) = &s.extras { return Some(extras.view()); }
         let mut w: Vec<Widget> = Vec::new();
         if let Some((msg, _, _)) = &s.confirm {
             w.push(Widget::new(0, rect(16.0, 16.0, 488.0, 24.0), "Delete clips?", WKind::Heading));
@@ -797,6 +828,7 @@ impl Shell {
         if !s.status.is_empty() {
             w.push(Widget::new(0, rect(16.0, 672.0 + IMG_H, 300.0, 44.0), s.status.clone(), WKind::Note));
         }
+        w.push(Widget::new(S_EXTRAS, rect(16.0, 744.0, 230.0, 32.0), "Rolls / appearance / About...", WKind::Button { primary: false }));
         w.push(Widget::new(S_SAVE, rect(330.0, 680.0 + IMG_H, 84.0, 32.0), "Save", WKind::Button { primary: true }));
         w.push(Widget::new(S_CANCEL, rect(420.0, 680.0 + IMG_H, 84.0, 32.0), "Cancel", WKind::Button { primary: false }));
         Some(UiView { size: (SET_W, SET_H), chrome: Chrome::Window, widgets: w, hover: s.hover })
@@ -985,7 +1017,7 @@ impl Shell {
         let tray = self.tray.as_ref().map(|t| t.win);
         if Some(e.event) == tray {
             match e.detail {
-                1 => self.open_settings(p),
+                1 => out.push(ShellAction::Browse),
                 3 => self.open_menu(p, (i32::from(e.root_x), i32::from(e.root_y))),
                 _ => {}
             }
@@ -1020,6 +1052,8 @@ impl Shell {
         match id {
             Some(ID_PAUSE) => out.push(ShellAction::TogglePause),
             Some(ID_SETTINGS) => self.open_settings(p),
+            Some(ID_BROWSE) => out.push(ShellAction::Browse),
+            Some(ID_ABOUT) => out.push(ShellAction::Preferences),
             Some(ID_FOLDER) => out.push(ShellAction::OpenFolder),
             Some(ID_COMPLETE) => out.push(ShellAction::SetMode(config::UiMode::Complete)),
             Some(ID_NO_BLOAT) => out.push(ShellAction::SetMode(config::UiMode::NoBloat)),
@@ -1079,6 +1113,14 @@ impl Shell {
     fn settings_click(&mut self, p: &LinuxPlatform, e: &ButtonPressEvent, out: &mut Vec<ShellAction>) {
         let scale = p.scale();
         let (x, y) = (f32::from(e.event_x) / scale, f32::from(e.event_y) / scale);
+        if let Some(extras) = self.settings.as_mut().and_then(|s| s.extras.as_mut()) {
+            if e.detail != 1 { return; }
+            let back = hit(&extras.view(), x, y).is_some_and(|w| w.id == 52);
+            if back { self.settings.as_mut().unwrap().extras = None; }
+            else if let Some(command) = extras.click(x, y) { out.push(ShellAction::PreferenceCommand(command)); }
+            self.paint_settings(p);
+            return;
+        }
         let Some(view) = self.settings_view() else { return };
         let target = hit(&view, x, y).cloned();
         let mut action: Option<u32> = None;
@@ -1148,6 +1190,7 @@ impl Shell {
             }
         }
         match action {
+            Some(S_EXTRAS) => out.push(ShellAction::Preferences),
             Some(S_SAVE) => self.request_save(p, out),
             Some(S_CANCEL) => {
                 self.close_settings(p);
@@ -1240,6 +1283,12 @@ impl Shell {
             if matches!(k, Key::Escape | Key::Enter) {
                 self.close_notice(p);
             }
+            return;
+        }
+        if let Some(extras) = self.settings.as_mut().and_then(|s| s.extras.as_mut()) {
+            if k == Key::Escape { self.settings.as_mut().unwrap().extras = None; }
+            else { extras.key(k); }
+            self.paint_settings(p);
             return;
         }
         let (confirming, focus, image_focus) = match self.settings.as_ref() {

@@ -146,6 +146,8 @@ fn run_inner(db: PathBuf, capture: bool, max_seconds: Option<u64>) -> Result<(),
     controller.set_paste_policy(PastePolicy::new(cfg.warn_multiline_in_terminals, &cfg.terminal_apps));
     controller.set_advanced_modifier(cfg.advanced_image_modifier);
     controller.set_image_folder(&cfg.image_folder);
+    controller.set_roll_settings(cfg.rolls.clone());
+    platform.set_roll_settings(cfg.rolls.clone());
     controller.init_ui_mode(cfg.mode);
     pasteroll_app::Platform::ui_mode_changed(&mut platform, cfg.mode);
     controller.set_custom_filters(cfg.custom_filters.clone());
@@ -241,6 +243,29 @@ fn run_inner(db: PathBuf, capture: bool, max_seconds: Option<u64>) -> Result<(),
 fn shell_action(a: ShellAction, controller: &mut Controller, p: &mut LinuxPlatform, shell: &mut Shell, db: &std::path::Path) {
     match a {
         ShellAction::Quit => STOP.store(true, Ordering::SeqCst),
+        ShellAction::Browse => {
+            let at = pasteroll_app::Platform::cursor(p);
+            controller.handle(p, Event::BrowseAt(at.0, at.1));
+        }
+        ShellAction::Preferences | ShellAction::PreferenceCommand(_) => {
+            let status = if let ShellAction::PreferenceCommand(command) = a {
+                let result = crate::preferences::apply(db, &mut controller.store().borrow_mut(), &command);
+                if result.is_ok() {
+                    if let Ok(cfg) = ks::load_config(db) {
+                        controller.set_ui_mode(p, cfg.mode);
+                        controller.set_roll_settings(cfg.rolls.clone());
+                        controller.set_image_folder(&cfg.image_folder);
+                        p.set_roll_settings(cfg.rolls.clone());
+                        shell.set_mode(cfg.mode);
+                        shell.sync_from_config(&cfg);
+                    }
+                }
+                result.err().unwrap_or_else(|| "Saved.".into())
+            } else { String::new() };
+            if let Ok(data) = crate::preferences::state(db, &controller.store().borrow()) {
+                shell.open_preferences(p, &data, &status);
+            }
+        }
         ShellAction::TogglePause => {
             let paused = !controller.is_paused();
             controller.set_paused(paused);

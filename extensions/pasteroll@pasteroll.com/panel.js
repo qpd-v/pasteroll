@@ -26,6 +26,10 @@ export function createPanel(onAction) {
     settings.connect('activate', () => onAction(22));
     button.menu.addMenuItem(settings);
 
+    const extra = new PopupMenu.PopupMenuItem('Rolls / appearance / About…');
+    extra.connect('activate', () => onAction(30));
+    button.menu.addMenuItem(extra);
+
     const folder = new PopupMenu.PopupMenuItem('Open data folder');
     folder.connect('activate', () => onAction(23));
     button.menu.addMenuItem(folder);

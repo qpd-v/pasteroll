@@ -132,6 +132,7 @@ def main():
             os.close(rfd)
 
         app = None
+        applog = OUT / "app.log"
         try:
             call(EXE, "seed")
             sink = temp / "pasted.txt"
@@ -143,8 +144,9 @@ def main():
 
             def start_app():
                 nonlocal app
+                log = open(applog, "ab")
                 app = subprocess.Popen([str(EXE), "run", "--max-seconds", "200"], env=env,
-                                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                                       stdout=subprocess.DEVNULL, stderr=log)
                 processes.append(app)
                 wait_for(lambda: (temp / "data/pasteroll/app.stop").exists(), "App control pipe did not start")
                 time.sleep(0.5)
@@ -157,7 +159,10 @@ def main():
                     raise AssertionError("App did not exit cleanly after stop")
                 (temp / "data/pasteroll/app.stop").unlink(missing_ok=True)
 
+            collapsed = [False]
+
             def activate():
+                collapsed[0] = False
                 call("xdotool", "windowfocus", target)
                 call("xdotool", "mousemove", "150", "130", "keydown", "Control_L", "keydown", "Shift_L",
                      "click", "2", "keyup", "Shift_L", "keyup", "Control_L")
@@ -169,11 +174,14 @@ def main():
                 """Clicks a row of the open carousel, optionally holding Ctrl and/or Shift."""
                 x, y = carousel(520, 440)
                 held = (["Control_L"] if ctrl else []) + (["Shift_L"] if shift else [])
-                args = ["mousemove", str(x + ROW_X), str(y + ROW_Y[name])]
+                row_y = ROW_Y[name] + (27 if collapsed[0] else 0)
+                args = ["mousemove", str(x + ROW_X), str(y + row_y)]
                 args += [a for k in held for a in ("keydown", k)] + ["click", button]
                 args += [a for k in reversed(held) for a in ("keyup", k)]
                 call("xdotool", *args)
                 time.sleep(0.25)
+                if ctrl:
+                    collapsed[0] = True
 
             def click_target():
                 # an empty part of the terminal, away from the carousel
@@ -223,8 +231,12 @@ def main():
             # --- two clips chosen with Ctrl+click, pasted one per line by clicking the target
             activate()
             wait_for(lambda: carousel(520, 440), "Carousel did not open")
-            row("meeting", ctrl=True)
-            row("capture", ctrl=True)
+            # Keyboard choosing avoids depending on row positions while the active
+            # card collapses into a one-line row. Walk past the picture and file.
+            key("Down")
+            key("Down")
+            key("ctrl+m")
+            key("shift+Down")
             screenshot("picked.png")
             if sink_new():
                 raise AssertionError("choosing clips typed something into the target")
@@ -237,12 +249,25 @@ def main():
                 raise AssertionError(f"wrong text in the target: {sink_lines()!r}")
             passed("Ctrl+click chooses clips and a click on the target pastes them one per line")
 
+            # Joined results are recorded in history. Start each selection scenario
+            # with the same synthetic seed, rather than clicking shifted rows.
+            def reset_seed():
+                stop_app()
+                call(EXE, "clear", "--yes")
+                call(EXE, "config", "set", "mode", "complete")
+                call(EXE, "seed")
+                start_app()
+
             # --- a range with Ctrl+Shift+click, in the order of the list
+            reset_seed()
             mark_sink()
             activate()
             wait_for(lambda: carousel(520, 440), "Carousel did not open")
-            row("meeting", ctrl=True)
-            row("url", ctrl=True, shift=True)
+            key("Down")
+            key("Down")
+            key("ctrl+m")
+            for _ in range(2):
+                key("shift+Down")
             click_target()
             wait_for(closed, "Clicking the target did not close the carousel")
             time.sleep(0.5)
@@ -253,11 +278,15 @@ def main():
             passed("Ctrl+Shift+click chooses a range")
 
             # --- Ctrl+C copies without pasting
+            reset_seed()
             mark_sink()
             activate()
             wait_for(lambda: carousel(520, 440), "Carousel did not open")
-            row("capture", ctrl=True)
-            row("url", ctrl=True)
+            key("Down")
+            key("Down")
+            key("Down")
+            key("ctrl+m")
+            key("shift+Down")
             key("ctrl+c")
             wait_for(closed, "Ctrl+C did not close the carousel")
             wait_for(lambda: clipboard_text() == CAPTURE + "\n" + URL, "The clipboard does not hold both clips")
@@ -267,6 +296,7 @@ def main():
             passed("Ctrl+C copies the chosen clips without pasting")
 
             # --- the right-click menu
+            reset_seed()
             activate()
             wait_for(lambda: carousel(520, 440), "Carousel did not open")
             x, y = carousel(520, 440)
@@ -333,6 +363,71 @@ def main():
             time.sleep(1.5)  # it starts again from the saved file
             wait_for(lambda: (temp / "data/pasteroll/app.stop").exists(), "The program did not start again")
             stop_app()
+
+            # --- the Rolls / appearance page changes the look and writes it to config.toml
+            reset_seed()
+            stop_app()
+            env["PASTEROLL_OPEN_SETTINGS"] = "1"
+            start_app()
+            win = wait_for(lambda: carousel(520, 792), "The Settings window did not open for preferences")
+            time.sleep(0.4)
+            call("xdotool", "mousemove", str(win[0] + 131), str(win[1] + 760), "click", "1")
+            time.sleep(0.4)
+            screenshot("preferences.png")
+            call("xdotool", "mousemove", str(win[0] + 50), str(win[1] + 61), "click", "1")
+            time.sleep(0.2)
+            call("xdotool", "mousemove", str(win[0] + 361), str(win[1] + 760), "click", "1")
+            config_file = temp / "data/pasteroll/config.toml"
+            wait_for(lambda: "mode = \"no-bloat\"" in config_file.read_text(),
+                     "The preferences page did not save No Bloat")
+            passed("the Rolls / appearance page changes and saves the look")
+            # back to the standard page, then Save: it must not restore the old look
+            call("xdotool", "mousemove", str(win[0] + 457), str(win[1] + 760), "click", "1")
+            time.sleep(0.3)
+            call("xdotool", "mousemove", str(win[0] + 372), str(win[1] + 760), "click", "1")
+            time.sleep(1.5)
+            if "mode = \"no-bloat\"" not in config_file.read_text():
+                raise AssertionError("the standard Settings page restored the old look")
+            passed("standard Settings keeps the look saved from Rolls / appearance")
+            env.pop("PASTEROLL_OPEN_SETTINGS")
+            stop_app()
+
+            # --- drag the carousel by an empty margin
+            reset_seed()
+            activate()
+            start = wait_for(lambda: carousel(520, 440), "Carousel did not open for dragging")
+            call("xdotool", "mousemove", str(start[0] + 10), str(start[1] + 40), "mousedown", "1")
+            time.sleep(0.2)
+            call("xdotool", "mousemove", str(start[0] + 90), str(start[1] + 100))
+            call("xdotool", "mouseup", "1")
+            moved = wait_for(lambda: (lambda p: p if p and p != start else None)(carousel(520, 440)),
+                             "Dragging did not move the carousel", 4)
+            if abs(moved[0] - start[0]) < 40 or abs(moved[1] - start[1]) < 40:
+                raise AssertionError(f"the carousel moved too little: {start} -> {moved}")
+            screenshot("dragged.png")
+            key("Escape")
+            wait_for(closed, "Escape did not close the dragged carousel")
+            passed("dragging an empty margin moves the carousel")
+
+            # --- pin open: the keyboard goes back to the target, the carousel stays
+            mark_sink()
+            activate()
+            wait_for(lambda: carousel(520, 440), "Carousel did not open for pinning")
+            key("ctrl+k")
+            wait_for(lambda: "session pinned open" in applog.read_text(errors="replace"),
+                     "Ctrl+K did not pin the carousel open", 4)
+            key("Escape")
+            time.sleep(0.3)
+            if carousel(520, 440) is None:
+                raise AssertionError("Escape closed a pinned-open carousel")
+            click_target()
+            time.sleep(0.4)
+            if carousel(520, 440) is None:
+                raise AssertionError("clicking outside closed a pinned-open carousel")
+            if sink_new():
+                raise AssertionError("a plain outside click pasted while pinned open")
+            stop_app()
+            passed("Ctrl+K pins the carousel open and releases the keyboard to the target")
         except BaseException:
             try:
                 screenshot("failure.png")

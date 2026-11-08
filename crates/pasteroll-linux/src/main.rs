@@ -14,8 +14,28 @@ fn main() {
 
 #[cfg(unix)]
 mod clipboard;
+mod bindings;
+#[cfg(unix)]
+mod keystore {
+    pub use pasteroll_core::keystore::{load_config, read_config_text, config_path};
+    pub fn default_db() -> Result<std::path::PathBuf, String> { crate::sys::default_db() }
+    pub fn open_store(db: &std::path::Path) -> Result<pasteroll_core::Store, String> {
+        pasteroll_core::keystore::open_store::<crate::sys::LinuxOs>(db)
+    }
+    pub fn write_config_text(db: &std::path::Path, text: &str) -> Result<(), String> {
+        pasteroll_core::keystore::write_config_text::<crate::sys::LinuxOs>(db, text)
+    }
+}
+#[cfg(unix)]
+#[path = "../../pasteroll-app/src/mcp.rs"]
+mod mcp;
+#[cfg(unix)]
+#[path = "../../pasteroll-app/src/brain_cli.rs"]
+mod brain_cli;
 #[cfg(unix)]
 mod dialogs;
+#[cfg(unix)]
+mod preferences;
 #[cfg(unix)]
 mod install;
 #[cfg(unix)]
@@ -484,7 +504,7 @@ mod cli {
 
     fn usage() -> i32 {
         eprintln!(
-            "usage: pasteroll run | status | config [show|path|init|set KEY VALUE] | exclude PROGRAM | \
+            "usage: pasteroll run | status | brain [status|on|off|add ROLL|remove ROLL] | mcp | mcp-config | config [show|path|init|set KEY VALUE] | exclude PROGRAM | \
              clear --yes [--keep-pinned] | repair --yes | rotate-key | key-export --out FILE | \
              key-import --in FILE [--force] | reset-history --yes | seed | \
              stop | wayland-check | install | uninstall [--remove-data --yes] | autostart [on|off]\n\
@@ -558,6 +578,9 @@ mod cli {
                 Ok(()) => 0,
                 Err(e) => fail(e),
             },
+            "brain" => crate::brain_cli::brain_cmd(&db, &args),
+            "mcp" => crate::mcp::run(&db),
+            "mcp-config" => crate::brain_cli::mcp_config(&db),
             "run" => run_cmd(&args, db),
             "--version" | "-V" | "version" => {
                 println!("pasteroll {}", env!("CARGO_PKG_VERSION"));

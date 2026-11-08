@@ -77,7 +77,8 @@ pub fn classify(km: &Keymap, code: u8, state: u16) -> Option<Key> {
         if ctrl && !shift && state & (ALT | SUPER) == 0 {
             return match base | 0x20 {
                 0x79 => Some(Key::CtrlY),
-                0x70 => Some(Key::CtrlP),
+                0x70 => Some(Key::CtrlF), // compatibility with beta.4
+                0x6b => Some(Key::CtrlK),
                 0x6d => Some(Key::CtrlM),
                 0x61 => Some(Key::CtrlA),
                 0x63 => Some(Key::CtrlC),
@@ -201,7 +202,7 @@ mod tests {
     #[test]
     fn ctrl_p_pins_and_other_ctrl_keys_are_ignored() {
         let k = km();
-        assert_eq!(classify(&k, 10, CONTROL), Some(Key::CtrlP));
+        assert_eq!(classify(&k, 10, CONTROL), Some(Key::CtrlF));
         assert_eq!(classify(&k, 9, CONTROL), Some(Key::CtrlS), "Ctrl+S saves in the viewer");
         assert_eq!(classify(&k, 8, CONTROL), Some(Key::CtrlA));
         assert_eq!(classify(&k, 18, CONTROL), Some(Key::CtrlE));
