@@ -1,7 +1,7 @@
 pasteroll-update-latest 1
-version 0.1.0-beta.18
-note Rolls: separate collections of clips you roll through left and right, with LEFT and RIGHT built in on either side of Main.
-note Drag the carousel by its empty margins; pin it open so it stays above other windows while you use them.
-note Pins are now Favorites everywhere, and Ctrl+F makes a favorite (the star still works in the expanded viewer).
-note Multi-paste and the Paste button work while the carousel is pinned open.
-note Set which side of Main each roll sits on, and its order, in Settings.
+version 0.1.0-beta.19
+note Linux catches up: rolls, favorite tiles, pin-open, dragging, No Bloat and multi-paste.
+note A local read-only MCP server lets Claude Code, Codex and OpenCode read shared rolls.
+note The GNOME 46 package uses the matched protocol-4 Shell companion.
+note Windows keeps its signed updater; Linux packages update by hand.
+note Ctrl+F is Favorite everywhere; Ctrl+P still works for Linux beta.4 upgraders.
