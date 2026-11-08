@@ -40,6 +40,8 @@ const DOWNLOAD_TIME: Duration = Duration::from_secs(300);
 /// A small file (the newest-version note, a manifest or a signature) may take this long.
 const SMALL_TIME: Duration = Duration::from_secs(45);
 const MAX_HOPS: usize = 3;
+/// A cached gateway error can stick to one exact URL. Restarting with a new query key avoids it.
+const MAX_TRANSIENT_RETRIES: usize = 2;
 
 const FILE_HEADERS: &str = "Accept: application/octet-stream";
 
@@ -127,9 +129,12 @@ fn download_within(
     cancel: &AtomicBool,
 ) -> Result<Got, String> {
     let started = Instant::now();
+    let original = url.to_owned();
     let mut dest = dest;
-    let mut current = url.to_owned();
-    for hop in 0..=MAX_HOPS {
+    let mut current = original.clone();
+    let mut hops = 0usize;
+    let mut transient_retries = 0usize;
+    loop {
         let target = parse_target(&current).ok_or_else(|| "the download address is not acceptable".to_owned())?;
         if !host_allowed(&target.host, hosts) {
             return Err("the download would leave GitHub, so it was not followed".to_owned());
@@ -181,16 +186,28 @@ fn download_within(
                 return Ok(Got { size, sha256: hasher.finish() });
             }
             301 | 302 | 303 | 307 | 308 => {
-                if hop == MAX_HOPS {
+                if hops == MAX_HOPS {
                     return Err("the download was redirected too many times".to_owned());
                 }
+                hops += 1;
                 // an absolute address only; it is checked like the first one
                 current = response.location().ok_or_else(|| "the download was redirected without saying where".to_owned())?;
+            }
+            502 | 503 | 504 if transient_retries < MAX_TRANSIENT_RETRIES => {
+                if cancel.load(Ordering::Acquire) {
+                    return Err(CANCELLED.to_owned());
+                }
+                if started.elapsed() > time {
+                    return Err("the download took too long".to_owned());
+                }
+                transient_retries += 1;
+                hops = 0;
+                let separator = if original.contains('?') { '&' } else { '?' };
+                current = format!("{original}{separator}pasteroll_retry={}", started.elapsed().as_nanos());
             }
             s => return Err(status_message(s)),
         }
     }
-    Err("the download was redirected too many times".to_owned())
 }
 
 /// A small file (the manifest or its signature) into memory.
@@ -471,6 +488,19 @@ mod tests {
         assert!(err.contains("larger"), "{err}");
         assert!(mem.len() <= 3_000, "nothing past the limit is kept");
         let _ = server.join();
+    }
+
+    #[test]
+    fn a_transient_gateway_error_restarts_with_a_fresh_url() {
+        let body = b"ok".to_vec();
+        let (port, server) = serve(vec![
+            ("504 Gateway Timeout", String::new(), Vec::new(), None),
+            ("200 OK", String::new(), body.clone(), None),
+        ]);
+        assert_eq!(get_small(&local(port, "/a"), 100).unwrap(), body);
+        let requests = server.join().unwrap();
+        assert!(requests[0].starts_with("GET /a "), "{:?}", requests[0]);
+        assert!(requests[1].starts_with("GET /a?pasteroll_retry="), "{:?}", requests[1]);
     }
 
     #[test]
