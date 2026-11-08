@@ -27,7 +27,7 @@ jobs:
       - name: GNOME native desktop checks
         run: |
           export PASTEROLL_TEST_APP_BINARY="$PWD/target/x86_64-unknown-linux-musl/release/pasteroll"
-          bash scripts/wayland-spike/run-rootless.sh --phase3
+          bash scripts/wayland-spike/run.sh --phase3
       - uses: actions/upload-artifact@v4
         with:
           name: linux-candidates
