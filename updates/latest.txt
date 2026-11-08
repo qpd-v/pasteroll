@@ -1,7 +1,5 @@
 pasteroll-update-latest 1
-version 0.1.0-beta.19
-note Linux catches up: rolls, favorite tiles, pin-open, dragging, No Bloat and multi-paste.
-note A local read-only MCP server lets Claude Code, Codex and OpenCode read shared rolls.
-note The GNOME 46 package uses the matched protocol-4 Shell companion.
-note Windows keeps its signed updater; Linux packages update by hand.
-note Ctrl+F is Favorite everywhere; Ctrl+P still works for Linux beta.4 upgraders.
+version 0.1.0-beta.20
+note Ctrl+click an image clip in the carousel opens Advanced Image Paste.
+note Ctrl+click text and file clips still chooses them for Multi-paste.
+note Update downloads retry transient GitHub 502, 503 and 504 responses.
