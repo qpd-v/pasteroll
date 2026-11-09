@@ -33,6 +33,12 @@ pub fn cancel_requested() -> bool {
 
 /// GitHub's own hosts: the release page, and the two names its file storage has used.
 pub const GITHUB_HOSTS: [&str; 3] = ["github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"];
+/// The public API used to resolve an asset when GitHub's browser download URL fails.
+pub const API_HOSTS: [&str; 1] = ["api.github.com"];
+/// The API asset URL redirects to these GitHub file hosts.
+pub const API_ASSET_HOSTS: [&str; 3] = ["api.github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"];
+/// The signed website mirror used after both GitHub routes fail.
+pub const MIRROR_HOSTS: [&str; 1] = ["pasteroll.com"];
 
 /// A release file may take this long to arrive, in all. (A server that trickles bytes cannot keep
 /// resetting the per-operation timeouts: the whole download has this one limit.)
@@ -44,6 +50,7 @@ const MAX_HOPS: usize = 3;
 const MAX_TRANSIENT_RETRIES: usize = 4;
 
 const FILE_HEADERS: &str = "Accept: application/octet-stream";
+const JSON_HEADERS: &str = "Accept: application/vnd.github+json";
 
 /// Where the body goes.
 pub enum Dest<'a> {
@@ -128,6 +135,19 @@ fn download_within(
     progress: &mut dyn FnMut(u64, Option<u64>),
     cancel: &AtomicBool,
 ) -> Result<Got, String> {
+    download_within_headers(time, url, hosts, max, dest, progress, cancel, FILE_HEADERS)
+}
+
+fn download_within_headers(
+    time: Duration,
+    url: &str,
+    hosts: &[&str],
+    max: u64,
+    dest: Dest,
+    progress: &mut dyn FnMut(u64, Option<u64>),
+    cancel: &AtomicBool,
+    headers: &'static str,
+) -> Result<Got, String> {
     let started = Instant::now();
     let original = url.to_owned();
     let mut dest = dest;
@@ -139,7 +159,7 @@ fn download_within(
         if !host_allowed(&target.host, hosts) {
             return Err("the download would leave GitHub, so it was not followed".to_owned());
         }
-        let ep = Endpoint { host: target.host, port: target.port, secure: target.secure, path: target.path, headers: FILE_HEADERS };
+        let ep = Endpoint { host: target.host, port: target.port, secure: target.secure, path: target.path, headers };
         let response = send(&ep, &format!("Pasteroll/{}", env!("CARGO_PKG_VERSION")))?;
         match response.status {
             200 => {
@@ -215,6 +235,22 @@ fn download_within(
 pub fn download_small(url: &str, hosts: &[&str], max: usize) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
     download_within(SMALL_TIME, url, hosts, max as u64, Dest::Memory(&mut out, max), &mut |_, _| {}, &NEVER)?;
+    Ok(out)
+}
+
+/// A small GitHub API response (release metadata) into memory.
+pub fn download_small_json(url: &str, max: usize) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    download_within_headers(
+        SMALL_TIME,
+        url,
+        &API_HOSTS,
+        max as u64,
+        Dest::Memory(&mut out, max),
+        &mut |_, _| {},
+        &NEVER,
+        JSON_HEADERS,
+    )?;
     Ok(out)
 }
 

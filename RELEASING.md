@@ -16,6 +16,9 @@ Setup, the portable ZIP, the bare `pasteroll-<version>-windows-x64.exe`, the man
 SHA256SUMS. After the release is public, the note and its signature are committed as `updates/latest.txt`
 and `updates/latest.txt.sig` (installed copies read the newest version from there) in a commit whose
 subject starts with `Update pointer`.
+Mirror the six packages plus `update-manifest.txt` and its signature under
+`pasteroll-site/downloads/`; the updater uses that signed mirror after GitHub's normal and API
+download routes fail.
 
 ## Scope and acceptance
 

@@ -8,10 +8,11 @@
 
 use crate::fetch::{self, Dest};
 use crate::sigcheck::CngVerifier;
-use pasteroll_core::update::Version;
+use pasteroll_core::update::{Version, REPO};
+use pasteroll_core::json::{self, Json};
 use pasteroll_core::update_manifest::{self as um, Asset, Hasher};
 use std::fs::{File, OpenOptions};
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
@@ -247,6 +248,8 @@ pub const UPDATE_DIR: &str = "pasteroll-update";
 pub(crate) const FOLDER_MARKER: &str = ".pasteroll-update-folder";
 /// Written just before Setup is started, so the next start can say whether the update happened.
 const PENDING: &str = "pending.txt";
+/// The largest release-metadata response accepted from GitHub's API.
+const API_JSON_MAX: usize = 2 * 1024 * 1024;
 
 fn random_token() -> String {
     // 64 random bits from Windows; `create_new` refuses a name that already exists
@@ -328,12 +331,117 @@ pub enum Stage {
     Start,
 }
 
+/// The production updater gets the API and website fallbacks; the local end-to-end server does not.
+fn public_fallbacks(trust: &Trust) -> bool {
+    trust.hosts.iter().any(|host| host == "github.com")
+}
+
+fn api_release_url(version: &Version) -> String {
+    format!("https://api.github.com/repos/{REPO}/releases/tags/v{version}")
+}
+
+fn mirror_url(name: &str) -> String {
+    format!("https://pasteroll.com/downloads/{name}")
+}
+
+/// Picks the download URL for exactly `name` from GitHub's release metadata. The API asset URL is
+/// accepted only when it is the expected public endpoint with a numeric asset id.
+fn api_asset_url_from_json(bytes: &[u8], name: &str) -> Result<String, String> {
+    let text = std::str::from_utf8(bytes).map_err(|_| "GitHub API returned something that is not text".to_owned())?;
+    let release = json::parse(text).map_err(|e| format!("GitHub API returned invalid JSON: {e}"))?;
+    let assets = release
+        .get("assets")
+        .and_then(Json::as_array)
+        .ok_or_else(|| "GitHub API response has no asset list".to_owned())?;
+    let prefix = format!("https://api.github.com/repos/{REPO}/releases/assets/");
+    let mut found = None;
+    for asset in assets {
+        if asset.get("name").and_then(Json::as_str) != Some(name) {
+            continue;
+        }
+        if found.is_some() {
+            return Err(format!("GitHub API returned more than one asset named {name:?}"));
+        }
+        let url = asset
+            .get("url")
+            .and_then(Json::as_str)
+            .ok_or_else(|| format!("GitHub API asset {name:?} has no URL"))?;
+        let Some(id) = url.strip_prefix(&prefix) else {
+            return Err(format!("GitHub API asset {name:?} has an unexpected URL"));
+        };
+        if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(format!("GitHub API asset {name:?} has an invalid id"));
+        }
+        found = Some(url.to_owned());
+    }
+    found.ok_or_else(|| format!("GitHub API did not list {name:?}"))
+}
+
+fn api_asset_url(version: &Version, name: &str) -> Result<String, String> {
+    let bytes = fetch::download_small_json(&api_release_url(version), API_JSON_MAX)?;
+    api_asset_url_from_json(&bytes, name)
+}
+
+fn download_small_with_fallback(trust: &Trust, announced: &Version, name: &str) -> Result<Vec<u8>, String> {
+    let hosts: Vec<&str> = trust.hosts.iter().map(String::as_str).collect();
+    match fetch::download_small(&(trust.url)(announced, name), &hosts, um::MAX_SMALL_FILE_BYTES) {
+        Ok(bytes) => Ok(bytes),
+        Err(primary) if public_fallbacks(trust) => {
+            let via_api = api_asset_url(announced, name)
+                .and_then(|url| fetch::download_small(&url, &fetch::API_ASSET_HOSTS, um::MAX_SMALL_FILE_BYTES));
+            match via_api {
+                Ok(bytes) => Ok(bytes),
+                Err(api) => fetch::download_small(&mirror_url(name), &fetch::MIRROR_HOSTS, um::MAX_SMALL_FILE_BYTES)
+                    .map_err(|site| format!("GitHub: {primary}; GitHub API: {api}; website mirror: {site}")),
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn reset_download(file: &mut File) -> Result<(), String> {
+    file.set_len(0).map_err(|e| format!("could not reset the download file ({e})"))?;
+    file.seek(SeekFrom::Start(0)).map_err(|e| format!("could not reset the download file ({e})"))?;
+    Ok(())
+}
+
+fn download_file_with_fallback(
+    trust: &Trust,
+    announced: &Version,
+    name: &str,
+    size: u64,
+    file: &mut File,
+    progress: &mut dyn FnMut(u64, Option<u64>),
+) -> Result<fetch::Got, String> {
+    let hosts: Vec<&str> = trust.hosts.iter().map(String::as_str).collect();
+    let result = fetch::download(&(trust.url)(announced, name), &hosts, size, Dest::File(file), progress);
+    match result {
+        Ok(got) => Ok(got),
+        Err(primary) if public_fallbacks(trust) && primary != fetch::CANCELLED => {
+            progress(0, None);
+            let via_api = api_asset_url(announced, name).and_then(|url| {
+                reset_download(file)?;
+                fetch::download(&url, &fetch::API_ASSET_HOSTS, size, Dest::File(file), progress)
+            });
+            match via_api {
+                Ok(got) => Ok(got),
+                Err(api) => {
+                    progress(0, None);
+                    reset_download(file)?;
+                    fetch::download(&mirror_url(name), &fetch::MIRROR_HOSTS, size, Dest::File(file), progress)
+                        .map_err(|site| format!("GitHub: {primary}; GitHub API: {api}; website mirror: {site}"))
+                }
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
 /// Fetches and checks the signed manifest for `announced`; returns it only if it is genuine, names
 /// exactly that version, and is newer than `current`.
 pub fn check_release(trust: &Trust, announced: &Version, current: &Version, say: &mut dyn FnMut(&str)) -> Result<um::Manifest, (Stage, String)> {
-    let hosts: Vec<&str> = trust.hosts.iter().map(String::as_str).collect();
     say("Checking the update...");
-    let small = |name: &str| fetch::download_small(&(trust.url)(announced, name), &hosts, um::MAX_SMALL_FILE_BYTES).map_err(|e| (Stage::Download, e));
+    let small = |name: &str| download_small_with_fallback(trust, announced, name).map_err(|e| (Stage::Download, e));
     let (manifest_bytes, signature_bytes) = (small(um::MANIFEST_NAME)?, small(um::SIGNATURE_NAME)?);
     let manifest = um::verify_manifest(&manifest_bytes, &signature_bytes, &trust.keys, &CngVerifier).map_err(|e| (Stage::Verify, e))?;
     um::check_installable(&manifest, announced, current).map_err(|e| (Stage::Verify, e))?;
@@ -353,7 +461,6 @@ pub fn prepare_in(
     say: &mut dyn FnMut(&str),
     progress: &mut dyn FnMut(u64, Option<u64>),
 ) -> Result<Verified, (Stage, String)> {
-    let hosts: Vec<&str> = trust.hosts.iter().map(String::as_str).collect();
     let manifest = check_release(trust, announced, current, say)?;
     let asset = match want {
         Want::Setup => manifest.setup,
@@ -371,7 +478,7 @@ pub fn prepare_in(
             .share_mode(0) // nobody else opens it while it is written
             .open(&path)
             .map_err(|e| (Stage::Folder, format!("could not create the download file ({e})")))?;
-        let got = fetch::download(&(trust.url)(announced, &asset.name), &hosts, asset.size, Dest::File(&mut file), progress);
+        let got = download_file_with_fallback(trust, announced, &asset.name, asset.size, &mut file, progress);
         let got = match got {
             Ok(g) => g,
             Err(e) => {
@@ -752,6 +859,100 @@ mod tests {
             latest_hosts: vec!["127.0.0.1".into()],
             latest_url: Box::new(move |name| format!("{latest_base}/{name}")),
         }
+    }
+
+    #[test]
+    fn the_release_api_finds_an_asset_by_exact_name() {
+        let body = r#"{"assets":[{"name":"other","url":"https://api.github.com/repos/REPO_NAME/releases/assets/1"},{"name":"update-manifest.txt","url":"https://api.github.com/repos/REPO_NAME/releases/assets/42"}]}"#
+            .replace("REPO_NAME", REPO);
+        let url = api_asset_url_from_json(body.as_bytes(), "update-manifest.txt").unwrap();
+        assert_eq!(url, format!("https://api.github.com/repos/{REPO}/releases/assets/42"));
+        assert!(api_asset_url_from_json(body.as_bytes(), "missing").is_err());
+    }
+
+    #[test]
+    fn the_release_api_refuses_an_unexpected_asset_url() {
+        let body = r#"{"assets":[{"name":"update-manifest.txt","url":"https://evil.example/update-manifest.txt"}]}"#;
+        assert!(api_asset_url_from_json(body.as_bytes(), "update-manifest.txt").is_err());
+        let body = r#"{"assets":"not a list"}"#;
+        assert!(api_asset_url_from_json(body.as_bytes(), "update-manifest.txt").is_err());
+    }
+
+    #[test]
+    #[ignore = "uses the public website mirror"]
+    fn live_file_fallback_uses_the_site_when_both_github_routes_fail() {
+        let missing = Version::parse("9.9.9").unwrap();
+        let trust = Trust {
+            keys: Vec::new(),
+            hosts: fetch::GITHUB_HOSTS.iter().map(|h| (*h).to_owned()).collect(),
+            url: Box::new(|v, name| {
+                format!("https://github.com/{REPO}/releases/download/v{v}/not-{name}")
+            }),
+            latest_hosts: Vec::new(),
+            latest_url: Box::new(|_| String::new()),
+        };
+        let name = "pasteroll-0.1.0-beta.20-windows-x64-setup.exe";
+        let path = scratch("live-site-fallback").join("setup.exe");
+        let mut file = OpenOptions::new().write(true).create_new(true).open(&path).unwrap();
+        let got = download_file_with_fallback(&trust, &missing, name, 7 * 1024 * 1024, &mut file, &mut |_, _| {})
+            .expect("the website mirror downloads the setup");
+        drop(file);
+        assert_eq!(got.size, 4_862_747);
+        assert_eq!(um::hex(&got.sha256), "50f342d7a7af2173a915b0fbd6312aaaee2dbd1e756caf8a55bda84813312525");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    #[ignore = "uses the public GitHub API"]
+    fn live_small_fallback_uses_the_api_after_a_bad_download_url() {
+        let version = Version::parse("0.1.0-beta.20").unwrap();
+        let trust = Trust {
+            keys: Vec::new(),
+            hosts: fetch::GITHUB_HOSTS.iter().map(|h| (*h).to_owned()).collect(),
+            url: Box::new(|v, name| {
+                format!("https://github.com/{REPO}/releases/download/v{v}/not-{name}")
+            }),
+            latest_hosts: Vec::new(),
+            latest_url: Box::new(|_| String::new()),
+        };
+        let body = download_small_with_fallback(&trust, &version, um::MANIFEST_NAME).unwrap();
+        assert!(body.starts_with(b"pasteroll-update-manifest 1\nversion 0.1.0-beta.20\n"));
+    }
+
+    #[test]
+    #[ignore = "uses the public GitHub API"]
+    fn live_file_fallback_uses_the_api_after_a_bad_download_url() {
+        let version = Version::parse("0.1.0-beta.20").unwrap();
+        let name = um::setup_name(&version);
+        let trust = Trust {
+            keys: Vec::new(),
+            hosts: fetch::GITHUB_HOSTS.iter().map(|h| (*h).to_owned()).collect(),
+            url: Box::new(|v, name| {
+                format!("https://github.com/{REPO}/releases/download/v{v}/not-{name}")
+            }),
+            latest_hosts: Vec::new(),
+            latest_url: Box::new(|_| String::new()),
+        };
+        let path = scratch("live-api-fallback").join("setup.exe");
+        let mut file = OpenOptions::new().write(true).create_new(true).open(&path).unwrap();
+        let got = download_file_with_fallback(&trust, &version, &name, 7 * 1024 * 1024, &mut file, &mut |_, _| {})
+            .expect("the API fallback downloads the setup");
+        drop(file);
+        assert_eq!(got.size, 4_862_747);
+        assert_eq!(um::hex(&got.sha256), "50f342d7a7af2173a915b0fbd6312aaaee2dbd1e756caf8a55bda84813312525");
+        let mut head = [0u8; 2];
+        File::open(&path).unwrap().read_exact(&mut head).unwrap();
+        assert_eq!(&head, b"MZ");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    #[ignore = "uses the public GitHub API"]
+    fn live_github_api_downloads_the_release_manifest() {
+        let version = Version::parse("0.1.0-beta.20").unwrap();
+        let url = api_asset_url(&version, um::MANIFEST_NAME).unwrap();
+        let body = fetch::download_small(&url, &fetch::API_ASSET_HOSTS, um::MAX_SMALL_FILE_BYTES).unwrap();
+        assert!(body.starts_with(b"pasteroll-update-manifest 1\nversion 0.1.0-beta.20\n"));
     }
 
     fn release() -> Release {
