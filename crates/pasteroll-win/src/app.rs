@@ -279,7 +279,7 @@ pub fn create(opts: &Options) -> Result<HWND> {
         controller.set_image_folder(&cfg.image_folder);
         controller.init_ui_mode(cfg.mode);
         controller.set_roll_settings(cfg.rolls.clone());
-        crate::hooks::set_roll_bindings(cfg.rolls.left_key, cfg.rolls.right_key, cfg.rolls.tilt_left, cfg.rolls.tilt_right);
+        crate::hooks::set_key_bindings(cfg.rolls.left_key, cfg.rolls.right_key, cfg.rolls.save_key, cfg.rolls.tilt_left, cfg.rolls.tilt_right);
         controller.set_ocr(Arc::new(crate::ocr::WinOcr));
         let platform = WinPlatform::new(hwnd, overlay, viewer, hooks).with_db(&opts.db);
         SetTimer(Some(hwnd), TIMER_TICK, 25, None);

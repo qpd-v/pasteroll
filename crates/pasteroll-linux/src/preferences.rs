@@ -13,6 +13,7 @@ pub fn state(db: &Path, store: &Store) -> Result<String, String> {
         ("most_used", Json::Bool(c.rolls.most_used)), ("images", Json::Bool(c.rolls.images)),
         ("left_key", string(c.rolls.left_key.map(|k| k.text()).unwrap_or_default())),
         ("right_key", string(c.rolls.right_key.map(|k| k.text()).unwrap_or_default())),
+        ("save_key", string(c.rolls.save_key.map(|k| k.text()).unwrap_or_default())),
         ("tilt_left", string(c.rolls.tilt_left.key())), ("tilt_right", string(c.rolls.tilt_right.key())),
         ("image_folder", string(c.image_folder)), ("modifier", string(c.advanced_image_modifier.label().to_ascii_lowercase())),
         ("rolls", Json::Array(rolls.iter().map(|r| object(vec![
@@ -34,14 +35,17 @@ pub fn apply(db: &Path, store: &mut Store, input: &str) -> Result<(), String> {
     match command {
         "settings" => {
             let mut saved = crate::keystore::read_config_text(db)?;
-            if j.get("left_key").is_some() && j.get("right_key").is_some() {
-                for key in ["roll_left_key", "roll_right_key"] {
+            // Clear every shortcut the request changes before writing the new ones, so swapping
+            // two of them does not trip over a temporary collision.
+            for (field, key) in [("left_key", "roll_left_key"), ("right_key", "roll_right_key"), ("save_key", "save_key")] {
+                if j.get(field).is_some() {
                     saved = config::set_value(&saved, key, "").map_err(|e| e.join("; "))?;
                 }
             }
             for (field, key) in [("mode", "mode"), ("left", "rolls.left_roll"), ("right", "rolls.right_roll"),
                 ("most_used", "rolls.most_used"), ("images", "rolls.images"),
                 ("left_key", "rolls.roll_left_key"), ("right_key", "rolls.roll_right_key"),
+                ("save_key", "rolls.save_key"),
                 ("tilt_left", "rolls.tilt_left"), ("tilt_right", "rolls.tilt_right"),
                 ("image_folder", "image_folder"), ("modifier", "advanced_image_modifier")] {
                 if let Some(value) = j.get(field) {
@@ -113,16 +117,16 @@ impl Editor {
         for (i,(key,label)) in [("left","LEFT"),("right","RIGHT"),("most_used","Most used"),("images","Images")].iter().enumerate() {
             add(10+i as u32,16.+i as f32*122.,86.,120.,26.,label.to_string(),WKind::Check { checked: self.data.get(key).and_then(Json::as_bool).unwrap_or(false) });
         }
-        for (i,(key,label)) in [("left_key","Roll left"),("right_key","Roll right"),("image_folder","Picture folder")].iter().enumerate() {
+        for (i,(key,label)) in [("left_key","Roll left"),("right_key","Roll right"),("save_key","Save clip"),("image_folder","Picture folder")].iter().enumerate() {
             let y=124.+i as f32*38.;
             add(0,16.,y,120.,28.,label.to_string(),WKind::Label);
             add(20+i as u32,140.,y,364.,28.,self.value(key),WKind::Entry { placeholder:"".into(),focused:self.focus==20+i as u32 });
         }
         for (i,key) in ["tilt_left","tilt_right"].iter().enumerate() {
-            add(30+i as u32,16.+i as f32*246.,242.,242.,30.,format!("Tilt {}: {}",if i==0 {"left"} else {"right"},self.value(key)),WKind::Button{primary:false});
+            add(30+i as u32,16.+i as f32*246.,276.,242.,30.,format!("Tilt {}: {}",if i==0 {"left"} else {"right"},self.value(key)),WKind::Button{primary:false});
         }
         let rows=self.data.get("rolls").and_then(Json::as_array).unwrap_or(&[]);
-        add(40,16.,286.,488.,196.,String::new(),WKind::List { items:rows.iter().map(|r| format!("{} · {}",text(r,"name").unwrap_or(""),text(r,"side").unwrap_or(""))).collect(),selected:self.selected,top:0 });
+        add(40,16.,314.,488.,168.,String::new(),WKind::List { items:rows.iter().map(|r| format!("{} · {}",text(r,"name").unwrap_or(""),text(r,"side").unwrap_or(""))).collect(),selected:self.selected,top:0 });
         add(41,16.,494.,290.,28.,self.entry.clone(),WKind::Entry { placeholder:"Roll name".into(),focused:self.focus==41 });
         for (id,x,label) in [(42,314.,"New"),(43,410.,"Rename")] { add(id,x,494.,94.,28.,label.into(),WKind::Button{primary:false}); }
         for (i,label) in ["Left","Right","Up","Down","Remove"].iter().enumerate() { add(44+i as u32,16.+i as f32*98.,534.,94.,28.,label.to_string(),WKind::Button{primary:false}); }
@@ -136,7 +140,7 @@ impl Editor {
     pub fn click(&mut self, x:f32,y:f32) -> Option<String> {
         use pasteroll_render::{hit,list_row_at};
         let view=self.view(); let widget=hit(&view,x,y)?; let id=widget.id;
-        self.focus=if matches!(id,20..=22|41) {id} else {0};
+        self.focus=if matches!(id,20..=23|41) {id} else {0};
         self.status.clear();
         if id!=50 { self.confirming=false; }
         match id {
@@ -156,7 +160,7 @@ impl Editor {
         None
     }
     pub fn key(&mut self, key:pasteroll_app::Key) {
-        let field=match self.focus {20=>"left_key",21=>"right_key",22=>"image_folder",41=>"entry",_=>return};
+        let field=match self.focus {20=>"left_key",21=>"right_key",22=>"save_key",23=>"image_folder",41=>"entry",_=>return};
         let mut value=if field=="entry" {self.entry.clone()} else {self.value(field)};
         match key { pasteroll_app::Key::Char(c) if value.len()<4096 => value.push(c), pasteroll_app::Key::Backspace=>{value.pop();},pasteroll_app::Key::CtrlA=>value.clear(),_=>{} }
         if field=="entry" {self.entry=value;} else {self.set(field,string(value));}

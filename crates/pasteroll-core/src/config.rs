@@ -90,7 +90,8 @@ impl UiMode {
     }
 }
 
-/// The rolls: which of the computed ones are in the rotation, and what rolls the carousel.
+/// The rolls and the shortcut that saves a clip: which computed rolls are in the rotation and
+/// which keys roll the carousel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RollSettings {
     /// The built-in LEFT and RIGHT rolls are in the rotation (to the left and right of Main). They
@@ -105,6 +106,8 @@ pub struct RollSettings {
     pub left_key: Option<crate::bindings::Combo>,
     /// Rolls to the next roll.
     pub right_key: Option<crate::bindings::Combo>,
+    /// Saves the clip shown as a file. Ctrl+S by default; empty disables the shortcut.
+    pub save_key: Option<crate::bindings::Combo>,
     /// What a click of a tilt wheel to the left does, and to the right.
     pub tilt_left: crate::bindings::TiltAction,
     pub tilt_right: crate::bindings::TiltAction,
@@ -120,6 +123,7 @@ impl Default for RollSettings {
             images: false,
             left_key: Some(Combo { ctrl: true, alt: false, shift: false, key: ComboKey::Left }),
             right_key: Some(Combo { ctrl: true, alt: false, shift: false, key: ComboKey::Right }),
+            save_key: Some(Combo { ctrl: true, alt: false, shift: false, key: ComboKey::Char('s') }),
             tilt_left: TiltAction::RollLeft,
             tilt_right: TiltAction::RollRight,
         }
@@ -284,6 +288,8 @@ images = false
 # They need Ctrl or Alt (or be an F key). "" for none.
 roll_left_key = "ctrl+left"
 roll_right_key = "ctrl+right"
+# Save the clip shown as a text file, file list or PNG image. Ctrl+S by default; "" disables it.
+save_key = "ctrl+s"
 # What a click of a tilt wheel (a sideways wheel, or a scroll wheel that tilts) does while the carousel
 # is open: "roll-left", "roll-right" or "none".
 tilt_left = "roll-left"
@@ -532,16 +538,14 @@ pub fn parse(text: &str) -> Result<Config, Vec<String>> {
                                 cfg.rolls.images = b;
                             }
                         }
-                        "roll_left_key" | "roll_right_key" => match v.as_str().map(crate::bindings::parse_optional) {
-                            Some(Ok(c)) => {
-                                if k == "roll_left_key" {
-                                    cfg.rolls.left_key = c;
-                                } else {
-                                    cfg.rolls.right_key = c;
-                                }
-                            }
+                        "roll_left_key" | "roll_right_key" | "save_key" => match v.as_str().map(crate::bindings::parse_optional) {
+                            Some(Ok(c)) => match k {
+                                "roll_left_key" => cfg.rolls.left_key = c,
+                                "roll_right_key" => cfg.rolls.right_key = c,
+                                _ => cfg.rolls.save_key = c,
+                            },
                             Some(Err(e)) => problems.push(format!("{k}: {e}")),
-                            None => problems.push(format!("{k} must be text such as \"ctrl+left\", or \"\"")),
+                            None => problems.push(format!("{k} must be text such as \"ctrl+s\", or \"\"")),
                         },
                         "tilt_left" | "tilt_right" => match v.as_str().and_then(crate::bindings::TiltAction::parse) {
                             Some(a) => {
@@ -632,8 +636,14 @@ pub fn parse(text: &str) -> Result<Config, Vec<String>> {
         }
     }
     problems.extend(cfg.limits.problems());
-    if cfg.rolls.left_key.is_some() && cfg.rolls.left_key == cfg.rolls.right_key {
-        problems.push("roll_left_key and roll_right_key are the same key".into());
+    for (first, first_name, second, second_name) in [
+        (cfg.rolls.left_key, "roll_left_key", cfg.rolls.right_key, "roll_right_key"),
+        (cfg.rolls.left_key, "roll_left_key", cfg.rolls.save_key, "save_key"),
+        (cfg.rolls.right_key, "roll_right_key", cfg.rolls.save_key, "save_key"),
+    ] {
+        if first.is_some() && first == second {
+            problems.push(format!("{first_name} and {second_name} are the same key"));
+        }
     }
     if problems.is_empty() {
         Ok(cfg)
@@ -732,7 +742,7 @@ pub fn set_value(text: &str, key: &str, val: &str) -> Result<String, Vec<String>
             };
             ("rolls", value(b))
         }
-        "roll_left_key" | "roll_right_key" => match crate::bindings::parse_optional(val) {
+        "roll_left_key" | "roll_right_key" | "save_key" => match crate::bindings::parse_optional(val) {
             Ok(c) => ("rolls", value(c.map(|c| c.text()).unwrap_or_default())),
             Err(e) => return Err(vec![format!("{key}: {e}")]),
         },

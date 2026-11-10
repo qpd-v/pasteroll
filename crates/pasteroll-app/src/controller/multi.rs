@@ -40,14 +40,19 @@ pub(super) struct Menu {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum MenuEntry {
     Copy,
+    SaveAs,
     ClearChoice,
     MoveToRoll,
 }
 
 impl MenuEntry {
-    /// The lines, in order: "Clear selection" only while something is chosen.
-    pub(super) fn all(has_picks: bool) -> Vec<MenuEntry> {
+    /// The lines, in order: "Save as..." only for a single clip, "Clear selection" only while
+    /// something is chosen.
+    pub(super) fn all(has_picks: bool, clips: usize) -> Vec<MenuEntry> {
         let mut v = vec![MenuEntry::Copy];
+        if clips == 1 {
+            v.push(MenuEntry::SaveAs);
+        }
         if has_picks {
             v.push(MenuEntry::ClearChoice);
         }
@@ -67,11 +72,12 @@ impl Menu {
         if self.kind == MenuKind::MoveTo {
             return MenuView { items: move_items.to_vec(), at: self.at, hover: self.hover, dots: Vec::new() };
         }
-        let items = MenuEntry::all(has_picks)
+        let items = MenuEntry::all(has_picks, clips)
             .into_iter()
             .map(|e| match e {
                 MenuEntry::Copy if clips > 1 => format!("Copy {clips} clips"),
                 MenuEntry::Copy => "Copy".to_owned(),
+                MenuEntry::SaveAs => "Save as...".to_owned(),
                 MenuEntry::ClearChoice => "Clear selection".to_owned(),
                 MenuEntry::MoveToRoll => "Move to roll >".to_owned(),
             })
@@ -247,8 +253,13 @@ impl Controller {
                         return true;
                     }
                     if let (Hit::MenuItem(i), Some(MenuKind::Picks)) = (hit, kind) {
-                        match MenuEntry::all(has_picks).get(i) {
+                        match MenuEntry::all(has_picks, ids.len()).get(i) {
                             Some(MenuEntry::Copy) => self.copy_ids(p, ids, None, now),
+                            Some(MenuEntry::SaveAs) => {
+                                if let Some(id) = ids.first().copied() {
+                                    self.save_clip(p, id, None, now, false);
+                                }
+                            }
                             Some(MenuEntry::ClearChoice) => {
                                 self.clear_picks();
                             }

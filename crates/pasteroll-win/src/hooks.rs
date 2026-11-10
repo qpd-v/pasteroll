@@ -164,6 +164,8 @@ static S: Shared = Shared {
 /// `(modifiers << 16) | virtual key`, 0 for none; modifiers are Ctrl 1, Shift 2, Alt 4.
 static ROLL_LEFT_KEY: AtomicU32 = AtomicU32::new(0);
 static ROLL_RIGHT_KEY: AtomicU32 = AtomicU32::new(0);
+/// Ctrl+S until the settings file replaces it.
+static SAVE_KEY: AtomicU32 = AtomicU32::new((1 << 16) | 0x53);
 /// What a tilt to the left / right does: 0 nothing, 1 roll left, 2 roll right.
 static TILT_LEFT: AtomicU8 = AtomicU8::new(0);
 static TILT_RIGHT: AtomicU8 = AtomicU8::new(0);
@@ -181,10 +183,11 @@ fn tilt_code(a: pasteroll_core::bindings::TiltAction) -> u8 {
     }
 }
 
-/// Sets what rolls the carousel (see the `[rolls]` section of the settings file).
-pub fn set_roll_bindings(
+/// Sets the shortcuts that roll and save (see the `[rolls]` section of the settings file).
+pub fn set_key_bindings(
     left: Option<pasteroll_core::bindings::Combo>,
     right: Option<pasteroll_core::bindings::Combo>,
+    save: Option<pasteroll_core::bindings::Combo>,
     tilt_left: pasteroll_core::bindings::TiltAction,
     tilt_right: pasteroll_core::bindings::TiltAction,
 ) {
@@ -193,6 +196,7 @@ pub fn set_roll_bindings(
     };
     ROLL_LEFT_KEY.store(pack(left), SeqCst);
     ROLL_RIGHT_KEY.store(pack(right), SeqCst);
+    SAVE_KEY.store(pack(save), SeqCst);
     TILT_LEFT.store(tilt_code(tilt_left), SeqCst);
     TILT_RIGHT.store(tilt_code(tilt_right), SeqCst);
 }
@@ -714,9 +718,12 @@ fn classify(vk: usize, scan: u32) -> Option<Out> {
     let (ctrl, shift, alt, win) = modifiers();
     let plain = !ctrl && !shift && !alt && !win;
     let ctrl_only = ctrl && !shift && !alt && !win;
+    let now = pack_key(vk as u16, ctrl, shift, alt);
+    if !win && now != 0 && now == SAVE_KEY.load(SeqCst) {
+        return Some(Out::Cmd(Command::CtrlS));
+    }
     // the keys that roll between rolls (the carousel only; the viewer and the editor use the arrows)
     if !win && !viewer_mode() {
-        let now = pack_key(vk as u16, ctrl, shift, alt);
         if now != 0 && now == ROLL_LEFT_KEY.load(SeqCst) {
             return Some(Out::Cmd(Command::RollLeft));
         }
@@ -748,7 +755,6 @@ fn classify(vk: usize, scan: u32) -> Option<Out> {
         VIRTUAL_KEY(0x46) if ctrl_only => Some(Command::CtrlF),
         VIRTUAL_KEY(0x4B) if ctrl_only => Some(Command::CtrlK),
         VIRTUAL_KEY(0x49) if ctrl_only => Some(Command::CtrlI),
-        VIRTUAL_KEY(0x53) if ctrl_only => Some(Command::CtrlS),
         VIRTUAL_KEY(0x5A) if ctrl_only => Some(Command::CtrlZ),
         VIRTUAL_KEY(0x59) if ctrl_only => Some(Command::CtrlY),
         VIRTUAL_KEY(0x5A) if ctrl && shift && !alt && !win => Some(Command::CtrlY), // Ctrl+Shift+Z

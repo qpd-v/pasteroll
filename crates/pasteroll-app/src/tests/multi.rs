@@ -347,7 +347,7 @@ fn a_right_click_opens_the_menu_for_that_clip_without_choosing_it() {
     assert!(h.chosen().is_empty(), "no multiple-paste look: the clip is not chosen");
     assert_eq!(h.vm().collapse, 0.0, "the card stays tall");
     let menu = h.vm().menu.expect("a menu");
-    assert_eq!(menu.items, vec!["Copy", "Move to roll >"], "nothing is chosen, so nothing to clear");
+    assert_eq!(menu.items, vec!["Copy", "Save as...", "Move to roll >"], "nothing is chosen, so nothing to clear");
 }
 
 #[test]
@@ -358,7 +358,7 @@ fn the_menu_acts_on_the_clip_it_was_opened_on_and_leaves_the_choice_alone() {
     h.right_click_row(3); // a clip that is not among the chosen
     assert_eq!(h.chosen(), vec![1]);
     let menu = h.vm().menu.expect("a menu");
-    assert_eq!(menu.items, vec!["Copy", "Clear selection", "Move to roll >"]);
+    assert_eq!(menu.items, vec!["Copy", "Save as...", "Clear selection", "Move to roll >"]);
     let vm = h.vm();
     let size = h.p.window();
     let g = pasteroll_render::geometry(&vm, (size.0 as f32, size.1 as f32), 1.0);
@@ -376,6 +376,24 @@ fn a_right_click_on_a_chosen_clip_keeps_the_whole_choice() {
     h.right_click_row(2);
     assert_eq!(h.chosen(), vec![1, 2]);
     assert_eq!(h.vm().menu.expect("a menu").items[0], "Copy 2 clips");
+    assert!(!h.vm().menu.unwrap().items.iter().any(|i| i == "Save as..."), "several clips cannot be one file");
+}
+
+#[test]
+fn save_as_in_the_menu_saves_the_clip_it_was_opened_on() {
+    let mut h = four();
+    let dir = h.dir.join("menu-save");
+    std::fs::create_dir_all(&dir).unwrap();
+    h.p.save_choice = SaveChoice::Path(dir.join("clip.txt"));
+    h.open();
+    h.right_click_row(2);
+    let vm = h.vm();
+    let size = h.p.window();
+    let g = pasteroll_render::geometry(&vm, (size.0 as f32, size.1 as f32), 1.0);
+    let item = g.menu_items[1];
+    h.mouse(MouseKind::Down, (item.x + 5.0, item.y + 5.0));
+    assert_eq!(std::fs::read_to_string(dir.join("clip.txt")).unwrap(), "b");
+    assert!(h.vm().menu.is_none());
 }
 
 #[test]
@@ -403,7 +421,7 @@ fn clear_selection_in_the_menu_forgets_the_choice() {
     let vm = h.vm();
     let size = h.p.window();
     let g = pasteroll_render::geometry(&vm, (size.0 as f32, size.1 as f32), 1.0);
-    let item = g.menu_items[1];
+    let item = g.menu_items[2];
     h.mouse(MouseKind::Down, (item.x + 5.0, item.y + 5.0));
     assert!(h.chosen().is_empty());
     assert!(h.vm().menu.is_none());

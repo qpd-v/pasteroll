@@ -464,10 +464,13 @@ export function showPreferences({work, state, status, onApply, onClose}) {
     content.add_child(row('No Bloat', 'Show only the current clip.', toggleControl(state.mode === 'no-bloat', on => { draft.mode = on ? 'no-bloat' : 'complete'; })));
     for (const [key, title] of [['left', 'LEFT roll'], ['right', 'RIGHT roll'], ['most_used', 'Most used'], ['images', 'Images']])
         content.add_child(row(title, 'Include this roll in the carousel.', toggleControl(state[key], on => { draft[key] = on; })));
-    for (const [key, title] of [['left_key', 'Roll left shortcut'], ['right_key', 'Roll right shortcut'], ['image_folder', 'Picture folder']]) {
-        const entry = new St.Entry({text: state[key], can_focus: true, x_expand: true});
+    for (const [key, title] of [['left_key', 'Roll left shortcut'], ['right_key', 'Roll right shortcut'], ['save_key', 'Save shortcut'], ['image_folder', 'Picture folder']]) {
+        const entry = new St.Entry({text: state[key] ?? '', can_focus: true, x_expand: true});
         entry.clutter_text.connect('text-changed', () => { draft[key] = entry.get_text(); });
-        content.add_child(row(title, key === 'image_folder' ? 'Empty uses the Desktop.' : 'For example ctrl+left; empty disables it.', entry));
+        const hint = key === 'image_folder' ? 'Empty uses the Desktop.'
+            : key === 'save_key' ? 'For example ctrl+s; saves text, file lists and pictures. Empty disables it.'
+            : 'For example ctrl+left; empty disables it.';
+        content.add_child(row(title, hint, entry));
     }
     for (const key of ['tilt_left', 'tilt_right', 'modifier']) {
         const choices = key === 'modifier' ? ['ctrl', 'shift', 'alt'] : ['roll-left', 'roll-right', 'none'];

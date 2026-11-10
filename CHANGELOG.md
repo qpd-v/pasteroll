@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **Save the clip shown without opening the viewer.** Ctrl+S now saves the current carousel clip,
+  right from the history list: text as a `.txt` file, a copied file list as one path per line, and
+  a picture as a re-encoded PNG. The right-click menu has the same action as **Save as...** for a
+  single clip. The shortcut is configurable in Settings on Windows, X11 and GNOME Wayland; an
+  empty value turns it off. The expanded viewer uses the same shortcut, and its Save as... menu
+  shows the configured keys.
+
 ## 0.1.0-beta.21 (Windows and Linux)
 
 - **Recover update downloads when GitHub's normal link fails.** The Windows updater retries transient

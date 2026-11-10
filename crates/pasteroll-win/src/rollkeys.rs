@@ -1,4 +1,4 @@
-//! The keys that roll between rolls, in Windows' terms: virtual-key codes, and the modifier bits the
+//! The configurable shortcuts, in Windows terms: virtual-key codes and the modifier bits the
 //! settings window's hot-key control uses.
 
 use pasteroll_core::bindings::{Combo, ComboKey};
@@ -63,7 +63,7 @@ pub fn combo_of(vk: u8, mods: u8) -> Result<Option<Combo>, String> {
     if vk == 0 {
         return Ok(None);
     }
-    let key = key_of(u16::from(vk)).ok_or_else(|| "That key cannot be used for rolling.".to_owned())?;
+    let key = key_of(u16::from(vk)).ok_or_else(|| "That key cannot be used for a shortcut.".to_owned())?;
     let combo = Combo { ctrl: mods & HK_CONTROL != 0, alt: mods & HK_ALT != 0, shift: mods & HK_SHIFT != 0, key };
     // the same rules as the settings file
     Combo::parse(&combo.text()).map(Some)

@@ -150,7 +150,12 @@ impl GnomePlatform {
     pub fn set_roll_settings(&mut self, settings: pasteroll_core::config::RollSettings) { self.roll_settings = settings; }
 
     pub fn map_roll_event(&self, event: super::protocol::WireEvent) -> Option<pasteroll_app::Event> {
-        if self.viewer_mode || event.1 != self.generation { return None; }
+        if event.1 != self.generation { return None; }
+        // The save shortcut works in the carousel and the viewer, as it does on X11.
+        if event.0 == 2 && crate::bindings::save_key(event.2 as u32, event.4, &self.roll_settings) {
+            return Some(pasteroll_app::Event::Key(pasteroll_app::Key::CtrlS, self.generation));
+        }
+        if self.viewer_mode { return None; }
         let direction = if event.0 == 2 {
             crate::bindings::roll_key(event.2 as u32, event.4, &self.roll_settings)
         } else if event.0 == 17 || event.0 == 18 {

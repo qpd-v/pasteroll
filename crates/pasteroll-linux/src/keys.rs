@@ -68,7 +68,7 @@ pub fn classify(km: &Keymap, code: u8, state: u16) -> Option<Key> {
     }
     // text
     if (ctrl && !altgr) || state & (ALT | SUPER) != 0 && !altgr {
-        // Ctrl+P pins, Ctrl+C/E/F/I/S/Z/A serve the viewer; everything else with Ctrl, Alt or
+        // Ctrl+P pins, Ctrl+C/E/F/I/Z/A serve the viewer; everything else with Ctrl, Alt or
         // Super is not text
         // redo in the image editor: Ctrl+Shift+Z (and Ctrl+Y below)
         if ctrl && shift && state & (ALT | SUPER) == 0 && base | 0x20 == 0x7a {
@@ -85,7 +85,6 @@ pub fn classify(km: &Keymap, code: u8, state: u16) -> Option<Key> {
                 0x65 => Some(Key::CtrlE),
                 0x66 => Some(Key::CtrlF),
                 0x69 => Some(Key::CtrlI),
-                0x73 => Some(Key::CtrlS),
                 0x7a => Some(Key::CtrlZ),
                 _ => None,
             };
@@ -203,7 +202,7 @@ mod tests {
     fn ctrl_p_pins_and_other_ctrl_keys_are_ignored() {
         let k = km();
         assert_eq!(classify(&k, 10, CONTROL), Some(Key::CtrlF));
-        assert_eq!(classify(&k, 9, CONTROL), Some(Key::CtrlS), "Ctrl+S saves in the viewer");
+        assert_eq!(classify(&k, 9, CONTROL), None, "Ctrl+S is mapped by the configured save binding");
         assert_eq!(classify(&k, 8, CONTROL), Some(Key::CtrlA));
         assert_eq!(classify(&k, 18, CONTROL), Some(Key::CtrlE));
         assert_eq!(classify(&k, 17, CONTROL), None);

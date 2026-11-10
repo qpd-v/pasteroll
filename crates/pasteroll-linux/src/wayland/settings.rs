@@ -164,6 +164,10 @@ pub fn render_config(cfg: &Config) -> Result<String, String> {
         "roll_right_key = {}\n",
         quote(&cfg.rolls.right_key.map(|c| c.text()).unwrap_or_default())
     ));
+    text.push_str(&format!(
+        "save_key = {}\n",
+        quote(&cfg.rolls.save_key.map(|c| c.text()).unwrap_or_default())
+    ));
     text.push_str(&format!("tilt_left = \"{}\"\n", cfg.rolls.tilt_left.key()));
     text.push_str(&format!("tilt_right = \"{}\"\n", cfg.rolls.tilt_right.key()));
     text.push_str("\n[brain]\n");

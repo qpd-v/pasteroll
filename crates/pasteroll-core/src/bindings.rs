@@ -30,8 +30,9 @@ pub struct Combo {
     pub key: ComboKey,
 }
 
-/// Ctrl+letter combinations the carousel already uses itself.
-const RESERVED_CTRL_LETTERS: [char; 10] = ['a', 'c', 'e', 'f', 'i', 'k', 'm', 's', 'y', 'z'];
+/// Ctrl+letter combinations the carousel already uses itself. Ctrl+S belongs to the save action
+/// by default; configuration checks shortcuts for collisions.
+const RESERVED_CTRL_LETTERS: [char; 9] = ['a', 'c', 'e', 'f', 'i', 'k', 'm', 'y', 'z'];
 
 impl Combo {
     /// Reads `ctrl+shift+left`, `Alt + F5`, `ctrl+,`... (case, spaces around `+` do not matter).
@@ -253,6 +254,7 @@ mod config_tests {
         let c = config::Config::default();
         assert_eq!(c.rolls.left_key.unwrap().text(), "ctrl+left");
         assert_eq!(c.rolls.right_key.unwrap().text(), "ctrl+right");
+        assert_eq!(c.rolls.save_key.unwrap().text(), "ctrl+s");
         assert_eq!((c.rolls.tilt_left, c.rolls.tilt_right), (TiltAction::RollLeft, TiltAction::RollRight));
         assert!(!c.rolls.most_used && !c.rolls.images);
         // the template says exactly the defaults
@@ -265,9 +267,11 @@ mod config_tests {
         let text = config::set_value(&text, "tilt_right", "none").unwrap();
         let text = config::set_value(&text, "rolls.most_used", "yes").unwrap();
         let text = config::set_value(&text, "roll_right_key", "").unwrap();
+        let text = config::set_value(&text, "save_key", "Ctrl+Alt+K").unwrap();
         let c = config::parse(&text).unwrap();
         assert_eq!(c.rolls.left_key, Some(Combo { ctrl: false, alt: true, shift: false, key: ComboKey::Left }));
         assert_eq!(c.rolls.right_key, None);
+        assert_eq!(c.rolls.save_key.unwrap().text(), "ctrl+alt+k");
         assert_eq!(c.rolls.tilt_right, TiltAction::None);
         assert!(c.rolls.most_used && !c.rolls.images);
     }
@@ -279,5 +283,8 @@ mod config_tests {
         assert!(config::set_value("", "tilt_left", "sideways").is_err());
         let same = "[rolls]\nroll_left_key = \"ctrl+left\"\nroll_right_key = \"ctrl+left\"\n";
         assert!(config::parse(same).unwrap_err().iter().any(|e| e.contains("same key")));
+        let save = "[rolls]\nsave_key = \"ctrl+left\"\n";
+        assert!(config::parse(save).unwrap_err().iter().any(|e| e.contains("same key")));
+        assert!(config::set_value("", "save_key", "ctrl+c").is_err(), "Ctrl+C is the carousel's own");
     }
 }

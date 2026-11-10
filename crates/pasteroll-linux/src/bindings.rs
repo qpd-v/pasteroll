@@ -2,7 +2,7 @@
 use pasteroll_core::bindings::{Combo, ComboKey, TiltAction};
 use pasteroll_core::config::RollSettings;
 
-pub fn roll_key(symbol: u32, mods: u32, settings: &RollSettings) -> Option<i8> {
+fn combo(symbol: u32, mods: u32) -> Option<Combo> {
     if mods & (64 | 128 | (1 << 26)) != 0 { return None; }
     let key = match symbol {
         0xff51 | 0xff96 => ComboKey::Left,
@@ -17,7 +17,15 @@ pub fn roll_key(symbol: u32, mods: u32, settings: &RollSettings) -> Option<i8> {
         0x30..=0x39 | 0x41..=0x5a | 0x61..=0x7a => ComboKey::Char((symbol as u8 as char).to_ascii_lowercase()),
         _ => return None,
     };
-    let combo = Some(Combo { ctrl: mods & 4 != 0, shift: mods & 1 != 0, alt: mods & 8 != 0, key });
+    Some(Combo { ctrl: mods & 4 != 0, shift: mods & 1 != 0, alt: mods & 8 != 0, key })
+}
+
+pub fn save_key(symbol: u32, mods: u32, settings: &RollSettings) -> bool {
+    settings.save_key.is_some() && combo(symbol, mods) == settings.save_key
+}
+
+pub fn roll_key(symbol: u32, mods: u32, settings: &RollSettings) -> Option<i8> {
+    let combo = combo(symbol, mods);
     if settings.left_key == combo { Some(-1) }
     else if settings.right_key == combo { Some(1) }
     else { None }
@@ -47,5 +55,9 @@ mod tests {
         s.tilt_right = TiltAction::None;
         assert_eq!(roll_wheel(true, &s), None);
         assert_eq!(roll_wheel(false, &s), Some(-1));
+        assert!(save_key(0x73, 4, &s));
+        assert!(!save_key(0x73, 0, &s));
+        s.save_key = None;
+        assert!(!save_key(0x73, 4, &s));
     }
 }

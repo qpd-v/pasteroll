@@ -186,6 +186,8 @@ pub(crate) struct Viewer {
     hover: Option<VHit>,
     menu: Option<Vec<Action>>,
     menu_hover: Option<usize>,
+    /// How the configured save shortcut is written in the menu (empty when it is off).
+    save_hint: String,
     info_open: bool,
     find: Option<Find>,
     confirm: Option<Confirm>,
@@ -332,7 +334,7 @@ impl Viewer {
 
     fn menu_item(&self, a: Action) -> MenuItemView {
         let (label, shortcut, danger) = match a {
-            Action::SaveAs => ("Save as...".to_owned(), "Ctrl+S", false),
+            Action::SaveAs => ("Save as...".to_owned(), self.save_hint.as_str(), false),
             Action::Info => ((if self.info_open { "Hide info" } else { "Info" }).to_owned(), "Ctrl+I", false),
             Action::ResetZoom => ("Reset zoom".to_owned(), "0", false),
             Action::ExtractText => (
@@ -604,6 +606,7 @@ impl Controller {
             hover: None,
             menu: None,
             menu_hover: None,
+            save_hint: self.roll_settings().save_key.as_ref().map(|c| c.label()).unwrap_or_default(),
             info_open: false,
             find: None,
             confirm: None,
@@ -1178,8 +1181,19 @@ impl Controller {
     fn viewer_save(&mut self, p: &mut dyn Platform, now: u64) {
         let Some(v) = self.viewer.as_ref() else { return };
         let id = v.id;
-        let (bytes, ext, word): (Vec<u8>, &str, &str) = if let Some(o) = &v.ocr_text {
-            (String::from_utf16_lossy(&o.orig).into_bytes(), "txt", "text")
+        let ocr = v.ocr_text.as_ref().map(|o| String::from_utf16_lossy(&o.orig));
+        self.save_clip(p, id, ocr, now, true);
+    }
+
+    /// Save the clip shown in the carousel with the same bytes and dialog the viewer uses.
+    pub(crate) fn save_current_clip(&mut self, p: &mut dyn Platform, now: u64) {
+        let Some(id) = self.current_id() else { return };
+        self.save_clip(p, id, None, now, false);
+    }
+
+    pub(crate) fn save_clip(&mut self, p: &mut dyn Platform, id: i64, ocr: Option<String>, now: u64, in_viewer: bool) {
+        let (bytes, ext, word): (Vec<u8>, &str, &str) = if let Some(text) = ocr {
+            (text.into_bytes(), "txt", "text")
         } else {
             let st = self.store.borrow();
             match st.kind(id).ok().flatten() {
@@ -1208,6 +1222,8 @@ impl Controller {
         // the dialog took a while: that was use, not idleness
         self.last_activity_ms = p.now_ms();
         p.input_keepalive();
+        // A slow dialog must not eat the message that says where the file went.
+        let now = p.now_ms().max(now);
         let result = match &choice {
             SaveChoice::Path(path) => crate::files::save_replacing(path, &bytes).map(|_| Some(path.clone())),
             SaveChoice::Cancelled => Ok(None),
@@ -1219,7 +1235,12 @@ impl Controller {
                         bytes.zeroize();
                     }
                     p.log("could not save the clip: no save dialog and no Desktop folder");
-                    self.viewer_toast("Nowhere to save: install zenity or kdialog for a save dialog.", now);
+                    let message = "Nowhere to save: install zenity or kdialog for a save dialog.";
+                    if in_viewer {
+                        self.viewer_toast(message, now);
+                    } else {
+                        self.flash(message, now);
+                    }
                     return;
                 }
             },
@@ -1234,15 +1255,25 @@ impl Controller {
                 let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
                 p.log("saved a clip to a file");
                 let unasked = matches!(choice, SaveChoice::Unavailable);
-                self.viewer_toast(if unasked { format!("Saved to the Desktop as {name}") } else { format!("Saved as {name}") }, now);
+                let message = if unasked { format!("Saved to the Desktop as {name}") } else { format!("Saved as {name}") };
+                if in_viewer {
+                    self.viewer_toast(message, now);
+                } else {
+                    self.flash(&message, now);
+                }
             }
             Ok(None) => {}
             Err(e) => {
                 p.log(&format!("could not save the clip: {e}"));
-                self.viewer_toast("Could not save the file.", now);
+                if in_viewer {
+                    self.viewer_toast("Could not save the file.", now);
+                } else {
+                    self.flash("Could not save the file", now);
+                }
             }
         }
     }
+
 
     fn viewer_extract_text(&mut self, p: &mut dyn Platform, now: u64) {
         let Some(v) = self.viewer.as_ref() else { return };

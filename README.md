@@ -184,8 +184,8 @@ Remove an archive install with `./install.sh --uninstall` (add `--system` and su
 install), or a Debian package with `sudo dpkg -r pasteroll`. These operations keep history/settings.
 The app's own `install` and `uninstall` commands manage per-user installs only.
 
-Optional: Extract text needs `tesseract-ocr`, and Save as uses `zenity` or `kdialog` (without one,
-clips are saved to the Desktop).
+Optional: Extract text needs `tesseract-ocr`, and Save as and Ctrl+S use `zenity` or `kdialog`
+(without one, clips are saved to the Desktop).
 
 The standard Linux packages above need an **X11 session**. Ubuntu and Fedora log in to Wayland by default: choose
 "Ubuntu on Xorg" (or "GNOME on Xorg") from the gear icon on the login screen. For native GNOME 46 Wayland windows, use the experimental packages and companion setup above.
@@ -200,6 +200,7 @@ The X11 backend does not provide full native Wayland support.
 | type | search |
 | Tab | choose a filter |
 | Enter, or click the target | paste |
+| Ctrl+S (changeable in Settings) | save the clip shown as a text file, file list or PNG picture |
 | double-click / drag in the preview | select part of a clip to paste |
 | Ctrl+F | make a clip a favorite, or remove it |
 | Ctrl+K | pin the carousel open (on Windows) |
@@ -222,7 +223,7 @@ In the expanded viewer:
 | Ctrl+wheel, + / -, 0, 1 | zoom pictures, fit, real size |
 | Ctrl+F, or just type | find in the clip; Enter or F3 for the next match |
 | Ctrl+C / Enter | copy (the selection, or the whole clip) / paste |
-| Ctrl+S, Ctrl+I | save as, info |
+| Save shortcut (Ctrl+S by default), Ctrl+I | save as, info |
 | F11 | fullscreen |
 | Esc | leave fullscreen, then close the viewer |
 
@@ -264,7 +265,8 @@ minutes without input.
 
 Tray icon: pause recording, the two looks, Settings, open data folder, About, check for updates
 (Windows) and quit. Settings has the look, the optional update check, the history limits,
-carousel size, the key for the image editor, programs to ignore and custom filters.
+carousel size, the shortcuts that roll and save, the key for the image editor, programs to ignore
+and custom filters.
 
 ### Command line
 

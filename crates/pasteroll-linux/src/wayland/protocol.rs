@@ -291,7 +291,6 @@ pub fn event(
                     0x70 | 0x50 => Some(Key::CtrlF), // compatibility with beta.4
                     0x6b | 0x4b => Some(Key::CtrlK),
                     0x6d | 0x4d => Some(Key::CtrlM),
-                    0x73 | 0x53 => Some(Key::CtrlS),
                     0x79 | 0x59 => Some(Key::CtrlY),
                     0x7a | 0x5a => Some(if shift { Key::CtrlY } else { Key::CtrlZ }),
                     _ => None,

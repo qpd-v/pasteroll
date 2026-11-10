@@ -2352,6 +2352,36 @@ fn save_as_writes_the_clip_where_the_user_chose_or_to_the_desktop() {
 }
 
 #[test]
+fn ctrl_s_in_the_carousel_saves_text_file_lists_and_pictures() {
+    let mut h = H::new(&[Clip::Text("carousel text"), Clip::Files(&["C:\\one.txt", "C:\\two.txt"]), Clip::Image]);
+    let dir = h.dir.join("saved");
+    std::fs::create_dir_all(&dir).unwrap();
+    let g = h.open();
+
+    h.p.save_choice = SaveChoice::Path(dir.join("picture.png"));
+    h.send(Event::Key(Key::CtrlS, g));
+    let png = std::fs::read(dir.join("picture.png")).unwrap();
+    let image = pasteroll_core::image::decode_png(&png).expect("saved as a PNG");
+    assert_eq!((image.width, image.height), (6, 4));
+
+    h.step_older(g);
+    h.p.save_choice = SaveChoice::Path(dir.join("files.txt"));
+    h.send(Event::Key(Key::CtrlS, g));
+    let line = if cfg!(windows) { "\r\n" } else { "\n" };
+    assert_eq!(std::fs::read_to_string(dir.join("files.txt")).unwrap(), format!("C:\\one.txt{line}C:\\two.txt"));
+
+    h.step_older(g);
+    h.p.save_choice = SaveChoice::Path(dir.join("text.txt"));
+    h.send(Event::Key(Key::CtrlS, g));
+    assert_eq!(std::fs::read_to_string(dir.join("text.txt")).unwrap(), "carousel text");
+    assert!(h.vm().footer.contains("Saved as"), "{}", h.vm().footer);
+
+    h.p.save_choice = SaveChoice::Cancelled;
+    h.send(Event::Key(Key::CtrlS, g));
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 3, "a cancelled save writes nothing");
+}
+
+#[test]
 fn info_tells_what_the_clip_is() {
     let mut h = H::new(&[Clip::Text("two\nlines")]);
     let g = h.open();
@@ -2856,13 +2886,14 @@ fn the_menu_always_offers_move_to_roll() {
     let mut h = H::new(&[Clip::Text("a")]);
     h.open();
     right_click_row(&mut h, 0);
-    assert_eq!(h.vm().menu.unwrap().items, vec!["Copy", "Move to roll >"]);
+    assert_eq!(h.vm().menu.unwrap().items, vec!["Copy", "Save as...", "Move to roll >"]);
     // and without LEFT, RIGHT or any custom roll it still leads to Main and a new roll
     let mut h = H::new(&[Clip::Text("a")]);
     only_custom(&mut h);
     h.open();
     right_click_row(&mut h, 0);
-    let move_item = menu_item(&mut h, 1);
+    let items = h.vm().menu.expect("the menu").items;
+    let move_item = menu_item(&mut h, items.len() - 1);
     click_at(&mut h, move_item);
     assert_eq!(h.vm().menu.unwrap().items, vec!["< Back", "Main", "New left roll...", "New right roll..."]);
 }

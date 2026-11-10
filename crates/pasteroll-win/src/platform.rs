@@ -312,7 +312,15 @@ impl Platform for WinPlatform {
         self.input_active(false);
         // the keyboard goes back to the program the session is for
         let back = HWND(target.id as usize as *mut _);
-        let choice = crate::dialogs::save_file(self.viewer.hwnd(), name, ext, back);
+        // Save as comes from the carousel too, where the viewer is hidden and cannot own the dialog.
+        let parent = unsafe {
+            if IsWindowVisible(self.viewer.hwnd()).as_bool() {
+                self.viewer.hwnd()
+            } else {
+                self.overlay.hwnd()
+            }
+        };
+        let choice = crate::dialogs::save_file(parent, name, ext, back);
         self.input_active(true);
         choice
     }

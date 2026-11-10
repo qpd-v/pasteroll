@@ -64,6 +64,8 @@ const ID_HK_LEFT: i32 = 177;
 const ID_HK_RIGHT: i32 = 178;
 const ID_HK_LEFT_CLEAR: i32 = 179;
 const ID_HK_RIGHT_CLEAR: i32 = 180;
+const ID_HK_SAVE: i32 = 189;
+const ID_HK_SAVE_CLEAR: i32 = 190;
 const ID_TILT_LEFT: i32 = 181;
 const ID_TILT_RIGHT: i32 = 182;
 const ID_STATUS: i32 = 150;
@@ -105,14 +107,14 @@ struct State {
     exclude: Vec<String>,
     filters: Vec<String>,
     /// The rolls column: the list (with the changes not yet saved), the name box, the two boxes for
-    /// the computed rolls, the two key boxes and the two tilt buttons.
+    /// the computed rolls, the three shortcut boxes and the two tilt buttons.
     rl_list: HWND,
     rl_name: HWND,
     rl_left: HWND,
     rl_right: HWND,
     rl_most: HWND,
     rl_images: HWND,
-    hk: [HWND; 2],
+    hk: [HWND; 3],
     tilt_btn: [HWND; 2],
     tilt: [TiltAction; 2],
     roll_rows: Vec<RollRow>,
@@ -640,16 +642,16 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
                 moved: false,
             })
             .collect();
-        look.fields.push([cx + PAD, cy + 116, COL_W - 2 * PAD, 76]);
-        let rl_list = child(hwnd, w!("LISTBOX"), "", lb, 0, (cx + PAD + 4, cy + 120, COL_W - 2 * PAD - 8, 68), ID_RL_LIST, dpi, font);
-        look.fields.push([cx + PAD, cy + 200, 120, 28]);
+        look.fields.push([cx + PAD, cy + 116, COL_W - 2 * PAD, 60]);
+        let rl_list = child(hwnd, w!("LISTBOX"), "", lb, 0, (cx + PAD + 4, cy + 120, COL_W - 2 * PAD - 8, 52), ID_RL_LIST, dpi, font);
+        look.fields.push([cx + PAD, cy + 184, 120, 28]);
         let rl_name = child(
             hwnd,
             w!("EDIT"),
             "",
             ES_AUTOHSCROLL as u32 | WS_TABSTOP.0,
             0,
-            (cx + PAD + 8, cy + 205, 104, 18),
+            (cx + PAD + 8, cy + 189, 104, 18),
             ID_RL_NAME,
             dpi,
             font,
@@ -657,33 +659,34 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
         SendMessageW(rl_name, EM_SETCUEBANNER, Some(WPARAM(0)), Some(LPARAM(w!("Roll name").as_ptr() as isize)));
         SendMessageW(rl_name, EM_SETLIMITTEXT, Some(WPARAM(pasteroll_core::store::rolls::ROLL_NAME_MAX)), Some(LPARAM(0)));
         SendMessageW(rl_name, EM_SETMARGINS, Some(WPARAM(3)), Some(LPARAM(0)));
-        button("Add", BS_PUSHBUTTON as u32, cx + PAD + 126, cy + 200, 52, 28, ID_RL_ADD);
-        button("Rename", BS_PUSHBUTTON as u32, cx + PAD + 182, cy + 200, 66, 28, ID_RL_RENAME);
-        button("Remove", BS_PUSHBUTTON as u32, cx + PAD + 252, cy + 200, 58, 28, ID_RL_REMOVE);
+        button("Add", BS_PUSHBUTTON as u32, cx + PAD + 126, cy + 184, 52, 28, ID_RL_ADD);
+        button("Rename", BS_PUSHBUTTON as u32, cx + PAD + 182, cy + 184, 66, 28, ID_RL_RENAME);
+        button("Remove", BS_PUSHBUTTON as u32, cx + PAD + 252, cy + 184, 58, 28, ID_RL_REMOVE);
         let half = (COL_W - 2 * PAD - 8) / 2;
-        let rl_left = button("Show LEFT roll", BS_AUTOCHECKBOX as u32, cx + PAD, cy + 236, half, 22, ID_RL_LEFT);
-        let rl_right = button("Show RIGHT roll", BS_AUTOCHECKBOX as u32, cx + PAD + half + 8, cy + 236, half, 22, ID_RL_RIGHT);
+        let rl_left = button("Show LEFT roll", BS_AUTOCHECKBOX as u32, cx + PAD, cy + 220, half, 22, ID_RL_LEFT);
+        let rl_right = button("Show RIGHT roll", BS_AUTOCHECKBOX as u32, cx + PAD + half + 8, cy + 220, half, 22, ID_RL_RIGHT);
         // the selected roll's side and place in the rotation
-        button("◀ Move", BS_PUSHBUTTON as u32, cx + PAD, cy + 312, 60, 28, ID_RL_MOVE_LEFT);
-        button("Move ▶", BS_PUSHBUTTON as u32, cx + PAD + 64, cy + 312, 60, 28, ID_RL_MOVE_RIGHT);
-        button("Left side", BS_PUSHBUTTON as u32, cx + PAD + 128, cy + 312, 82, 28, ID_RL_SIDE_LEFT);
-        button("Right side", BS_PUSHBUTTON as u32, cx + PAD + 214, cy + 312, 90, 28, ID_RL_SIDE_RIGHT);
-        let rl_most = button("Add a Most used roll (what you paste most)", BS_AUTOCHECKBOX as u32, cx + PAD, cy + 260, COL_W - 2 * PAD, 22, ID_RL_MOST);
-        let rl_images = button("Add an Images roll (every picture clip)", BS_AUTOCHECKBOX as u32, cx + PAD, cy + 284, COL_W - 2 * PAD, 22, ID_RL_IMAGES);
+        button("◀ Move", BS_PUSHBUTTON as u32, cx + PAD, cy + 296, 60, 28, ID_RL_MOVE_LEFT);
+        button("Move ▶", BS_PUSHBUTTON as u32, cx + PAD + 64, cy + 296, 60, 28, ID_RL_MOVE_RIGHT);
+        button("Left side", BS_PUSHBUTTON as u32, cx + PAD + 128, cy + 296, 82, 28, ID_RL_SIDE_LEFT);
+        button("Right side", BS_PUSHBUTTON as u32, cx + PAD + 214, cy + 296, 90, 28, ID_RL_SIDE_RIGHT);
+        let rl_most = button("Add a Most used roll (what you paste most)", BS_AUTOCHECKBOX as u32, cx + PAD, cy + 244, COL_W - 2 * PAD, 22, ID_RL_MOST);
+        let rl_images = button("Add an Images roll (every picture clip)", BS_AUTOCHECKBOX as u32, cx + PAD, cy + 268, COL_W - 2 * PAD, 22, ID_RL_IMAGES);
         SendMessageW(rl_left, BM_SETCHECK, Some(WPARAM(usize::from(cfg.rolls.left))), Some(LPARAM(0)));
         SendMessageW(rl_right, BM_SETCHECK, Some(WPARAM(usize::from(cfg.rolls.right))), Some(LPARAM(0)));
         SendMessageW(rl_most, BM_SETCHECK, Some(WPARAM(usize::from(cfg.rolls.most_used))), Some(LPARAM(0)));
         SendMessageW(rl_images, BM_SETCHECK, Some(WPARAM(usize::from(cfg.rolls.images))), Some(LPARAM(0)));
-        label("Keys that roll while the carousel is open:", cx + PAD, cy + 344, COL_W - 2 * PAD, 22, 0, SS_CENTERIMAGE_);
-        let mut hk = [HWND::default(); 2];
+        label("Shortcuts while the carousel is open:", cx + PAD, cy + 326, COL_W - 2 * PAD, 22, 0, SS_CENTERIMAGE_);
+        let mut hk = [HWND::default(); 3];
         for (i, (text, id, clear_id, combo)) in [
             ("Roll left", ID_HK_LEFT, ID_HK_LEFT_CLEAR, cfg.rolls.left_key),
             ("Roll right", ID_HK_RIGHT, ID_HK_RIGHT_CLEAR, cfg.rolls.right_key),
+            ("Save clip", ID_HK_SAVE, ID_HK_SAVE_CLEAR, cfg.rolls.save_key),
         ]
         .into_iter()
         .enumerate()
         {
-            let y = cy + 368 + 30 * i as i32;
+            let y = cy + 350 + 28 * i as i32;
             label(text, cx + PAD, y + 3, 80, 22, 0, SS_CENTERIMAGE_);
             hk[i] = child(hwnd, w!("msctls_hotkey32"), "", WS_TABSTOP.0, 0, (cx + PAD + 84, y, 150, 26), id, dpi, font);
             // a key must come with Ctrl or Alt (or it would take over typing)
@@ -695,11 +698,11 @@ fn create(db: PathBuf, cfg: Config) -> windows::core::Result<()> {
             }
             button("None", BS_PUSHBUTTON as u32, cx + PAD + 240, y, 56, 26, clear_id);
         }
-        label("Sideways wheel clicks (a tilt wheel) do this while it is open; click to change:", cx + PAD, cy + 428, COL_W - 2 * PAD, 32, 0, 0);
+        label("Sideways wheel clicks (a tilt wheel) do this while it is open; click to change:", cx + PAD, cy + 434, COL_W - 2 * PAD, 32, 0, 0);
         let tilt = [cfg.rolls.tilt_left, cfg.rolls.tilt_right];
         let tilt_btn = [
-            button(&tilt_text(0, tilt[0]), BS_PUSHBUTTON as u32, cx + PAD, cy + 460, (COL_W - 2 * PAD - 8) / 2, 30, ID_TILT_LEFT),
-            button(&tilt_text(1, tilt[1]), BS_PUSHBUTTON as u32, cx + PAD + (COL_W - 2 * PAD + 8) / 2, cy + 460, (COL_W - 2 * PAD - 8) / 2, 30, ID_TILT_RIGHT),
+            button(&tilt_text(0, tilt[0]), BS_PUSHBUTTON as u32, cx + PAD, cy + 466, (COL_W - 2 * PAD - 8) / 2, 30, ID_TILT_LEFT),
+            button(&tilt_text(1, tilt[1]), BS_PUSHBUTTON as u32, cx + PAD + (COL_W - 2 * PAD + 8) / 2, cy + 466, (COL_W - 2 * PAD - 8) / 2, 30, ID_TILT_RIGHT),
         ];
         list_fill(rl_list, &roll_names(&roll_rows));
 
@@ -954,8 +957,8 @@ struct Snapshot {
     rolls_right: bool,
     rolls_most: bool,
     rolls_images: bool,
-    /// The two hot-key controls: key and modifier bits.
-    hk: [(u8, u8); 2],
+    /// The three hot-key controls: key and modifier bits.
+    hk: [(u8, u8); 3],
     tilt: [TiltAction; 2],
     roll_rows: Vec<RollRow>,
 }
@@ -1045,13 +1048,28 @@ fn roll_text(snap: &Snapshot, text: &str) -> Result<String, Vec<String>> {
     if snap.rolls_images != o.images {
         put("images", snap.rolls_images.to_string())?;
     }
+    let mut shortcuts = Vec::new();
     for ((vk, mods), key, label, before) in [
         (snap.hk[0], "roll_left_key", "Roll left", o.left_key),
         (snap.hk[1], "roll_right_key", "Roll right", o.right_key),
+        (snap.hk[2], "save_key", "Save clip", o.save_key),
     ] {
         let now = crate::rollkeys::combo_of(vk, mods).map_err(|e| vec![format!("{label}: {e}")])?;
-        if now != before {
-            put(key, now.map(|c| c.text()).unwrap_or_default())?;
+        shortcuts.push((key, now.map(|c| c.text()).unwrap_or_default(), now != before));
+    }
+    if shortcuts.iter().filter(|(_, _, changed)| *changed).count() > 1 {
+        // swapping two shortcuts must not trip over the temporary collision
+        for key in ["roll_left_key", "roll_right_key", "save_key"] {
+            put(key, String::new())?;
+        }
+        for (key, value, _) in shortcuts {
+            put(key, value)?;
+        }
+    } else {
+        for (key, value, changed) in shortcuts {
+            if changed {
+                put(key, value)?;
+            }
         }
     }
     if snap.tilt[0] != o.tilt_left {
@@ -1453,10 +1471,14 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                             status(&m);
                         }
                     }
-                    ID_HK_LEFT_CLEAR | ID_HK_RIGHT_CLEAR => ST.with(|c| {
+                    ID_HK_LEFT_CLEAR | ID_HK_RIGHT_CLEAR | ID_HK_SAVE_CLEAR => ST.with(|c| {
                         if let Ok(g) = c.try_borrow() {
                             if let Some(s) = g.as_ref() {
-                                let h = s.hk[usize::from(id == ID_HK_RIGHT_CLEAR)];
+                                let h = s.hk[match id {
+                                    ID_HK_LEFT_CLEAR => 0,
+                                    ID_HK_RIGHT_CLEAR => 1,
+                                    _ => 2,
+                                }];
                                 SendMessageW(h, HKM_SETHOTKEY, Some(WPARAM(0)), Some(LPARAM(0)));
                             }
                         }
@@ -1573,7 +1595,7 @@ mod tests {
             rolls_images: false,
             rolls_left: true,
             rolls_right: true,
-            hk: [(0x25, 2), (0x27, 2)],
+            hk: [(0x25, 2), (0x27, 2), (0x53, 2)],
             tilt: [TiltAction::RollLeft, TiltAction::RollRight],
             roll_rows: vec![],
         };
@@ -1612,7 +1634,7 @@ mod tests {
             rolls_images: false,
             rolls_left: true,
             rolls_right: true,
-            hk: [(0x25, 2), (0x27, 2)],
+            hk: [(0x25, 2), (0x27, 2), (0x53, 2)],
             tilt: [TiltAction::RollLeft, TiltAction::RollRight],
             roll_rows: vec![],
         };
@@ -1645,7 +1667,7 @@ mod tests {
                 rolls_images: false,
             rolls_left: true,
             rolls_right: true,
-                hk: [(0x25, 2), (0x27, 2)],
+                hk: [(0x25, 2), (0x27, 2), (0x53, 2)],
                 tilt: [TiltAction::RollLeft, TiltAction::RollRight],
                 roll_rows: vec![],
             }
@@ -1685,7 +1707,7 @@ mod tests {
             rolls_images: false,
             rolls_left: true,
             rolls_right: true,
-            hk: [(0x25, 2), (0x27, 2)],
+            hk: [(0x25, 2), (0x27, 2), (0x53, 2)],
             tilt: [TiltAction::RollLeft, TiltAction::RollRight],
             roll_rows: vec![],
         };
@@ -1716,14 +1738,14 @@ mod tests {
             rolls_images: false,
             rolls_left: true,
             rolls_right: true,
-            hk: [(0x25, 2), (0x27, 2)],
+            hk: [(0x25, 2), (0x27, 2), (0x53, 2)],
             tilt: [TiltAction::RollLeft, TiltAction::RollRight],
             roll_rows: vec![],
         };
         assert_eq!(build_text(&snap, "").unwrap(), "", "the defaults as they are: nothing written");
         // Alt+Q to roll left, no key to roll right, the left tilt does nothing, Most used on
         let snap2 = Snapshot {
-            hk: [(0x51, 4), (0, 0)],
+            hk: [(0x51, 4), (0, 0), (0x53, 2)],
             tilt: [TiltAction::None, TiltAction::RollRight],
             rolls_most: true,
             ..snap.clone_for_test()
@@ -1735,9 +1757,21 @@ mod tests {
         assert_eq!(c.rolls.tilt_right, TiltAction::RollRight);
         assert!(c.rolls.most_used && !c.rolls.images);
         // a key the carousel needs is refused with the reason
-        let bad = Snapshot { hk: [(0x43, 2), (0x27, 2)], ..snap.clone_for_test() };
+        let bad = Snapshot { hk: [(0x43, 2), (0x27, 2), (0x53, 2)], ..snap.clone_for_test() };
         let err = build_text(&bad, "").unwrap_err().join(" ");
         assert!(err.contains("Roll left") && err.contains("Ctrl+C"), "{err}");
+        // the save shortcut is written like the roll keys, and may not double one of them
+        let save = Snapshot { hk: [(0x25, 2), (0x27, 2), (0x4b, 6)], ..snap.clone_for_test() };
+        let c = config::parse(&build_text(&save, "").unwrap()).unwrap();
+        assert_eq!(c.rolls.save_key.unwrap().text(), "ctrl+alt+k");
+        // a swap is written without passing through a collision
+        let swap = Snapshot { hk: [(0x53, 2), (0x27, 2), (0x25, 2)], ..snap.clone_for_test() };
+        let c = config::parse(&build_text(&swap, "").unwrap()).unwrap();
+        assert_eq!(c.rolls.left_key.unwrap().text(), "ctrl+s");
+        assert_eq!(c.rolls.save_key.unwrap().text(), "ctrl+left");
+        let twice = Snapshot { hk: [(0x25, 2), (0x27, 2), (0x25, 2)], ..snap.clone_for_test() };
+        let err = build_text(&twice, "").unwrap_err().join(" ");
+        assert!(err.contains("roll_left_key") && err.contains("save_key"), "{err}");
     }
 
     #[test]

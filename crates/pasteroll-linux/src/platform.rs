@@ -17,7 +17,7 @@ use crate::keys;
 use crate::sys;
 use crate::x::{self, Atoms, Keymap, XResult};
 use pasteroll_app::{
-    ClickPoll, Event, MouseEvent, MouseKind, OverlayInfo, PasteKey, Payload, Platform, SaveChoice, Target, Wheel,
+    ClickPoll, Event, Key, MouseEvent, MouseKind, OverlayInfo, PasteKey, Payload, Platform, SaveChoice, Target, Wheel,
 };
 use pasteroll_core::config::UiMode;
 use pasteroll_render::{window_dip, Frame, HEIGHT, WIDTH};
@@ -498,12 +498,19 @@ impl LinuxPlatform {
             }
             XEvent::KeyPress(e) => {
                 if self.active {
-                    let roll = (!self.viewer_mode).then(|| crate::bindings::roll_key(
-                        self.keymap.sym(e.detail, 0), u32::from(u16::from(e.state)), &self.roll_settings)).flatten();
-                    if let Some(direction) = roll {
-                        out.push(Action::Event(Event::Roll(direction, self.generation)));
-                    } else if let Some(k) = keys::classify(&self.keymap, e.detail, u16::from(e.state)) {
-                        out.push(Action::Event(Event::Key(k, self.generation)));
+                    let symbol = self.keymap.sym(e.detail, 0);
+                    let mods = u32::from(u16::from(e.state));
+                    if crate::bindings::save_key(symbol, mods, &self.roll_settings) {
+                        out.push(Action::Event(Event::Key(Key::CtrlS, self.generation)));
+                    } else {
+                        let roll = (!self.viewer_mode)
+                            .then(|| crate::bindings::roll_key(symbol, mods, &self.roll_settings))
+                            .flatten();
+                        if let Some(direction) = roll {
+                            out.push(Action::Event(Event::Roll(direction, self.generation)));
+                        } else if let Some(k) = keys::classify(&self.keymap, e.detail, u16::from(e.state)) {
+                            out.push(Action::Event(Event::Key(k, self.generation)));
+                        }
                     }
                 }
             }

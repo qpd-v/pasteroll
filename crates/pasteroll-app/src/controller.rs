@@ -1703,6 +1703,11 @@ impl Controller {
                     }
                 }
             }
+            Key::CtrlS => {
+                if !adding {
+                    self.save_current_clip(p, now);
+                }
+            }
             // keys for the viewer; the carousel has no use for them
             Key::Left
             | Key::Right
@@ -1712,7 +1717,6 @@ impl Controller {
             | Key::ShiftF3
             | Key::F11
             | Key::CtrlI
-            | Key::CtrlS
             | Key::CtrlP => {}
             Key::PageUp | Key::PageDown => {
                 let mut vm = self.view_model();
