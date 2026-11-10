@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-beta.21 (Windows and Linux)
+
+- **Recover update downloads when GitHub's normal link fails.** The Windows updater retries transient
+  gateway errors, then resolves the exact release asset through GitHub's API. If both GitHub routes
+  fail, it downloads from the signed pasteroll.com mirror. Manifest signatures and file checksums remain
+  mandatory.
+- No clipboard, editor, roll, favorites or MCP behavior changed from beta.20.
+
 ## 0.1.0-beta.20 (Windows and Linux)
 
 - **Ctrl+click an image clip to edit it.** In Complete mode, Ctrl+clicking a picture row or the large

@@ -891,21 +891,21 @@ mod tests {
             latest_hosts: Vec::new(),
             latest_url: Box::new(|_| String::new()),
         };
-        let name = "pasteroll-0.1.0-beta.20-windows-x64-setup.exe";
+        let asset = current_manifest().setup;
         let path = scratch("live-site-fallback").join("setup.exe");
         let mut file = OpenOptions::new().write(true).create_new(true).open(&path).unwrap();
-        let got = download_file_with_fallback(&trust, &missing, name, 7 * 1024 * 1024, &mut file, &mut |_, _| {})
+        let got = download_file_with_fallback(&trust, &missing, &asset.name, asset.size, &mut file, &mut |_, _| {})
             .expect("the website mirror downloads the setup");
         drop(file);
-        assert_eq!(got.size, 4_862_747);
-        assert_eq!(um::hex(&got.sha256), "50f342d7a7af2173a915b0fbd6312aaaee2dbd1e756caf8a55bda84813312525");
+        assert_eq!(got.size, asset.size);
+        assert_eq!(got.sha256, asset.sha256);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]
     #[ignore = "uses the public GitHub API"]
     fn live_small_fallback_uses_the_api_after_a_bad_download_url() {
-        let version = Version::parse("0.1.0-beta.20").unwrap();
+        let version = Version::current();
         let trust = Trust {
             keys: Vec::new(),
             hosts: fetch::GITHUB_HOSTS.iter().map(|h| (*h).to_owned()).collect(),
@@ -916,14 +916,17 @@ mod tests {
             latest_url: Box::new(|_| String::new()),
         };
         let body = download_small_with_fallback(&trust, &version, um::MANIFEST_NAME).unwrap();
-        assert!(body.starts_with(b"pasteroll-update-manifest 1\nversion 0.1.0-beta.20\n"));
+        let expected = format!("pasteroll-update-manifest 1\nversion {version}\n");
+        assert!(body.starts_with(expected.as_bytes()));
     }
 
     #[test]
     #[ignore = "uses the public GitHub API"]
     fn live_file_fallback_uses_the_api_after_a_bad_download_url() {
-        let version = Version::parse("0.1.0-beta.20").unwrap();
-        let name = um::setup_name(&version);
+        let manifest = current_manifest();
+        let version = Version::current();
+        assert_eq!(manifest.version, version);
+        let asset = manifest.setup;
         let trust = Trust {
             keys: Vec::new(),
             hosts: fetch::GITHUB_HOSTS.iter().map(|h| (*h).to_owned()).collect(),
@@ -935,24 +938,30 @@ mod tests {
         };
         let path = scratch("live-api-fallback").join("setup.exe");
         let mut file = OpenOptions::new().write(true).create_new(true).open(&path).unwrap();
-        let got = download_file_with_fallback(&trust, &version, &name, 7 * 1024 * 1024, &mut file, &mut |_, _| {})
+        let got = download_file_with_fallback(&trust, &version, &asset.name, asset.size, &mut file, &mut |_, _| {})
             .expect("the API fallback downloads the setup");
         drop(file);
-        assert_eq!(got.size, 4_862_747);
-        assert_eq!(um::hex(&got.sha256), "50f342d7a7af2173a915b0fbd6312aaaee2dbd1e756caf8a55bda84813312525");
+        assert_eq!(got.size, asset.size);
+        assert_eq!(got.sha256, asset.sha256);
         let mut head = [0u8; 2];
         File::open(&path).unwrap().read_exact(&mut head).unwrap();
         assert_eq!(&head, b"MZ");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
+    fn current_manifest() -> um::Manifest {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dist/update-manifest.txt");
+        um::parse(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
     #[test]
     #[ignore = "uses the public GitHub API"]
     fn live_github_api_downloads_the_release_manifest() {
-        let version = Version::parse("0.1.0-beta.20").unwrap();
+        let version = Version::current();
         let url = api_asset_url(&version, um::MANIFEST_NAME).unwrap();
         let body = fetch::download_small(&url, &fetch::API_ASSET_HOSTS, um::MAX_SMALL_FILE_BYTES).unwrap();
-        assert!(body.starts_with(b"pasteroll-update-manifest 1\nversion 0.1.0-beta.20\n"));
+        let expected = format!("pasteroll-update-manifest 1\nversion {version}\n");
+        assert!(body.starts_with(expected.as_bytes()));
     }
 
     fn release() -> Release {
