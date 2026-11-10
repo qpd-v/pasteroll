@@ -1,5 +1,5 @@
 pasteroll-update-latest 1
-version 0.1.0-beta.20
-note Ctrl+click an image clip in the carousel opens Advanced Image Paste.
-note Ctrl+click text and file clips still chooses them for Multi-paste.
-note Update downloads retry transient GitHub 502, 503 and 504 responses.
+version 0.1.0-beta.21
+note Update downloads recover through GitHub's API when the normal link fails.
+note A verified mirror on pasteroll.com is used if both GitHub routes fail.
+note History, encryption keys, settings and rolls are kept.
