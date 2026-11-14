@@ -1,7 +1,7 @@
 pasteroll-update-latest 1
-version 0.1.0-beta.23
-note Zoom controls use a centered icon toolbar with one read-only percentage display.
-note Ctrl+click an inactive clip to select it together with the active clip and start Multi-paste.
-note The Multi-paste button starts with no clips selected.
-note Unselected clips have no active border or tint while Multi-paste is on.
-note Existing history, encryption keys, settings and rolls are kept.
+version 0.1.0-beta.24
+note The mouse wheel zooms the image preview.
+note Selected images open in a tabbed Advanced Image Paste editor.
+note Batch Paste Paths saves every edited image and pastes the paths.
+note Text, files and images can be pasted together.
+note Existing history, keys, settings and rolls are kept.
