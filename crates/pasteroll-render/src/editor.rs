@@ -128,6 +128,9 @@ pub struct CropView {
 pub struct EditorView {
     pub title: String,
     pub subtitle: String,
+    /// One tab per image in a Multi-paste edit batch.
+    pub tabs: Vec<String>,
+    pub active_tab: usize,
     pub tops: Vec<TopView>,
     /// The picture to show (the adjusted result, or the original while cropping).
     pub preview: Option<Arc<Rgba>>,
@@ -170,6 +173,7 @@ pub enum CropPart {
 pub enum EHit {
     Back,
     Top(Top),
+    Tab(usize),
     /// `part` and `frac` depend on the item (see [`ItemKind`]); `frac` is where along a slider's track.
     Item { id: u32, part: u16, frac: f32 },
     Name,
@@ -212,6 +216,7 @@ pub struct ELayout {
     pub size: (f32, f32),
     pub back: Rect,
     pub tops: Vec<Rect>,
+    pub tabs: Vec<Rect>,
     pub preview: Rect,
     pub zoom_buttons: [Rect; 5],
     /// Where the picture is drawn (inside `preview`).
@@ -374,8 +379,20 @@ pub fn editor_layout(v: &EditorView, size: (f32, f32)) -> ELayout {
         x -= 4.0;
     }
     let footer_y = h - FOOTER_H;
-    let panel = Rect { x: w - PANEL_W - 12.0, y: HEADER_H, w: PANEL_W, h: (footer_y - HEADER_H - 6.0).max(0.0) };
-    let preview = Rect { x: 12.0, y: HEADER_H, w: (panel.x - 24.0).max(0.0), h: panel.h };
+    let tab_h = if v.tabs.len() > 1 { 34.0 } else { 0.0 };
+    let content_y = HEADER_H + tab_h;
+    let panel = Rect { x: w - PANEL_W - 12.0, y: content_y, w: PANEL_W, h: (footer_y - content_y - 6.0).max(0.0) };
+    let preview = Rect { x: 12.0, y: content_y, w: (panel.x - 24.0).max(0.0), h: panel.h };
+    let tabs = if tab_h > 0.0 {
+        let count = v.tabs.len() as f32;
+        let gap = 6.0;
+        let tw = ((w - 24.0 - gap * (count - 1.0)) / count).clamp(26.0, 160.0);
+        (0..v.tabs.len())
+            .map(|i| Rect { x: 12.0 + i as f32 * (tw + gap), y: HEADER_H + 3.0, w: tw, h: 28.0 })
+            .collect()
+    } else {
+        Vec::new()
+    };
     let area = Rect { x: preview.x + 14.0, y: preview.y + 14.0, w: (preview.w - 28.0).max(1.0), h: (preview.h - 52.0).max(1.0) };
     let area = Rect { h: (area.h - 34.0).max(1.0), ..area };
     // Four icon buttons and a read-only percentage share one compact toolbar.
@@ -446,6 +463,7 @@ pub fn editor_layout(v: &EditorView, size: (f32, f32)) -> ELayout {
         size,
         back,
         tops,
+        tabs,
         preview,
         zoom_buttons,
         image,
@@ -523,6 +541,9 @@ pub fn editor_hit(v: &EditorView, size: (f32, f32), scale: f32, px: f32, py: f32
         if r.contains(x, y) {
             return EHit::Top(t.kind);
         }
+    }
+    if let Some(i) = l.tabs.iter().position(|r| r.contains(x, y)) {
+        return EHit::Tab(i);
     }
     for (r, hit) in [(l.paste, EHit::Paste), (l.cancel, EHit::Cancel), (l.browse, EHit::Browse), (l.name, EHit::Name), (l.folder, EHit::Folder)] {
         if r.contains(x, y) {
@@ -854,6 +875,27 @@ impl Renderer {
                     icons::draw(&mut cv, Icon::ChevronDown, Rect { x: r.x + r.w - 26.0, w: 22.0, ..*r }, 11.0, MUTED);
                 }
             }
+        }
+
+        for (i, (r, label)) in l.tabs.iter().zip(&v.tabs).enumerate() {
+            let active = i == v.active_tab;
+            let hot = hover == Some(EHit::Tab(i)) && !modal;
+            if active {
+                cv.fill(*r, 7.0, ACCENT, 0.24);
+                cv.stroke(*r, 7.0, ACCENT, 0.75, 1.0);
+            } else if hot {
+                cv.fill(*r, 7.0, BUTTON_HOT, 1.0);
+            }
+            let tw = self.ewidth(label, 12.0, s).min(r.w - 14.0).max(0.0);
+            self.etext(
+                &mut cv,
+                label,
+                r.x + (r.w - tw) / 2.0,
+                r.y + (r.h - 17.0) / 2.0 + 0.5,
+                12.0,
+                if active { FOREGROUND } else { MUTED },
+                Rect { x: r.x + 6.0, w: (r.w - 12.0).max(1.0), ..*r },
+            );
         }
 
         // ---- preview

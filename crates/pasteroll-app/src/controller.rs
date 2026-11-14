@@ -2165,6 +2165,7 @@ impl Controller {
             (Payload::Text(t), false) => format!("selection ({} chars)", t.chars().count()),
             (Payload::Files(f), _) => format!("{} file(s)", f.len()),
             (Payload::Images { paths, .. }, _) => format!("{} images",paths.len()),
+            (Payload::Mixed { paths, .. }, _) => format!("text and {} images", paths.len()),
             (Payload::Image(_), _) => "image".to_owned(),
         };
         p.log(&format!("pasted {what} with {key:?}"));
@@ -2297,16 +2298,25 @@ impl Controller {
         }
         // Ctrl+click (by default) on a picture opens the editor, which types nothing yet; with several
         // clips chosen it opens their options card. Neither types anything yet.
-        let editor_click = self.current_is_image()
-            && self.picks_allow_editor()
+        let image_batch = self.selected_image_batch().is_some()
             && p.click_modifiers().has(self.advanced_modifier);
-        let join_click = self.multi_picks_two() && p.click_modifiers().has(self.advanced_modifier);
+        let editor_click = image_batch
+            || (self.current_is_image()
+            && self.picks_allow_editor()
+            && p.click_modifiers().has(self.advanced_modifier));
+        let join_click = self.multi_picks_two()
+            && p.click_modifiers().has(self.advanced_modifier)
+            && !image_batch;
         let polled = if editor_click || join_click { p.poll_click_editor(first) } else { p.poll_click(first) };
         match polled {
             ClickPoll::Pending => {}
             ClickPoll::Rejected(why) => self.cancel(p, why),
             ClickPoll::Desktop => {
-                if join_click {
+                if image_batch {
+                    if let Some(ids) = self.selected_image_batch() {
+                        self.open_editor_batch(p, now, None, ids);
+                    }
+                } else if join_click {
                     self.cancel(p, "several clips can only be pasted into a window");
                 } else if self.current_is_image() {
                     if p.click_modifiers().has(self.advanced_modifier) {
@@ -2320,6 +2330,13 @@ impl Controller {
                 }
             }
             ClickPoll::Target(t) => {
+                if image_batch {
+                    if let Some(ids) = self.selected_image_batch() {
+                        self.status = None;
+                        self.open_editor_batch(p, now, Some(t), ids);
+                    }
+                    return;
+                }
                 // Ctrl+click (by default) with a picture: the editor first, then the result is
                 // pasted into the window that was clicked
                 if self.current_is_image() && self.picks_allow_editor() && p.click_modifiers().has(self.advanced_modifier) {

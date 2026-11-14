@@ -27,6 +27,8 @@ pub enum Payload {
     Text(String),
     Files(Vec<String>),
     Images { paths: Vec<String>, html: String, inline: bool },
+    /// Text clips and image attachments together: plain text, rich HTML, and image files.
+    Mixed { text: String, html: String, paths: Vec<String> },
     /// PNG bytes; the platform decodes and offers its native image formats.
     Image(Vec<u8>),
 }
@@ -40,6 +42,11 @@ impl Payload {
             Payload::Files(f) => f.iter_mut().for_each(|s| s.zeroize()),
             Payload::Image(b) => b.zeroize(),
             Payload::Images { paths, html, .. } => {paths.iter_mut().for_each(|s|s.zeroize());html.zeroize();}
+            Payload::Mixed { text, html, paths } => {
+                text.zeroize();
+                html.zeroize();
+                paths.iter_mut().for_each(|s| s.zeroize());
+            }
         }
     }
 }
@@ -51,6 +58,7 @@ impl std::fmt::Debug for Payload {
             Payload::Text(t) => write!(f, "Text({} chars)", t.chars().count()),
             Payload::Files(v) => write!(f, "Files({})", v.len()),
             Payload::Images { paths, .. } => write!(f,"Images({})",paths.len()),
+            Payload::Mixed { text, paths, .. } => write!(f, "Mixed({} chars, {} images)", text.chars().count(), paths.len()),
             Payload::Image(b) => write!(f, "Image({} bytes)", b.len()),
         }
     }

@@ -415,6 +415,7 @@ impl Platform for WinPlatform {
         let r = match payload {
             Payload::Text(t) => clipboard::set_text(self.hwnd, &self.formats, t),
             Payload::Images {paths,html,inline} => clipboard::set_images(self.hwnd,&self.formats,paths,html,*inline),
+            Payload::Mixed {text,html,paths} => clipboard::set_mixed(self.hwnd, &self.formats, paths, html, text),
             Payload::Files(f) => clipboard::set_files(self.hwnd, &self.formats, f),
             Payload::Image(png) => match pasteroll_core::image::decode_png(png) {
                 Some(rgba) => clipboard::set_image(self.hwnd, &self.formats, png, &rgba),

@@ -193,6 +193,7 @@ pub fn encode(payload: &Payload) -> Result<(&'static str, Vec<u8>), Error> {
     let (mime, bytes) = match payload {
         Payload::Images{html,inline:true,..} => ("text/html",html.as_bytes().to_vec()),
         Payload::Images{paths,..} => return encode(&Payload::Files(paths.clone())),
+        Payload::Mixed{html,..} => ("text/html", html.as_bytes().to_vec()),
         Payload::Text(s) if !s.contains('\0') => (TEXT, s.as_bytes().to_vec()),
         Payload::Image(bytes) if pasteroll_core::image::decode_png(bytes).is_some() => {
             (PNG, bytes.clone())

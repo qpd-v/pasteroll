@@ -127,11 +127,24 @@ impl Server {
                 self.served.push((atoms.gnome_files, gnome.into_bytes()));
                 self.served.push((atoms.utf8_string, files.join("\n").into_bytes()));
             }
+            Payload::Mixed { text, paths: files, .. } => {
+                let utf8 = text.clone().into_bytes();
+                self.served.push((atoms.utf8_string, utf8.clone()));
+                self.served.push((atoms.text_plain_utf8, utf8.clone()));
+                self.served.push((atoms.text_plain, utf8));
+                let uris: Vec<String> = files.iter().map(|f| percent_encode_path(f)).collect();
+                self.served.push((atoms.uri_list, uris.iter().map(|u| format!("{u}\r\n")).collect::<String>().into_bytes()));
+                self.served.push((atoms.gnome_files, format!("copy\n{}", uris.join("\n")).into_bytes()));
+            }
             Payload::Image(png) => self.served.push((atoms.image_png, png.clone())),
         }
         if let Payload::Images {html,inline,..}=payload {
             let atom=conn.intern_atom(false,b"text/html").map_err(|e|e.to_string())?.reply().map_err(|e|e.to_string())?.atom;
             if *inline {self.served.insert(0,(atom,html.as_bytes().to_vec()));} else {self.served.push((atom,html.as_bytes().to_vec()));}
+        }
+        if let Payload::Mixed {html,..}=payload {
+            let atom=conn.intern_atom(false,b"text/html").map_err(|e|e.to_string())?.reply().map_err(|e|e.to_string())?.atom;
+            self.served.insert(0,(atom,html.as_bytes().to_vec()));
         }
         conn.set_selection_owner(self.window, atoms.clipboard, CURRENT_TIME).map_err(|e| e.to_string())?;
         let owner = conn

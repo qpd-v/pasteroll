@@ -50,6 +50,8 @@ pub(crate) enum Exported {
     File(PathBuf),
     /// The edited picture as PNG bytes, for the clipboard (nothing was saved).
     Png(Vec<u8>),
+    /// All tabs of a multi-image edit session; `payload` is what the destination receives.
+    Batch { files: Vec<PathBuf>, payload: Option<Payload> },
 }
 
 /// What "Paste Image" delivers when the destination is a window rather than the desktop.
@@ -292,6 +294,8 @@ pub(crate) struct Editor {
     paste_as: PasteAs,
     /// The result, waiting for the editor to close before it is pasted.
     deliver: Option<Payload>,
+    /// Multiple selected images, each with its own tab and edit state.
+    batch: Option<EditorBatch>,
     // window and animation
     pub(crate) rect: RectPx,
     lifted: Frame,
@@ -311,6 +315,22 @@ pub(crate) struct Editor {
     text_edit: Option<TextEdit>,
     /// The original with the marks on it, shown while the Draw and write section is open.
     markup_img: Option<Arc<core_image::Rgba>>,
+}
+
+#[derive(Clone)]
+struct EditorTab {
+    id: i64,
+    src_dims: (u32, u32),
+    params: EditParams,
+    history: Vec<EditParams>,
+    pos: usize,
+    name: String,
+    crop_aspect: Option<(f32, f32)>,
+}
+
+struct EditorBatch {
+    tabs: Vec<EditorTab>,
+    active: usize,
 }
 
 impl Editor {
@@ -354,6 +374,18 @@ impl Editor {
             self.history.remove(0);
         }
         self.pos = self.history.len() - 1;
+    }
+
+    fn save_current_tab(&mut self) {
+        let Some(batch) = self.batch.as_mut() else { return };
+        let Some(tab) = batch.tabs.get_mut(batch.active) else { return };
+        tab.id = self.id;
+        tab.src_dims = self.src_dims;
+        tab.params = self.params.clone();
+        tab.history = self.history.clone();
+        tab.pos = self.pos;
+        tab.name = self.name.clone();
+        tab.crop_aspect = self.crop_aspect;
     }
 
     fn crop_mode(&self) -> bool {
@@ -551,6 +583,15 @@ impl Drop for Editor {
         for m in &mut self.params.marks {
             use zeroize::Zeroize;
             m.text.zeroize();
+        }
+        if let Some(batch) = self.batch.as_mut() {
+            use zeroize::Zeroize;
+            for tab in &mut batch.tabs {
+                tab.name.zeroize();
+                for m in &mut tab.params.marks {
+                    m.text.zeroize();
+                }
+            }
         }
     }
 }
@@ -1151,9 +1192,22 @@ impl Editor {
             (None, false) => format!("Result: {} x {} px", out.0, out.1),
         };
         let tip = |s: &str| s.to_owned();
+        let batch_count = self.batch.as_ref().map_or(0, |b| b.tabs.len());
+        let tabs = self
+            .batch
+            .as_ref()
+            .map(|b| (1..=b.tabs.len()).map(|n| format!("Image {n}")).collect())
+            .unwrap_or_default();
+        let active_tab = self.batch.as_ref().map_or(0, |b| b.active);
         EditorView {
             title: "Advanced Image Paste".into(),
-            subtitle: format!("Original {} x {} px", self.src_dims.0, self.src_dims.1),
+            subtitle: if batch_count > 1 {
+                format!("Image {} of {} · {} x {} px", active_tab + 1, batch_count, self.src_dims.0, self.src_dims.1)
+            } else {
+                format!("Original {} x {} px", self.src_dims.0, self.src_dims.1)
+            },
+            tabs,
+            active_tab,
             tops: vec![
                 TopView { kind: Top::Undo, enabled: self.can_undo(), tip: tip("Undo (Ctrl+Z)") },
                 TopView { kind: Top::Redo, enabled: self.can_redo(), tip: tip("Redo (Ctrl+Y)") },
@@ -1171,10 +1225,19 @@ impl Editor {
             name,
             ext,
             folder,
-            paste_label: match (self.saving, self.window) {
-                (true, _) => "Saving...".into(),
-                (false, true) => self.paste_as.button().into(),
-                (false, false) => "Paste Image".into(),
+            paste_label: if self.saving {
+                "Saving...".into()
+            } else if batch_count > 1 {
+                match (self.window, self.paste_as) {
+                    (true, PasteAs::Image) => format!("Paste {batch_count} Images"),
+                    (true, PasteAs::Path) => format!("Paste {batch_count} Paths"),
+                    (true, PasteAs::Name) => format!("Paste {batch_count} Names"),
+                    (false, _) => format!("Save {batch_count} Images"),
+                }
+            } else if self.window {
+                self.paste_as.button().into()
+            } else {
+                "Paste Image".into()
             },
             paste_enabled: !self.saving && self.src.is_some() && too_large.is_none(),
             popup: self.popup_view(),
@@ -1232,6 +1295,41 @@ impl Controller {
     /// The picture under the carousel's pointer grows into the editor. `dest` is the window the
     /// click landed in (the result will be pasted there); `None` is a click on the desktop.
     pub(super) fn open_editor(&mut self, p: &mut dyn Platform, now: u64, dest: Option<Target>) {
+        let Some(id) = self.open.as_ref().and_then(Open::current_id) else { return };
+        self.open_editor_ids(p, now, dest, vec![id]);
+    }
+
+    /// Advanced Image Paste for several selected image clips, one tab per image.
+    pub(super) fn open_editor_batch(
+        &mut self,
+        p: &mut dyn Platform,
+        now: u64,
+        dest: Option<Target>,
+        ids: Vec<i64>,
+    ) {
+        self.open_editor_ids(p, now, dest, ids);
+    }
+
+    /// The chosen clips when every one is an image and there are at least two.
+    pub(super) fn selected_image_batch(&self) -> Option<Vec<i64>> {
+        if self.editor.is_some() || self.viewer.is_some() {
+            return None;
+        }
+        let picks = self.open.as_ref().map(|o| o.ui.picks.clone()).unwrap_or_default();
+        if picks.len() < 2 {
+            return None;
+        }
+        let all_images = picks.iter().all(|id| self.store.borrow().kind(*id).ok().flatten() == Some(Kind::Image));
+        all_images.then_some(picks)
+    }
+
+    fn open_editor_ids(
+        &mut self,
+        p: &mut dyn Platform,
+        now: u64,
+        dest: Option<Target>,
+        ids: Vec<i64>,
+    ) {
         if self.editor.is_some() || self.viewer.is_some() {
             return;
         }
@@ -1239,12 +1337,24 @@ impl Controller {
             self.cancel(p, "target runs at a higher privilege level; not opening the editor");
             return;
         }
-        let Some(id) = self.open.as_ref().and_then(Open::current_id) else { return };
-        let info = self.store.borrow().info(id).ok().flatten();
-        let Some(info) = info.filter(|i| i.kind == Kind::Image && i.width > 0 && i.height > 0) else {
+        if ids.is_empty() {
+            return;
+        }
+        let mut image_infos = Vec::with_capacity(ids.len());
+        for id in &ids {
+            let info = self.store.borrow().info(*id).ok().flatten();
+            let Some(info) = info.filter(|i| i.kind == Kind::Image && i.width > 0 && i.height > 0) else {
+                self.cancel(p, "one of the selected clips is not an image");
+                return;
+            };
+            image_infos.push((*id, (info.width, info.height)));
+        }
+        let id = image_infos[0].0;
+        let src_dims = image_infos[0].1;
+        if image_infos.len() != ids.len() {
             self.cancel(p, "the candidate is not an image");
             return;
-        };
+        }
         let png = self.store.borrow().image_png(id);
         let png = match png {
             Ok(Some(b)) => b,
@@ -1292,7 +1402,15 @@ impl Controller {
             .filter(|f| Path::new(f).is_dir())
             .map(str::to_owned)
             .unwrap_or_default();
-        let name = format!("Pasteroll image {}", p.local_timestamp());
+        let stamp = p.local_timestamp();
+        let names: Vec<String> = if image_infos.len() > 1 {
+            (1..=image_infos.len())
+                .map(|n| format!("Pasteroll image {n} {stamp}"))
+                .collect()
+        } else {
+            vec![format!("Pasteroll image {stamp}")]
+        };
+        let name = names[0].clone();
         let thumb = self.cached_thumb(id);
 
         // the decoding of the whole picture, and the worker that redraws the preview
@@ -1340,7 +1458,22 @@ impl Controller {
         });
         let params = EditParams::default();
         let fonts = self.renderer.installed_fonts(&markup::FONT_CANDIDATES);
-        let src_dims = (info.width, info.height);
+        let batch = (image_infos.len() > 1).then(|| EditorBatch {
+            tabs: image_infos
+                .iter()
+                .zip(names.iter())
+                .map(|((id, dims), name)| EditorTab {
+                    id: *id,
+                    src_dims: *dims,
+                    params: EditParams::default(),
+                    history: vec![EditParams::default()],
+                    pos: 0,
+                    name: name.clone(),
+                    crop_aspect: None,
+                })
+                .collect(),
+            active: 0,
+        });
         self.editor = Some(Editor {
             id,
             src_dims,
@@ -1376,6 +1509,7 @@ impl Controller {
             terminal,
             paste_as,
             deliver: None,
+            batch,
             rect: card_rect,
             lifted,
             dim: 1.0,
@@ -1419,6 +1553,70 @@ impl Controller {
         let view = e.view(scale);
         e.rect = saved;
         self.renderer.render_editor(&view, size, scale * res)
+    }
+
+    /// Switch to another tab of a multi-image edit session, keeping every tab's edits.
+    fn switch_editor_tab(&mut self, _p: &mut dyn Platform, index: usize, now: u64) {
+        self.finish_text_edit();
+        let Some(e) = self.editor.as_mut() else { return };
+        if e.animating() || e.saving {
+            return;
+        }
+        let Some(batch) = e.batch.as_ref() else { return };
+        if index >= batch.tabs.len() || index == batch.active {
+            return;
+        }
+        e.checkpoint();
+        e.save_current_tab();
+        let tab = e.batch.as_ref().and_then(|b| b.tabs.get(index)).cloned();
+        let Some(tab) = tab else { return };
+        let png = self.store.borrow().image_png(tab.id).ok().flatten();
+        let Some(mut png) = png else {
+            self.editor_toast("That image could not be read.", now);
+            return;
+        };
+        if let Some(batch) = e.batch.as_mut() {
+            batch.active = index;
+        }
+        e.id = tab.id;
+        e.src_dims = tab.src_dims;
+        e.src = None;
+        e.proxy = None;
+        e.failed = false;
+        e.params = tab.params.clone();
+        e.history = tab.history.clone();
+        e.pos = tab.pos;
+        e.preview = None;
+        e.preview_dims = tab.src_dims;
+        e.gen = e.gen.wrapping_add(1);
+        e.pending = true;
+        e.zoom = None;
+        e.pan = (0.0, 0.0);
+        e.focus = None;
+        e.popup = None;
+        e.drag = None;
+        e.text_edit = None;
+        e.markup_img = None;
+        e.crop_aspect = tab.crop_aspect;
+        e.name = tab.name.clone();
+        e.toast = None;
+        e.saving = false;
+        let tx = self.edit_tx.clone();
+        let waker = self.waker.clone();
+        std::thread::spawn(move || {
+            use zeroize::Zeroize;
+            let msg = match core_image::decode_png(&png) {
+                Some(src) => {
+                    let (proxy, k) = imgedit::preview_source(&src);
+                    EditMsg::Loaded { id: tab.id, src: Arc::new(src), proxy: Arc::new(proxy), k }
+                }
+                None => EditMsg::LoadFailed { id: tab.id },
+            };
+            png.zeroize();
+            let _ = tx.send(msg);
+            waker.wake();
+        });
+        self.dirty = true;
     }
 
     /// Shrinks the editor back into the card's place. `then` says what follows: the carousel again
@@ -1655,6 +1853,10 @@ impl Controller {
     }
 
     fn editor_paste(&mut self, p: &mut dyn Platform, now: u64) {
+        if self.editor.as_ref().is_some_and(|e| e.batch.is_some()) {
+            self.editor_paste_batch(p, now);
+            return;
+        }
         self.finish_text_edit();
         let Some(e) = self.editor.as_ref() else { return };
         if e.saving || e.animating() {
@@ -1757,6 +1959,141 @@ impl Controller {
         });
     }
 
+    /// Save every tab, then deliver either the edited pictures or their paths/names.
+    fn editor_paste_batch(&mut self, p: &mut dyn Platform, now: u64) {
+        self.finish_text_edit();
+        let Some(e) = self.editor.as_mut() else { return };
+        if e.saving || e.animating() {
+            return;
+        }
+        e.checkpoint();
+        e.save_current_tab();
+        let Some(batch) = e.batch.as_ref() else { return };
+        let (window, terminal, paste_as) = (e.window, e.terminal, e.paste_as);
+        let tabs = batch.tabs.clone();
+        let mut jobs = Vec::with_capacity(tabs.len());
+        for (index, tab) in tabs.iter().enumerate() {
+            let out = imgedit::plan(tab.src_dims.0, tab.src_dims.1, &tab.params).out;
+            if let Some(why) = imgedit::too_large(out) {
+                self.editor_toast(why, now);
+                return;
+            }
+            let Some(png) = self.store.borrow().image_png(tab.id).ok().flatten() else {
+                self.editor_toast("One of the selected images could not be read.", now);
+                return;
+            };
+            let ext = tab.params.format.ext();
+            let fallback = format!("Pasteroll image {} {}", index + 1, p.local_timestamp());
+            let stem = clean_file_stem(&tab.name, ext, &fallback);
+            jobs.push((png, tab.params.clone(), stem, ext, tab.params.format));
+        }
+        let folder = match self.effective_folder(p) {
+            Err(why) => {
+                self.editor_toast(why, now);
+                return;
+            }
+            Ok(Some(f)) if !f.is_absolute() => {
+                self.editor_toast("Type the full path of the folder, starting with the drive letter.", now);
+                return;
+            }
+            Ok(Some(f)) if f.is_dir() => f,
+            _ => {
+                self.editor_toast("That folder does not exist. Choose another with the folder button.", now);
+                return;
+            }
+        };
+        if terminal && matches!(paste_as, PasteAs::Path | PasteAs::Name) {
+            for (_, _, stem, ext, _) in &jobs {
+                let sample = format!("{}{stem}.{ext}", folder.to_string_lossy());
+                if unsafe_in_terminal(&sample) {
+                    self.editor_toast("A file name contains characters that are not safe to paste into a terminal.", now);
+                    return;
+                }
+            }
+        }
+        if window {
+            let sample = folder.to_string_lossy().into_owned();
+            if sample.chars().any(char::is_control) || (terminal && unsafe_in_terminal(&sample)) {
+                self.editor_toast("The chosen folder cannot be pasted safely into this terminal.", now);
+                return;
+            }
+        }
+        let Some(e) = self.editor.as_mut() else { return };
+        e.saving = true;
+        e.focus = None;
+        e.popup = None;
+        self.dirty = true;
+        let tx = self.edit_tx.clone();
+        let waker = self.waker.clone();
+        let line_break = p.line_break().to_owned();
+        p.log(&format!("saving {} edited images", jobs.len()));
+        std::thread::spawn(move || {
+            let result = (|| {
+                let mut files = Vec::new();
+                let mut image_paths = Vec::new();
+                let mut html = String::from("<div>");
+                let mut text = Vec::new();
+                for (index, (mut png, params, stem, ext, format)) in jobs.into_iter().enumerate() {
+                    let Some(src) = core_image::decode_png(&png) else {
+                        return Err("An image could not be decoded.".into());
+                    };
+                    {
+                        use zeroize::Zeroize;
+                        png.zeroize();
+                    }
+                    let img = if params.marks.is_empty() {
+                        imgedit::apply(&src, &params)
+                    } else {
+                        let mut base = src;
+                        pasteroll_render::Renderer::new().burn_marks(&mut base, &params.marks, None);
+                        imgedit::apply(&base, &params)
+                    };
+                    let bytes = pasteroll_core::imgout::encode(&img, format, params.quality, params.png_level)?;
+                    let path = crate::files::save_unique(&folder, &stem, ext, &bytes)
+                        .map_err(|e| format!("Could not save image {}: {e}", index + 1))?;
+                    let path_text = path.to_string_lossy().into_owned();
+                    files.push(path.clone());
+                    match (window, paste_as) {
+                        (true, PasteAs::Image) => {
+                            let mime = match ext {
+                                "jpg" | "jpeg" => "image/jpeg",
+                                "webp" => "image/webp",
+                                "bmp" => "image/bmp",
+                                _ => "image/png",
+                            };
+                            html.push_str(&format!(
+                                "<p><img alt=\"Edited image {}\" src=\"data:{};base64,{}\"></p>",
+                                index + 1,
+                                mime,
+                                crate::controller::imagebatch::base64_for_editor(&bytes)
+                            ));
+                            image_paths.push(path_text);
+                        }
+                        (true, PasteAs::Name) => {
+                            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                            text.push(if terminal { quoted_if_needed(&name) } else { name });
+                        }
+                        (true, PasteAs::Path) => text.push(quoted_if_needed(&path_text)),
+                        (false, _) => {}
+                    }
+                }
+                if !window {
+                    return Ok(Exported::Batch { files, payload: None });
+                }
+                let payload = match paste_as {
+                    PasteAs::Image => {
+                        html.push_str("</div>");
+                        Payload::Images { paths: image_paths, html, inline: false }
+                    }
+                    PasteAs::Path | PasteAs::Name => Payload::Text(text.join(&line_break)),
+                };
+                Ok(Exported::Batch { files, payload: Some(payload) })
+            })();
+            let _ = tx.send(EditMsg::Exported { result });
+            waker.wake();
+        });
+    }
+
     fn on_exported(&mut self, p: &mut dyn Platform, result: Result<Exported, String>, now: u64) {
         let Some(e) = self.editor.as_mut() else {
             // the editor was closed while the picture was being made: it is clip content
@@ -1768,6 +2105,31 @@ impl Controller {
         };
         e.saving = false;
         match result {
+            Ok(Exported::Batch { files, payload }) => {
+                for path in &files {
+                    p.file_created(path);
+                }
+                p.log(&format!("saved {} edited image(s)", files.len()));
+                if let Some(path) = files.first() {
+                    let dir = path.parent().map(|d| d.to_string_lossy().into_owned());
+                    let desktop = p.desktop_folder().map(|d| d.to_string_lossy().into_owned());
+                    let e = self.editor.as_mut().expect("editor");
+                    let default_dir = if e.default_folder.is_empty() { desktop } else { Some(e.default_folder.clone()) };
+                    let remembered = if dir == default_dir { None } else { dir };
+                    if e.presets.folder != remembered || e.presets.folder_base != e.default_folder {
+                        e.presets.folder = remembered;
+                        e.presets.folder_base = e.default_folder.clone();
+                        let text = e.presets.to_text();
+                        if let Err(err) = p.save_presets(&text) {
+                            p.log(&format!("could not save the presets file: {err}"));
+                        }
+                    }
+                }
+                if let Some(e) = self.editor.as_mut() {
+                    e.deliver = payload;
+                }
+                self.close_editor(p, now, Then::EndSession);
+            }
             Ok(Exported::Png(png)) => {
                 p.log("edited image ready to paste");
                 if let Some(e) = self.editor.as_mut() {
@@ -1832,6 +2194,7 @@ impl Controller {
         if let Some(key) = self.deliver(p, target, payload) {
             let what = match payload {
                 Payload::Image(_) => "edited image",
+                Payload::Images { .. } | Payload::Mixed { .. } => "edited image batch",
                 _ => "edited image's file reference",
             };
             p.log(&format!("pasted {what} with {key:?}"));
@@ -1961,13 +2324,9 @@ impl Controller {
         let (x, y) = (((self.last_pointer.0 - r.0) as f32) / scale, ((self.last_pointer.1 - r.1) as f32) / scale);
         let view = e.view(scale);
         let l = editor_layout(&view, e.size_dip(scale));
-        if l.preview.contains(x,y) && w.ctrl {
+        if l.preview.contains(x,y) && w.delta != 0 {
+            // Wheel up zooms in, wheel down zooms out, centred under the pointer.
             self.editor_zoom(4, Some((x,y)), 1.25_f32.powf(w.delta as f32/120.0));
-        } else if l.preview.contains(x,y) {
-            if let Some(e)=self.editor.as_mut() {
-                if w.horizontal || w.shift { e.pan.0 += w.delta as f32/2.0; } else {e.pan.1 += w.delta as f32/2.0;}
-                self.dirty=true;
-            }
         } else if l.panel.contains(x, y) {
             let notches = w.delta as f32 / 120.0;
             self.editor_scroll_by(-notches * 54.0);
@@ -2043,8 +2402,22 @@ impl Controller {
             }
         }
         let popup = e.popup.is_some();
+        let focus_none = e.focus.is_none();
         if !popup && self.text_key(key) {
             return;
+        }
+        if !popup && matches!(key, Key::PageUp | Key::PageDown) && focus_none {
+            if let Some(batch) = self.editor.as_ref().and_then(|e| e.batch.as_ref()) {
+                if batch.tabs.len() > 1 {
+                    let next = if key == Key::PageDown {
+                        (batch.active + 1) % batch.tabs.len()
+                    } else {
+                        (batch.active + batch.tabs.len() - 1) % batch.tabs.len()
+                    };
+                    self.switch_editor_tab(p, next, now);
+                    return;
+                }
+            }
         }
         let Some(e) = self.editor.as_mut() else { return };
         let popup = e.popup.is_some();
@@ -2328,6 +2701,7 @@ impl Controller {
         }
         match hit {
             EHit::Zoom(i) => self.editor_zoom(i,None,1.0),
+            EHit::Tab(i) => self.switch_editor_tab(p, i, now),
             EHit::Image | EHit::Crop(_) if p.modifiers_now().alt => {
                 if let Some(e)=self.editor.as_mut() { e.drag=Some(Drag::Pan{start:(m.x,m.y),origin:e.pan}); }
             }

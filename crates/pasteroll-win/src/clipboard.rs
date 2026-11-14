@@ -380,6 +380,16 @@ pub fn set_images(owner:HWND,f:&Formats,paths:&[String],html:&str,inline:bool)->
     })
 }
 
+/// Mixed text and image clips: rich HTML, then plain text, then image files.
+pub fn set_mixed(owner: HWND, f: &Formats, paths: &[String], html: &str, text: &str) -> Result<()> {
+    write_marked(owner, f, || {
+        let format = unsafe { RegisterClipboardFormatW(w!("HTML Format")) };
+        put(format, &html_clipboard(html))?;
+        text_payload(text)?;
+        files_payload(paths)
+    })
+}
+
 
 #[cfg(test)]
 mod batch_tests {

@@ -1,6 +1,6 @@
 # Releasing Pasteroll
 
-Current source version: **0.1.0-beta.23** (Windows and Linux), experimental prerelease. A Windows-only release uses
+Current source version: **0.1.0-beta.24** (Windows and Linux), experimental prerelease. A Windows-only release uses
 `--windows-only` for checksums and verification, publishes
 just Setup, the portable ZIP and their SHA256SUMS, and leaves the Linux links on beta.4.
 Use a reviewed source commit and build all six packages fresh. Never select assets

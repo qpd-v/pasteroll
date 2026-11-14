@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-beta.24 (Windows and Linux)
+
+- Mouse-wheel up/down zooms the image preview in Advanced Image Paste.
+- With several images selected, Ctrl+click a destination to open a tabbed batch editor; each tab keeps its edits.
+- Paste Paths in the batch editor saves every edited image into the image folder and pastes the paths.
+- Multi-paste can combine text, file lists and images in one ordered payload.
+- No test suites are run; manual acceptance is deferred to the maintainer.
+
 ## 0.1.0-beta.23 (Windows and Linux)
 
 - Replaced the image editor zoom boxes with a centered icon toolbar and a separate read-only percentage.

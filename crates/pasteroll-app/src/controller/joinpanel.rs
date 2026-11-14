@@ -312,11 +312,16 @@ impl Controller {
             self.flash("Choose two or more text clips first (Ctrl+click text, or Shift+Down)", now);
             return;
         }
-        if self.images_chosen(&picks) {
+        let all_images = picks.iter().all(|id| self.store.borrow().kind(*id).ok().flatten() == Some(Kind::Image));
+        if all_images {
             if let Some(o)=self.open.as_mut() {
                 o.ui.join=Some(JoinPanel{opts:JoinOptions::default(),images:Some(picks),pieces:Pieces{items:vec![],skipped:0,unreadable:0},order_ids:vec![],focus:0,hover:None,note:None});
             }
             self.dirty=true;return;
+        }
+        if self.images_chosen(&picks) {
+            self.start_image_batch(p, picks, false, false);
+            return;
         }
         let pieces = match self.load_pieces(&picks, p.line_break()) {
             Ok(pieces) if pieces.items.len() >= 2 => pieces,

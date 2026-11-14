@@ -68,3 +68,11 @@ On Linux: `cargo test -p pasteroll-linux --bin pasteroll`.
 - Ctrl+click an inactive clip: Multi-paste starts with the active and clicked clips selected.
 - Click the Multi-paste button: selection starts empty. The active clip has no selection border or tint.
 - Select and deselect clips: only selected clips have the selection highlight.
+
+## Beta.24 batch editor and mixed Multi-paste
+
+- Select two or more images, hold Ctrl and click a target window: the editor opens with one tab per image.
+- Click tabs or use Page Up/Page Down. Edit and zoom each image independently.
+- Choose Paste Paths to save every edited image into the chosen folder and paste all paths.
+- Select images and text/file clips together, then Enter or Ctrl+click: the clipboard carries text, HTML and image files.
+- Over the image preview, wheel up zooms in and wheel down zooms out. Drag to pan; Alt+drag pans while cropping/drawing.
