@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-beta.23 (Windows and Linux)
+
+- Replaced the image editor zoom boxes with a centered icon toolbar and a separate read-only percentage.
+- Ctrl+click an inactive clip to enter Multi-paste with the active and clicked clips selected.
+- The Multi-paste button starts empty; active clips have no selection border or tint unless selected.
+- Manual testing deferred to the maintainer; no automated test suites were run for this release.
+
 ## 0.1.0-beta.22 (Windows and Linux)
 
 - Multi-paste image batches as separate PNG attachments or inline HTML, with bounded private cache files.

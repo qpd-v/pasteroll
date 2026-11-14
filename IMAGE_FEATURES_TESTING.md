@@ -38,8 +38,9 @@ paste; see PRIVACY.md for retention.
 
 ## Advanced Image Paste
 
-1. With Multi-paste off, Ctrl+click an image to open the editor.
-2. Try minus, plus, Fit and 100%, then Ctrl+wheel over the image.
+1. With Multi-paste off, Ctrl+click the current image to open the editor.
+2. Try the zoom-out, zoom-in, Fit and Actual size icons, then Ctrl+wheel over the image.
+   The percentage is a read-only display, not another button.
 3. Drag the normal preview to pan. In Crop/Draw modes, Alt+drag pans instead of editing.
 4. Crop, draw and place text while enlarged. Confirm that marks follow the pointer and crop handles.
 5. Paste/save the result: zooming must not resize the exported image.
@@ -61,3 +62,9 @@ cargo test -p pasteroll-win clipboard::batch_tests
 ```
 
 On Linux: `cargo test -p pasteroll-linux --bin pasteroll`.
+
+## Selection entry behavior
+
+- Ctrl+click an inactive clip: Multi-paste starts with the active and clicked clips selected.
+- Click the Multi-paste button: selection starts empty. The active clip has no selection border or tint.
+- Select and deselect clips: only selected clips have the selection highlight.

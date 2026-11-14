@@ -283,6 +283,19 @@ impl Controller {
                     return false;
                 }
                 let Some(id) = row_id(self) else { return false };
+                if mods.ctrl && !multi_on {
+                    let current = self.current_id();
+                    if let Some(o) = self.open.as_mut() {
+                        o.ui.multi_on = true;
+                        o.ui.dropdown_open = false;
+                        // Ctrl+click extends the current clip into a selection. The button has
+                        // its own empty-selection entry path below.
+                        if o.ui.picks.is_empty() && current != Some(id) {
+                            if let Some(active) = current { o.ui.picks.push(active); o.ui.pick_anchor = Some(active); }
+                        }
+                    }
+                    self.dirty = true;
+                }
                 if mods.shift {
                     self.pick_range(id, now);
                 } else {
@@ -294,11 +307,12 @@ impl Controller {
         }
     }
 
-    /// The Multi-paste button: plain clicks choose clips until it is pressed again. The clips
-    /// already chosen stay chosen.
+    /// Explicitly toggling Multi-paste starts with no clips selected.
     fn toggle_multi_mode(&mut self) {
         if let Some(o) = self.open.as_mut() {
             o.ui.multi_on = !o.ui.multi_on;
+            o.ui.picks.clear();
+            o.ui.pick_anchor = None;
             o.ui.dropdown_open = false;
             self.dirty = true;
         }

@@ -378,7 +378,16 @@ pub fn editor_layout(v: &EditorView, size: (f32, f32)) -> ELayout {
     let preview = Rect { x: 12.0, y: HEADER_H, w: (panel.x - 24.0).max(0.0), h: panel.h };
     let area = Rect { x: preview.x + 14.0, y: preview.y + 14.0, w: (preview.w - 28.0).max(1.0), h: (preview.h - 52.0).max(1.0) };
     let area = Rect { h: (area.h - 34.0).max(1.0), ..area };
-    let zoom_buttons = std::array::from_fn(|i| Rect { x: preview.x + 14.0 + i as f32 * 52.0, y: preview.y + preview.h - 64.0, w: 50.0, h: 26.0 });
+    // Four icon buttons and a read-only percentage share one compact toolbar.
+    let toolbar_x = preview.x + ((preview.w - 252.0) / 2.0).max(6.0);
+    let toolbar_y = preview.y + preview.h - 70.0;
+    let zoom_buttons = [
+        Rect { x: toolbar_x + 6.0, y: toolbar_y + 4.0, w: 32.0, h: 32.0 },
+        Rect { x: toolbar_x + 42.0, y: toolbar_y + 4.0, w: 32.0, h: 32.0 },
+        Rect { x: toolbar_x + 86.0, y: toolbar_y + 4.0, w: 32.0, h: 32.0 },
+        Rect { x: toolbar_x + 122.0, y: toolbar_y + 4.0, w: 32.0, h: 32.0 },
+        Rect { x: toolbar_x + 166.0, y: toolbar_y + 4.0, w: 80.0, h: 32.0 },
+    ];
     let image = (v.dims.0 > 0 && v.dims.1 > 0).then(|| {
         let fit = fit_rect(area, v.dims);
         let k = v.zoom.unwrap_or(fit.w / v.dims.0 as f32);
@@ -528,7 +537,7 @@ pub fn editor_hit(v: &EditorView, size: (f32, f32), scale: f32, px: f32, py: f32
         }
         return EHit::Panel;
     }
-    if let Some(i) = l.zoom_buttons.iter().position(|r| r.contains(x,y)) { return EHit::Zoom(i as u8); }
+    if let Some(i) = l.zoom_buttons.iter().take(4).position(|r| r.contains(x,y)) { return EHit::Zoom(i as u8); }
     if !l.preview.contains(x,y) { return EHit::Nothing; }
     if let Some(c) = l.crop {
         if let Some(part) = crop_part_at(c, x, y) {
@@ -923,11 +932,27 @@ impl Renderer {
                 cv.pm.data_mut()[b..row+pw*4].copy_from_slice(&before_preview.data()[b..row+pw*4]);
             }
         }
-        for (i,r) in l.zoom_buttons.iter().enumerate() {
-            cv.fill(*r,4.0,FIELD,1.0);
-            let label=match i {0=>"-".to_owned(),1=>"+".to_owned(),2=>"Fit".to_owned(),3=>"100%".to_owned(),_=>format!("{}%",(l.image.map_or(1.0,|r|r.w/v.dims.0.max(1) as f32)*s*100.0).round())};
-            self.centred(&mut cv,&label,*r,12.0,FOREGROUND);
+        let first = l.zoom_buttons[0];
+        let last = l.zoom_buttons[4];
+        let toolbar = Rect { x: first.x - 6.0, y: first.y - 4.0, w: last.x + last.w - first.x + 12.0, h: 40.0 };
+        cv.fill(Rect { x: toolbar.x, y: toolbar.y + 2.0, ..toolbar }, 10.0, (0, 0, 0), 0.22);
+        cv.fill(toolbar, 10.0, TOOLBAR_BG, 0.98);
+        cv.stroke(toolbar, 10.0, SURFACE_BORDER, 0.9, 1.0);
+        let ready = v.preview.is_some() && v.dims.0 > 0 && v.dims.1 > 0 && !modal;
+        for (i, icon) in [Icon::ZoomOut, Icon::ZoomIn, Icon::Fit, Icon::ActualSize].iter().enumerate() {
+            let on = match i {
+                2 => v.zoom.is_none(),
+                3 => v.zoom.is_some_and(|z| (z * s - 1.0).abs() < 0.005),
+                _ => false,
+            };
+            self.icon_btn(&mut cv, l.zoom_buttons[i], *icon, hover == Some(EHit::Zoom(i as u8)) && !modal, on && ready, ready);
         }
+        for x in [l.zoom_buttons[2].x - 6.0, last.x - 6.0] {
+            cv.line(&[(x, toolbar.y + 10.0), (x, toolbar.y + 30.0)], SURFACE_BORDER, 1.0);
+        }
+        let label = l.image.map(|r| format!("{}%", (r.w / v.dims.0.max(1) as f32 * s * 100.0).round())).unwrap_or_else(|| "--".into());
+        let tw = self.ewidth(&label, 13.0, s);
+        self.centred(&mut cv, &label, Rect { x: last.x + (last.w - tw) / 2.0, w: tw + 2.0, ..last }, 13.0, FOREGROUND);
         if v.busy {
             let m = "Updating...";
             let tw = self.ewidth(m, 12.0, s);
@@ -1009,6 +1034,10 @@ impl Renderer {
                             tooltip(self, &mut cv, &tv.tip, l.tops[i], size, true);
                         }
                     }
+                }
+                Some(EHit::Zoom(i)) if i < 4 => {
+                    let tip = ["Zoom out (-)", "Zoom in (+)", "Fit image (0)", "Actual size (1)"][i as usize];
+                    tooltip(self, &mut cv, tip, l.zoom_buttons[i as usize], size, false);
                 }
                 Some(EHit::Browse) => tooltip(self, &mut cv, "Choose a different folder", l.browse, size, false),
                 _ => {}

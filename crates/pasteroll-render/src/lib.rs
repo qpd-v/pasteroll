@@ -1261,7 +1261,9 @@ impl Renderer {
                 continue;
             }
             let picked = vm.picked.get(i).copied().unwrap_or(false);
-            if is_active {
+            let selecting = vm.multi_mode || vm.picked.iter().any(|p| *p);
+            let emphasized = is_active && (!selecting || picked);
+            if emphasized {
                 cv.fill(r, 8.0, ACTIVE_ROW, 1.0);
                 cv.stroke(r, 8.0, ACCENT, 0.9, 1.2);
             }
@@ -1275,7 +1277,7 @@ impl Renderer {
                     draw_check(cv, r.x + 18.0, r.y + ROW_H / 2.0);
                 }
             } else if whole {
-                self.draw_icon(cv, row.kind, r.x + 12.0, r.y + (ROW_H - 12.0) / 2.0, if is_active { ACCENT } else { MUTED });
+                self.draw_icon(cv, row.kind, r.x + 12.0, r.y + (ROW_H - 12.0) / 2.0, if emphasized { ACCENT } else { MUTED });
             }
             let title_x = r.x + 32.0;
             // the active card's Expand button sits at the right of its title line
@@ -1292,7 +1294,7 @@ impl Renderer {
             };
             let right_pad = edge + if badge_w > 0.0 { badge_w + 6.0 } else { 0.0 };
             let clip = scaled(Rect { x: title_x, y: r.y, w: (r.w - 32.0 - right_pad).max(0.0), h: r.h.min(ROW_H) }, s);
-            let col = if is_active { FOREGROUND } else { MUTED };
+            let col = if emphasized { FOREGROUND } else { MUTED };
             let title = if !condensed && !row.meta.is_empty() { row.meta.clone() } else { first_line(&row.title) };
             // query matches are highlighted behind the title text (condensed rows only)
             let chars: Vec<char> = title.chars().collect();

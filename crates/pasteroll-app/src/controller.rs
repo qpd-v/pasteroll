@@ -1931,6 +1931,8 @@ impl Controller {
             Hit::Body { .. } => active,
             _ => return false,
         };
+        // Ctrl+clicking another clip starts Multi-paste, including for image clips.
+        if row != active && p.modifiers_now().ctrl { return false; }
         let Some(id) = ids.get(row).copied() else { return false };
         if self.store.borrow().kind(id).ok().flatten() != Some(Kind::Image) {
             return false;

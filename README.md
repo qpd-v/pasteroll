@@ -5,17 +5,17 @@ clip, press **Ctrl+Shift+middle-click**, scroll through your history right where
 and paste the whole clip, or select just a part of it and paste only that.
 
 **Status: public beta.** Windows and Linux (X11 and experimental GNOME 46 Wayland) are at
-`0.1.0-beta.22`. It works and is tested, but it is young. Expect rough edges and
+`0.1.0-beta.23`. It works and is tested, but it is young. Expect rough edges and
 please [report them](https://github.com/qpd-v/pasteroll/issues).
 
 | | Windows 10 / 11 | Linux (X11) |
 |---|---|---|
-| Download | [Setup EXE](https://pasteroll.com/downloads/pasteroll-0.1.0-beta.22-windows-x64-setup.exe) Â· [Portable ZIP](https://pasteroll.com/downloads/pasteroll-0.1.0-beta.22-windows-x64-portable.zip) | [Static archive](https://pasteroll.com/downloads/pasteroll-0.1.0-beta.22-linux-x86_64.tar.gz) Â· [Debian/Ubuntu .deb](https://pasteroll.com/downloads/pasteroll_0.1.0-beta.22_amd64.deb) |
+| Download | [Setup EXE](https://pasteroll.com/downloads/pasteroll-0.1.0-beta.23-windows-x64-setup.exe) Â· [Portable ZIP](https://pasteroll.com/downloads/pasteroll-0.1.0-beta.23-windows-x64-portable.zip) | [Static archive](https://pasteroll.com/downloads/pasteroll-0.1.0-beta.23-linux-x86_64.tar.gz) Â· [Debian/Ubuntu .deb](https://pasteroll.com/downloads/pasteroll_0.1.0-beta.23_amd64.deb) |
 | Tray icon | yes | StatusNotifier (KDE, GNOME with AppIndicator, Ubuntu) or XEmbed |
 | Wayland | n/a | experimental GNOME 46; separate packages and setup below |
 | macOS | not available | |
 
-[Release notes and testing status](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.22) ·
+[Release notes and testing status](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.23) ·
 [one SHA256SUMS for all six packages](https://pasteroll.com/downloads/SHA256SUMS)
 
 
@@ -47,8 +47,8 @@ checks, is deferred; this remains experimental. Automated
 headless sessions and synthetic kernel input passed; treat this backend as experimental.
 Other GNOME versions and other Wayland compositors are not supported.
 
-- [GNOME 46 experimental archive](https://pasteroll.com/downloads/pasteroll-0.1.0-beta.22-linux-x86_64-gnome-development.tar.gz)
-- [GNOME 46 experimental Debian/Ubuntu package](https://pasteroll.com/downloads/pasteroll_0.1.0-beta.22_amd64-gnome-development.deb)
+- [GNOME 46 experimental archive](https://pasteroll.com/downloads/pasteroll-0.1.0-beta.23-linux-x86_64-gnome-development.tar.gz)
+- [GNOME 46 experimental Debian/Ubuntu package](https://pasteroll.com/downloads/pasteroll_0.1.0-beta.23_amd64-gnome-development.deb)
 
 The X11 and GNOME Debian packages are alternatives, not coinstallable. The GNOME
 helper stays disabled after a fresh package install. The development suffix identifies
@@ -103,7 +103,7 @@ the experimental packages; it does not indicate broader Wayland compatibility.
   chooses clips, Paste pastes them, Ctrl+click Paste opens the options card). There is no typing into
   the search box, and no expanded viewer or image editor, while it is pinned open. Press the open
   gesture to bring a fresh carousel to the pointer instead.
-- **Advanced Image Paste**: Ctrl+click an image clip in the carousel to open it in the editor, or
+- **Advanced Image Paste**: Ctrl+click the current image clip to open it in the editor, or
   hold Ctrl (the key is a setting) while clicking the desktop or any window with an image chosen.
   The picture grows into an editor instead of being saved or pasted at once:
   outline, resize, crop, rounded corners, drop shadow, background removal or fill, padding, rotate
@@ -113,8 +113,9 @@ the experimental packages; it does not indicate broader Wayland compatibility.
   file's path, or its name. A plain click still saves (desktop) or pastes (window) the picture
   immediately. The clip itself is never changed.
 - **Several clips at once** (Complete mode): Ctrl+click text and file clips in the list to choose them
-  (Ctrl+Shift+click chooses everything from the last one you chose). With Multi-paste off and no clips selected, Ctrl+clicking an image opens
-  Advanced Image Paste. With Multi-paste on, image clicks select images. The **Multi-paste** button beside the filter makes a plain click
+  (Ctrl+Shift+click chooses everything from the last one you chose). With Multi-paste off and no clips selected, Ctrl+clicking the current image opens
+  Advanced Image Paste. Ctrl+clicking an inactive clip starts Multi-paste with both it and the active
+  clip selected. The Multi-paste button starts with an empty selection. The **Multi-paste** button beside the filter makes a plain click
   choose any clip (Shift+click for a range; press the button again to go back to normal clicks).
   clicks). Ctrl+M turns Multi-paste on from the keyboard; then hold Shift and press Down (or Up) to
   choose the clip shown and the ones you walk to (walking back takes them out again), or hold Ctrl and
@@ -156,13 +157,13 @@ the experimental packages; it does not indicate broader Wayland compatibility.
 
 ### Windows
 
-1. Download `pasteroll-0.1.0-beta.22-windows-x64-setup.exe` and `SHA256SUMS` from the
-   [beta.21 release](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.22) and
+1. Download `pasteroll-0.1.0-beta.23-windows-x64-setup.exe` and `SHA256SUMS` from the
+   [beta.21 release](https://github.com/qpd-v/pasteroll/releases/tag/v0.1.0-beta.23) and
    [verify the checksum](#verify-your-download).
 2. Run the setup wizard. **Only for me** is the default and needs no administrator rights;
    **For all users** needs UAC. Start menu is on by default; desktop shortcut and autostart are off.
 
-For portable use, extract `pasteroll-0.1.0-beta.22-windows-x64-portable.zip` and run `pasteroll.exe`.
+For portable use, extract `pasteroll-0.1.0-beta.23-windows-x64-portable.zip` and run `pasteroll.exe`.
 Its included `portable.txt` keeps application data in the adjacent `data` folder.
 
 > **"Windows protected your PC"**: the beta is **not code-signed yet**, so SmartScreen shows
@@ -173,14 +174,14 @@ Its included `portable.txt` keeps application data in the adjacent `data` folder
 ### Linux
 
 ```sh
-tar xzf pasteroll-0.1.0-beta.22-linux-x86_64.tar.gz
-cd pasteroll-0.1.0-beta.22-linux-x86_64
+tar xzf pasteroll-0.1.0-beta.23-linux-x86_64.tar.gz
+cd pasteroll-0.1.0-beta.23-linux-x86_64
 ./install.sh              # per-user: ~/.local/bin, menu entry and icon
 pasteroll run
 ```
 
 For all users, use `sudo ./install.sh --system`. On Debian/Ubuntu, an alternative is
-`sudo dpkg -i pasteroll_0.1.0-beta.22_amd64.deb`. Neither installer enables autostart.
+`sudo dpkg -i pasteroll_0.1.0-beta.23_amd64.deb`. Neither installer enables autostart.
 Remove an archive install with `./install.sh --uninstall` (add `--system` and sudo for a system
 install), or a Debian package with `sudo dpkg -r pasteroll`. These operations keep history/settings.
 The app's own `install` and `uninstall` commands manage per-user installs only.
@@ -344,7 +345,7 @@ Each release has a `SHA256SUMS` file.
 
 ```powershell
 # Windows
-Get-FileHash .\pasteroll-0.1.0-beta.22-windows-x64-setup.exe -Algorithm SHA256
+Get-FileHash .\pasteroll-0.1.0-beta.23-windows-x64-setup.exe -Algorithm SHA256
 ```
 ```sh
 # Linux
@@ -404,7 +405,8 @@ choose images separately from text/file clips. Attachment files are held private
 under the app data folder; batches older than seven days are removed when preparing another batch.
 Recipients may accept only some clipboard formats.
 
-Advanced Image Paste has minus, plus, Fit and 100% controls. Ctrl+wheel zooms around the pointer;
+Advanced Image Paste has a centered icon toolbar for zoom out, zoom in, Fit and Actual size,
+with a separate read-only percentage display. Ctrl+wheel zooms around the pointer;
 the wheel pans over the preview and scrolls over the settings panel. Drag to pan the normal preview;
 Alt+drag pans while cropping or drawing. + and - zoom, 0 fits and 1 shows actual pixels when not typing.
 Zoom changes the view only.
