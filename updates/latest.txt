@@ -1,5 +1,7 @@
 pasteroll-update-latest 1
-version 0.1.0-beta.21
-note Update downloads recover through GitHub's API when the normal link fails.
-note A verified mirror on pasteroll.com is used if both GitHub routes fail.
-note History, encryption keys, settings and rolls are kept.
+version 0.1.0-beta.22
+note Multi-paste can paste several selected images as attachments or inline images.
+note Advanced Image Paste has zoom controls, Ctrl+wheel zoom and panning.
+note Double-click clip headers or blank content space to paste; double-click and drag text to select words.
+note Ctrl+S saves the clip shown; change or disable the shortcut in Settings.
+note Existing history, encryption keys, settings and rolls are kept.
