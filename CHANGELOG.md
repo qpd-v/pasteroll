@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-beta.22 (Windows and Linux)
 
 - Multi-paste image batches as separate PNG attachments or inline HTML, with bounded private cache files.
 - Advanced Image Paste zoom, actual size, fit, pointer-centered Ctrl+wheel, and panning.
