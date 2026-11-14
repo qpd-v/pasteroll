@@ -47,7 +47,7 @@ const CLICK_SETTLE_MS = 80;
 const CLICK_DISTANCE = 14;
 const CLICK_HOLD_MS = 500;
 
-const TYPES = ['text/plain;charset=utf-8', 'text/plain', 'UTF8_STRING', 'image/png',
+const TYPES = ['text/html', 'text/plain;charset=utf-8', 'text/plain', 'UTF8_STRING', 'image/png',
     'text/uri-list', 'x-special/gnome-copied-files'];
 const SENSITIVE_TYPES = ['x-kde-passwordManagerHint', 'application/x-keepassxc'];
 

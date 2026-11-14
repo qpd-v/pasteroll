@@ -128,3 +128,13 @@ as* writes a file only where you choose.
 ## Contact
 
 Questions about privacy: open an issue at <https://github.com/qpd-v/pasteroll/issues>.
+
+
+## Temporary image attachments
+
+Multi-paste image batches create PNG files in the private `paste-cache` folder beside the history
+database so receiving apps can read them as attachments. These transfer files are ordinary PNGs,
+not encrypted database records. They remain after the carousel closes for delayed readers and
+manual paste. Batches older than seven days are removed when another image batch is prepared.
+HTML clipboard content contains embedded image data. As with any paste, the receiving app controls
+what it does with the images, including uploading attachments in a web composer.

@@ -119,7 +119,7 @@ impl Server {
                 self.served.push((atoms.text_plain, utf8));
                 self.served.push((u32::from(AtomEnum::STRING), latin1(t)));
             }
-            Payload::Files(files) => {
+            Payload::Images {paths:files,..} | Payload::Files(files) => {
                 let uris: Vec<String> = files.iter().map(|f| percent_encode_path(f)).collect();
                 let list = uris.iter().map(|u| format!("{u}\r\n")).collect::<String>();
                 let gnome = format!("copy\n{}", uris.join("\n"));
@@ -128,6 +128,10 @@ impl Server {
                 self.served.push((atoms.utf8_string, files.join("\n").into_bytes()));
             }
             Payload::Image(png) => self.served.push((atoms.image_png, png.clone())),
+        }
+        if let Payload::Images {html,inline,..}=payload {
+            let atom=conn.intern_atom(false,b"text/html").map_err(|e|e.to_string())?.reply().map_err(|e|e.to_string())?.atom;
+            if *inline {self.served.insert(0,(atom,html.as_bytes().to_vec()));} else {self.served.push((atom,html.as_bytes().to_vec()));}
         }
         conn.set_selection_owner(self.window, atoms.clipboard, CURRENT_TIME).map_err(|e| e.to_string())?;
         let owner = conn

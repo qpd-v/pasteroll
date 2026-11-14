@@ -202,6 +202,10 @@ impl Platform for Fake {
     fn modifiers_now(&self) -> Modifiers {
         Modifiers { shift: self.shift || self.mods.shift, ..self.mods }
     }
+    fn image_batch_folder(&self)->Result<PathBuf,String> {
+        let folder=self.desktop.clone().ok_or("No test folder")?.join("paste-cache");
+        std::fs::create_dir_all(&folder).map_err(|e|e.to_string())?;Ok(folder)
+    }
     fn save_dialog(&mut self, _name: &str, _ext: &str, _target: &Target) -> SaveChoice {
         self.save_choice.clone()
     }
@@ -3102,4 +3106,30 @@ fn a_pinned_open_carousel_has_no_new_roll_entry() {
     let mv = menu_item(&mut h, items.len() - 1);
     click_at(&mut h, mv);
     assert!(!h.vm().menu.unwrap().items.iter().any(|i| i.contains("New roll")), "it has no keyboard to name one");
+}
+
+#[test]
+fn double_click_blank_body_and_title_paste_but_words_extend_selection() {
+    for title in [false,true] {
+        let mut h=H::new(&[Clip::Text("one two three")]);
+        h.open();
+        let vm=h.vm();let size=h.p.window();
+        let g=geometry(&vm,(size.0 as f32,size.1 as f32),1.0);
+        let row=g.rows[vm.active].unwrap();let body=g.body.unwrap();
+        let pt=if title {(row.x+row.w/2.0,row.y+12.0)} else {(body.x+body.w/2.0,body.y+body.h-8.0)};
+        h.mouse(MouseKind::DoubleClick,pt);
+        assert_eq!(h.pasted_texts(),vec!["one two three"]);
+    }
+    let mut h=H::new(&[Clip::Text("one two three")]);
+    h.open();
+    let a=h.c.char_centre_px(5).unwrap();
+    h.mouse(MouseKind::DoubleClick,a);
+    let b=h.c.char_centre_px(11).unwrap();
+    h.mouse(MouseKind::Move,b);
+    assert_eq!(h.c.selected_text().as_deref(),Some("two three"));
+    let b=h.c.char_centre_px(1).unwrap();
+    h.mouse(MouseKind::Move,b);
+    h.mouse(MouseKind::Up,b);
+    assert_eq!(h.c.selected_text().as_deref(),Some("one two"));
+    assert!(h.p.pastes.is_empty());
 }

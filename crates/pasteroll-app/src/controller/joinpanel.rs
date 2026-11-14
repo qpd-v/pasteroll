@@ -168,6 +168,7 @@ fn preview_of(text: &str) -> String {
 /// The card while it is open.
 pub(super) struct JoinPanel {
     pub opts: JoinOptions,
+    images: Option<Vec<i64>>,
     pieces: Pieces,
     order_ids: Vec<i64>,
     /// A group (0 to 2), then Paste, Copy, Cancel.
@@ -194,6 +195,8 @@ impl JoinPanel {
     }
 
     fn selected(&self, group: usize) -> (usize, usize) {
+        if self.images.is_some() && group==0 {return (usize::from(self.opts.sep!=Sep::Line),2);}
+        if self.images.is_some() && group==1 {return (0,1);}
         match group {
             0 => (Sep::ALL.iter().position(|s| *s == self.opts.sep).unwrap_or(0), Sep::ALL.len()),
             1 => (Style::ALL.iter().position(|s| *s == self.opts.style).unwrap_or(0), Style::ALL.len()),
@@ -215,6 +218,20 @@ impl JoinPanel {
     }
 
     pub(super) fn view(&self) -> PanelView {
+        if let Some(ids)=&self.images {
+            return PanelView {
+                title:format!("Paste {} images",ids.len()),
+                groups:vec![
+                    PanelGroup{label:"Paste as".into(),options:vec!["Attachments".into(),"Inline images".into()],selected:usize::from(self.opts.sep!=Sep::Line)},
+                    PanelGroup{label:"Images".into(),options:vec!["Separate images".into()],selected:0},
+                    PanelGroup{label:"Order".into(),options:Order::ALL.iter().map(|o|o.label().into()).collect(),selected:self.selected(2).0},
+                ],
+                preview:"Attachments work with file uploads and chat composers. Inline images use HTML for document editors.".into(),
+                note:"The receiving app chooses what it accepts. GNOME uses the format selected here.".into(),
+                focus:self.focus,hover:self.hover,
+            };
+        }
+
         let mut title = format!("Paste {} clips together", self.pieces.items.len());
         let left_out = self.pieces.skipped + self.pieces.unreadable;
         if left_out > 0 {
@@ -295,6 +312,12 @@ impl Controller {
             self.flash("Choose two or more text clips first (Ctrl+click text, or Shift+Down)", now);
             return;
         }
+        if self.images_chosen(&picks) {
+            if let Some(o)=self.open.as_mut() {
+                o.ui.join=Some(JoinPanel{opts:JoinOptions::default(),images:Some(picks),pieces:Pieces{items:vec![],skipped:0,unreadable:0},order_ids:vec![],focus:0,hover:None,note:None});
+            }
+            self.dirty=true;return;
+        }
         let pieces = match self.load_pieces(&picks, p.line_break()) {
             Ok(pieces) if pieces.items.len() >= 2 => pieces,
             Ok(_) => {
@@ -311,7 +334,7 @@ impl Controller {
         if let Some(o) = self.open.as_mut() {
             o.ui.menu = None;
             o.ui.dropdown_open = false;
-            o.ui.join = Some(JoinPanel { opts, pieces, order_ids, focus: 0, hover: None, note: None });
+            o.ui.join = Some(JoinPanel { images:None, opts, pieces, order_ids, focus: 0, hover: None, note: None });
         }
         self.withdraw_warning();
         self.dirty = true;
@@ -418,9 +441,22 @@ impl Controller {
         }
     }
 
+    fn join_images(&mut self,p:&mut dyn Platform,copy:bool)->bool {
+        let Some((mut ids,opts))=self.open.as_ref().and_then(|o|o.ui.join.as_ref()).and_then(|j|j.images.clone().map(|ids|(ids,j.opts))) else{return false;};
+        if opts.order!=Order::Chosen {
+            let order=self.history_ids();
+            ids.sort_by_key(|id|order.iter().position(|i|i==id).unwrap_or(usize::MAX));
+            if opts.order==Order::Oldest {ids.reverse();}
+        }
+        self.close_join_panel();
+        self.start_image_batch(p,ids,copy,opts.sep!=Sep::Line);
+        true
+    }
+
     /// Pastes the joined text into the session's window. A multi-line paste into a terminal asks first,
     /// on the card.
     fn join_paste(&mut self, p: &mut dyn Platform) {
+        if self.join_images(p,false) {return;}
         let Some((id, text, used, opts, warned)) = self.open.as_ref().and_then(|o| {
             let j = o.ui.join.as_ref()?;
             let first = j.pieces.items.first()?.0;
@@ -449,6 +485,7 @@ impl Controller {
 
     /// Puts the joined text on the clipboard, pastes nothing and closes.
     fn join_copy(&mut self, p: &mut dyn Platform, now: u64) {
+        if self.join_images(p,true) {return;}
         let Some((text, used, skipped, opts)) = self.open.as_ref().and_then(|o| {
             let j = o.ui.join.as_ref()?;
             Some((j.text(p.line_break()), j.pieces.items.len(), j.pieces.skipped + j.pieces.unreadable, j.opts))

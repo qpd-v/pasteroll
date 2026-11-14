@@ -191,6 +191,8 @@ pub fn decode(mime: &str, mut bytes: Vec<u8>, limit: usize) -> Result<Captured, 
 
 pub fn encode(payload: &Payload) -> Result<(&'static str, Vec<u8>), Error> {
     let (mime, bytes) = match payload {
+        Payload::Images{html,inline:true,..} => ("text/html",html.as_bytes().to_vec()),
+        Payload::Images{paths,..} => return encode(&Payload::Files(paths.clone())),
         Payload::Text(s) if !s.contains('\0') => (TEXT, s.as_bytes().to_vec()),
         Payload::Image(bytes) if pasteroll_core::image::decode_png(bytes).is_some() => {
             (PNG, bytes.clone())
@@ -465,5 +467,20 @@ mod tests {
         assert_eq!(event((14, 7, 0, 0, 0), 7), Ok(Some(Event::ClickOutside(7))));
         assert_eq!(event((20, 7, 0, 0, 0), 7), Err(Error::Protocol));
         assert_eq!(event((25, 7, 0, 0, 0), 7), Err(Error::Protocol));
+    }
+}
+
+
+#[cfg(test)]
+mod batch_tests {
+    use super::*;
+    #[test]
+    fn image_batch_formats_follow_the_explicit_output_choice() {
+        let mut p=Payload::Images{paths:vec!["/tmp/a.png".into(),"/tmp/b.png".into()],html:"<img><img>".into(),inline:false};
+        let (mime,bytes)=encode(&p).unwrap();
+        assert_eq!(mime,URIS);assert_eq!(String::from_utf8(bytes).unwrap().lines().count(),2);
+        if let Payload::Images{inline,..}=&mut p {*inline=true;}
+        let (mime,bytes)=encode(&p).unwrap();
+        assert_eq!(mime,"text/html");assert_eq!(bytes,b"<img><img>");
     }
 }

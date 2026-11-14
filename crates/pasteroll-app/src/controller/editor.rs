@@ -236,6 +236,7 @@ enum Popup {
 
 #[derive(Clone, Copy, Debug)]
 enum Drag {
+    Pan { start: (f32,f32), origin: (f32,f32) },
     Slider { id: u32, num: Num },
     Crop { part: CropPart, start: (f32, f32), rect: (f32, f32, f32, f32) },
     /// Drawing mark number `idx`.
@@ -269,6 +270,8 @@ pub(crate) struct Editor {
     jobs: std::sync::mpsc::Sender<Job>,
     open_sec: Option<Sec>,
     scroll: f32,
+    zoom: Option<f32>,
+    pan: (f32,f32),
     focus: Option<Focus>,
     popup: Option<Popup>,
     drag: Option<Drag>,
@@ -1118,7 +1121,7 @@ impl Editor {
         }
         let markup_mode = self.markup_mode();
         let (preview, dims) = if crop_mode {
-            (self.proxy.as_ref().map(|(p, _)| p.clone()).or_else(|| self.preview.clone()), self.src_dims)
+            (if self.zoom.is_some() {self.src.clone()} else {self.proxy.as_ref().map(|(p, _)| p.clone())}.or_else(|| self.preview.clone()), self.src_dims)
         } else if markup_mode {
             (
                 self.markup_img.clone().or_else(|| self.proxy.as_ref().map(|(p, _)| p.clone())).or_else(|| self.preview.clone()),
@@ -1159,6 +1162,8 @@ impl Editor {
             ],
             preview,
             dims,
+            zoom: self.zoom,
+            pan: self.pan,
             busy: self.pending && !crop_mode && !markup_mode,
             crop,
             items,
@@ -1353,6 +1358,8 @@ impl Controller {
             // pasting into a window: the choice of what to paste is the first thing to see
             open_sec: window.then_some(Sec::Output),
             scroll: 0.0,
+            zoom: None,
+            pan: (0.0,0.0),
             focus: None,
             popup: None,
             drag: None,
@@ -1601,6 +1608,7 @@ impl Controller {
         }
         e.gen += 1;
         e.pending = true;
+        let (proxy,k)=if e.zoom.is_some() && e.src.as_ref().is_some_and(|s| u64::from(s.width)*u64::from(s.height)<=16_000_000) { (e.src.as_ref().unwrap().clone(),1.0) } else {(proxy,k)};
         let job = Job { gen: e.gen, proxy, params: e.params.scaled(k), dims: e.out_dims() };
         let _ = e.jobs.send(job);
     }
@@ -1897,6 +1905,40 @@ impl Controller {
         self.editor_scroll_by(if older { 48.0 } else { -48.0 });
     }
 
+    fn clamp_editor_pan(&mut self) {
+        let scale=self.overlay.scale;
+        if let Some(e)=self.editor.as_mut() {
+            let mut v=e.view(scale);let size=e.size_dip(scale);
+            let actual=editor_layout(&v,size).image;
+            v.pan=(0.0,0.0);
+            let zero=editor_layout(&v,size).image;
+            if let (Some(a),Some(b))=(actual,zero) {e.pan=(a.x-b.x,a.y-b.y);}
+        }
+    }
+
+    fn editor_zoom(&mut self, mode:u8, at:Option<(f32,f32)>, factor:f32) {
+        self.clamp_editor_pan();
+        let scale=self.overlay.scale;
+        let Some(e)=self.editor.as_ref() else{return};
+        let l=editor_layout(&e.view(scale),e.size_dip(scale));
+        let Some(ir)=l.image else{return};
+        let dims=e.view(scale).dims;
+        let old=ir.w/dims.0.max(1) as f32;
+        let k=match mode {0=>old*0.8,1=>old*1.25,3=>1.0/scale,_=>old*factor}.clamp(0.01/scale,32.0/scale);
+        if let Some(e)=self.editor.as_mut() {
+            if mode==2 {e.zoom=None;e.pan=(0.0,0.0);} else {
+                let anchor=at.unwrap_or((ir.x+ir.w/2.0,ir.y+ir.h/2.0));
+                e.pan.0=(e.pan.0+ir.x+ir.w/2.0-anchor.0)*k/old+anchor.0-ir.x-ir.w/2.0;
+                e.pan.1=(e.pan.1+ir.y+ir.h/2.0-anchor.1)*k/old+anchor.1-ir.y-ir.h/2.0;
+                e.zoom=Some(k);
+            }
+        }
+        self.clamp_editor_pan();
+        self.request_preview();
+        self.refresh_markup();
+        self.dirty=true;
+    }
+
     fn editor_scroll_by(&mut self, dy: f32) {
         let scale = self.overlay.scale;
         let Some(e) = self.editor.as_ref() else { return };
@@ -1919,7 +1961,14 @@ impl Controller {
         let (x, y) = (((self.last_pointer.0 - r.0) as f32) / scale, ((self.last_pointer.1 - r.1) as f32) / scale);
         let view = e.view(scale);
         let l = editor_layout(&view, e.size_dip(scale));
-        if l.panel.contains(x, y) {
+        if l.preview.contains(x,y) && w.ctrl {
+            self.editor_zoom(4, Some((x,y)), 1.25_f32.powf(w.delta as f32/120.0));
+        } else if l.preview.contains(x,y) {
+            if let Some(e)=self.editor.as_mut() {
+                if w.horizontal || w.shift { e.pan.0 += w.delta as f32/2.0; } else {e.pan.1 += w.delta as f32/2.0;}
+                self.dirty=true;
+            }
+        } else if l.panel.contains(x, y) {
             let notches = w.delta as f32 / 120.0;
             self.editor_scroll_by(-notches * 54.0);
         }
@@ -2013,6 +2062,10 @@ impl Controller {
                 }
             }
             Key::Enter if !popup => self.editor_paste(p, now),
+            Key::Char('+') | Key::Char('=') if !popup && e.focus.is_none() => self.editor_zoom(1,None,1.25),
+            Key::Char('-') if !popup && e.focus.is_none() => self.editor_zoom(0,None,0.8),
+            Key::Char('0') if !popup && e.focus.is_none() => self.editor_zoom(2,None,1.0),
+            Key::Char('1') if !popup && e.focus.is_none() => self.editor_zoom(3,None,1.0),
             Key::CtrlZ => self.editor_undo(),
             Key::CtrlY => self.editor_redo(),
             _ => {}
@@ -2204,6 +2257,11 @@ impl Controller {
     fn editor_drag(&mut self, x: f32, y: f32) {
         let Some(drag) = self.editor.as_ref().and_then(|e| e.drag) else { return };
         match drag {
+            Drag::Pan {start,origin} => {
+                if let Some(e)=self.editor.as_mut() {e.pan=(origin.0+(x-start.0)/self.overlay.scale,origin.1+(y-start.1)/self.overlay.scale);}
+                self.clamp_editor_pan();
+                self.dirty=true;
+            }
             Drag::Slider { id, num } => {
                 let scale = self.overlay.scale;
                 let Some(e) = self.editor.as_ref() else { return };
@@ -2269,6 +2327,13 @@ impl Controller {
             self.commit_focus(p, now);
         }
         match hit {
+            EHit::Zoom(i) => self.editor_zoom(i,None,1.0),
+            EHit::Image | EHit::Crop(_) if p.modifiers_now().alt => {
+                if let Some(e)=self.editor.as_mut() { e.drag=Some(Drag::Pan{start:(m.x,m.y),origin:e.pan}); }
+            }
+            EHit::Image if !self.editor.as_ref().is_some_and(|e|e.crop_mode()||e.markup_mode()) => {
+                if let Some(e)=self.editor.as_mut() { e.drag=Some(Drag::Pan{start:(m.x,m.y),origin:e.pan}); }
+            }
             EHit::Back | EHit::Cancel => self.close_editor(p, now, Then::Carousel),
             EHit::Paste => self.editor_paste(p, now),
             EHit::Top(t) => self.top_press(p, t, now),

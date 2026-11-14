@@ -87,6 +87,7 @@ impl Controller {
     pub(super) fn refresh_markup(&mut self) {
         let Some(e) = self.editor.as_ref().filter(|e| e.markup_mode()) else { return };
         let Some((proxy, k)) = e.proxy.clone() else { return };
+        let (proxy,k)=if e.zoom.is_some() && e.src.as_ref().is_some_and(|s|u64::from(s.width)*u64::from(s.height)<=16_000_000) {(e.src.as_ref().unwrap().clone(),1.0)} else {(proxy,k)};
         let marks = e.params.scaled(k).marks;
         let edit = e.text_edit.map(|t| MarkEdit { index: t.index, caret: t.caret, anchor: t.anchor });
         let mut img = (*proxy).clone();

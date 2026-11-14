@@ -113,8 +113,8 @@ the experimental packages; it does not indicate broader Wayland compatibility.
   file's path, or its name. A plain click still saves (desktop) or pastes (window) the picture
   immediately. The clip itself is never changed.
 - **Several clips at once** (Complete mode): Ctrl+click text and file clips in the list to choose them
-  (Ctrl+Shift+click chooses everything from the last one you chose). Ctrl+clicking an image opens
-  Advanced Image Paste instead. The **Multi-paste** button beside the filter makes a plain click
+  (Ctrl+Shift+click chooses everything from the last one you chose). With Multi-paste off and no clips selected, Ctrl+clicking an image opens
+  Advanced Image Paste. With Multi-paste on, image clicks select images. The **Multi-paste** button beside the filter makes a plain click
   choose any clip (Shift+click for a range; press the button again to go back to normal clicks).
   clicks). Ctrl+M turns Multi-paste on from the keyboard; then hold Shift and press Down (or Up) to
   choose the clip shown and the ones you walk to (walking back takes them out again), or hold Ctrl and
@@ -125,7 +125,8 @@ the experimental packages; it does not indicate broader Wayland compatibility.
   small options card first: what joins the clips (new line, space, comma, tab or nothing), a list style
   (plain, numbered, bulleted) and the order, with a preview; Enter or Paste pastes, Copy copies, Esc goes
   back. Ctrl+C, or right-click and Copy, puts them on the
-  clipboard instead. Pictures cannot be joined into text and are left out. Esc clears the choice.
+  clipboard instead. Image-only selections paste as a batch of separate images. Choose text/file clips separately from
+  image clips. Esc clears the choice.
   While Multi-paste is on, or any clip is chosen, the tall card of the clip shown collapses into a
   one-line row so the whole list is rows (it opens again when the choice is cleared). A picture clip's
   one-line row ends in a small picture of it.
@@ -391,3 +392,24 @@ platform (`pasteroll-win`, `pasteroll-linux`).
 Dual-licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your
 option. The name "Pasteroll" and its logo are not covered by these licenses; please do not present
 a modified build as the official one.
+
+
+### Image batches and editor navigation
+
+Turn on **Multi-paste** to select several image clips, then press Enter or click the destination.
+The batch offers separate PNG files for attachments and HTML for inline images; the receiving app
+chooses what it accepts. Ctrl+E opens image batch options, including Attachments or Inline images;
+GNOME Wayland offers the selected format. Ctrl+C copies the same batch. Batches support up to 32 images and 24 MB;
+choose images separately from text/file clips. Attachment files are held privately in `paste-cache`
+under the app data folder; batches older than seven days are removed when preparing another batch.
+Recipients may accept only some clipboard formats.
+
+Advanced Image Paste has minus, plus, Fit and 100% controls. Ctrl+wheel zooms around the pointer;
+the wheel pans over the preview and scrolls over the settings panel. Drag to pan the normal preview;
+Alt+drag pans while cropping or drawing. + and - zoom, 0 fits and 1 shows actual pixels when not typing.
+Zoom changes the view only.
+
+Double-click a clip title or blank space beneath its content to paste. Double-click text selects
+a word; keep the button down and drag to extend the selection by words.
+
+Manual feature checks: [IMAGE_FEATURES_TESTING.md](IMAGE_FEATURES_TESTING.md).

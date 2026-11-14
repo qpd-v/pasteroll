@@ -1,10 +1,12 @@
 //! Choosing several clips in the Complete carousel and pasting or copying them together.
 //!
-//! Ctrl+click chooses or un-chooses a text or file clip; image clips open Advanced Image Paste.
+//! Ctrl+click chooses text/file clips; with Multi-paste on it also chooses images. Outside a
+//! selection, Ctrl+click on an image opens Advanced Image Paste.
 //! Ctrl+Shift+click chooses everything from the last clip chosen to the one clicked. The Multi-paste button switches on the same thing for plain clicks
 //! (Shift+click for a range). The chosen text clips are joined, one per line, in the order they were
 //! chosen. Clicking where the text should go pastes it, Ctrl+C (or Copy in the right-click menu)
-//! puts it on the clipboard instead. Pictures cannot be joined into text and are left out. No Bloat
+//! puts it on the clipboard instead. Image-only batches offer attachments and inline HTML; mixed
+//! image/text batches are refused explicitly. No Bloat
 //! has none of this: it shows one clip at a time.
 
 use super::joinpanel::{compose, JoinOptions};
@@ -503,6 +505,7 @@ impl Controller {
     pub(super) fn confirm_picks(&mut self, p: &mut dyn Platform) {
         let Some(open) = self.open.as_ref() else { return };
         let (picks, warned) = (open.ui.picks.clone(), open.ui.warned);
+        if picks.len()>1 && self.images_chosen(&picks) {self.start_image_batch(p,picks,false,false);return;}
         let now = p.now_ms();
         let mut joined = None;
         let (id, selection) = match picks.as_slice() {
@@ -561,6 +564,7 @@ impl Controller {
     /// Copies these clips (joined, when there are several), or `highlighted`, the part of the shown
     /// clip that is selected.
     pub(super) fn copy_ids(&mut self, p: &mut dyn Platform, ids: Vec<i64>, highlighted: Option<String>, now: u64) {
+        if ids.len()>1 && self.images_chosen(&ids) {self.start_image_batch(p,ids,true,false);return;}
         let (payload, used, skipped) = match ids.as_slice() {
             _ if highlighted.is_some() => (Payload::Text(highlighted.unwrap_or_default()), 1, 0),
             [] => return, // nothing matches the search

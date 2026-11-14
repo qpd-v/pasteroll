@@ -182,7 +182,7 @@ fn a_files_clip_gives_one_path_per_line() {
 }
 
 #[test]
-fn pictures_are_left_out_of_the_text() {
+fn mixed_image_and_text_batch_is_explicitly_refused() {
     let mut h = H::new(&[Clip::Text("first"), Clip::Image, Clip::Text("last")]);
     let g = h.open();
     h.click_multi_button();
@@ -190,21 +190,33 @@ fn pictures_are_left_out_of_the_text() {
         h.click_row(i, Modifiers::default());
     }
     h.click_to_paste(g);
-    assert_eq!(h.pasted_texts(), vec!["first\nlast"]);
+    assert!(h.pasted_texts().is_empty());
+    assert!(h.footer().contains("Mixed image/text"));
     assert!(h.p.clipboard.iter().all(|p| matches!(p, Payload::Text(_))));
 }
 
 #[test]
-fn only_pictures_chosen_pastes_nothing_and_says_why() {
+fn multiple_pictures_arrive_in_one_paste_in_selection_order() {
     let mut h = H::new(&[Clip::Color(10), Clip::Color(200), Clip::Text("t")]);
+    h.p.desktop=Some(h.dir.clone());
     let g = h.open();
     h.click_multi_button();
     h.click_row(1, Modifiers::default());
-    h.click_row(2, Modifiers::default());
+    h.click_row(2, CTRL);
+    assert!(!h.c.editor_is_open());
     h.enter(g);
-    assert!(h.p.clipboard.is_empty() && h.p.pastes.is_empty());
-    assert!(h.c.is_open(), "still there to choose again");
-    assert!(h.footer().contains("Pictures cannot be joined"), "{}", h.footer());
+    h.wait_for(|h| !h.p.clipboard.is_empty());
+    let Payload::Images{paths,html,..}=&h.p.clipboard[0] else{panic!("image batch expected")};
+    assert_eq!(paths.len(),2);
+    for (p,color) in paths.iter().zip([200,10]) {
+        let img=pasteroll_core::image::decode_png(&std::fs::read(p).unwrap()).unwrap();
+        assert_eq!(img.pixels[0],color);
+    }
+    assert_eq!(html.matches("<img ").count(),2);
+    assert!(html.contains("data:image/png;base64,"));
+    assert_eq!(h.p.pastes.len(),1);
+    assert!(!h.c.is_open());
+    assert!(paths.iter().all(|p|std::path::Path::new(p).exists()),"files survive session close");
 }
 
 #[test]
@@ -1136,4 +1148,38 @@ fn no_bloat_rows_carry_no_small_pictures() {
     h.p.mode = UiMode::NoBloat;
     h.open();
     assert!(h.vm().rows.iter().all(|r| r.thumb.is_none()));
+}
+
+
+#[test]
+fn batch_copy_and_cancel_do_not_send_paste_keys() {
+    for cancel in [true,false] {
+        let mut h=H::new(&[Clip::Color(20),Clip::Color(40)]);
+        h.p.desktop=Some(h.dir.clone());
+        let g=h.open();
+        h.send(Event::Key(Key::CtrlM,g));
+        h.send(Event::Key(Key::CtrlA,g));
+        h.send(Event::Key(Key::CtrlC,g));
+        if cancel {h.send(Event::Key(Key::Escape,g));for _ in 0..10 {h.send(Event::Wake);}}
+        else {h.wait_for(|h|!h.p.clipboard.is_empty());assert!(matches!(h.p.clipboard[0],Payload::Images{..}));}
+        assert!(h.p.pastes.is_empty());
+        if cancel {assert!(h.p.clipboard.is_empty());}
+    }
+}
+
+
+#[test]
+fn image_options_can_choose_inline_without_opening_the_editor() {
+    let mut h=H::new(&[Clip::Color(10),Clip::Color(90)]);
+    h.p.desktop=Some(h.dir.clone());
+    let g=h.open();
+    h.send(Event::Key(Key::CtrlM,g));
+    h.send(Event::Key(Key::CtrlA,g));
+    h.send(Event::Key(Key::CtrlE,g));
+    assert!(h.vm().panel.is_some());
+    h.send(Event::Key(Key::Down,g));
+    h.send(Event::Key(Key::Enter,g));
+    h.wait_for(|h|!h.p.clipboard.is_empty());
+    assert!(matches!(h.p.clipboard[0],Payload::Images{inline:true,..}));
+    assert_eq!(h.p.pastes.len(),1);
 }

@@ -362,3 +362,36 @@ impl pasteroll_app::ClipboardSource for WinClipboard {
         }
     }
 }
+
+/// CF_HTML offsets count UTF-8 bytes, including the fixed-size header.
+pub fn html_clipboard(html:&str)->Vec<u8> {
+    let prefix="<html><body><!--StartFragment-->";
+    let suffix="<!--EndFragment--></body></html>";
+    let header=|a:usize,b:usize,c:usize,d:usize|format!("Version:0.9\r\nStartHTML:{a:010}\r\nEndHTML:{b:010}\r\nStartFragment:{c:010}\r\nEndFragment:{d:010}\r\n");
+    let start=header(0,0,0,0).len();
+    let mut out=header(start,start+prefix.len()+html.len()+suffix.len(),start+prefix.len(),start+prefix.len()+html.len());
+    out.push_str(prefix);out.push_str(html);out.push_str(suffix);out.push('\0');out.into_bytes()
+}
+pub fn set_images(owner:HWND,f:&Formats,paths:&[String],html:&str,inline:bool)->Result<()> {
+    write_marked(owner,f,|| {
+        let format=unsafe {RegisterClipboardFormatW(w!("HTML Format"))};
+        if inline {put(format,&html_clipboard(html))?;files_payload(paths)}
+        else {files_payload(paths)?;put(format,&html_clipboard(html))}
+    })
+}
+
+
+#[cfg(test)]
+mod batch_tests {
+    #[test]
+    fn html_offsets_are_utf8_byte_offsets() {
+        let fragment="<p>café</p><img src=\"data:image/png;base64,AAAA\">";
+        let bytes=super::html_clipboard(fragment);
+        let text=String::from_utf8(bytes.clone()).unwrap();
+        let field=|key:&str|text.lines().find_map(|l|l.strip_prefix(key)).unwrap().parse::<usize>().unwrap();
+        let a=field("StartFragment:");let b=field("EndFragment:");
+        assert_eq!(&bytes[a..b],fragment.as_bytes());
+        assert!(text[field("StartHTML:")..].starts_with("<html>"));
+        assert_eq!(bytes[field("EndHTML:")],0);
+    }
+}

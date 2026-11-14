@@ -26,6 +26,7 @@ pub struct Target {
 pub enum Payload {
     Text(String),
     Files(Vec<String>),
+    Images { paths: Vec<String>, html: String, inline: bool },
     /// PNG bytes; the platform decodes and offers its native image formats.
     Image(Vec<u8>),
 }
@@ -38,6 +39,7 @@ impl Payload {
             Payload::Text(t) => t.zeroize(),
             Payload::Files(f) => f.iter_mut().for_each(|s| s.zeroize()),
             Payload::Image(b) => b.zeroize(),
+            Payload::Images { paths, html, .. } => {paths.iter_mut().for_each(|s|s.zeroize());html.zeroize();}
         }
     }
 }
@@ -48,6 +50,7 @@ impl std::fmt::Debug for Payload {
         match self {
             Payload::Text(t) => write!(f, "Text({} chars)", t.chars().count()),
             Payload::Files(v) => write!(f, "Files({})", v.len()),
+            Payload::Images { paths, .. } => write!(f,"Images({})",paths.len()),
             Payload::Image(b) => write!(f, "Image({} bytes)", b.len()),
         }
     }
@@ -321,6 +324,8 @@ pub trait Platform {
     }
 
     // ---------------------------------------------------------------- paste
+    /// Returns a private directory for temporary image attachments.
+    fn image_batch_folder(&self) -> Result<PathBuf,String> { Err("Image batches are unavailable".into()) }
     fn write_clipboard(&mut self, payload: &Payload) -> Result<(), String>;
     /// Sends the paste keystroke. `true` only if the system accepted every event.
     fn send_paste(&mut self, key: PasteKey) -> bool;

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Multi-paste image batches as separate PNG attachments or inline HTML, with bounded private cache files.
+- Advanced Image Paste zoom, actual size, fit, pointer-centered Ctrl+wheel, and panning.
+- Double-click clip headers or blank content space to paste; double-click and drag text to select by words.
+
+
 - **Save the clip shown without opening the viewer.** Ctrl+S now saves the current carousel clip,
   right from the history list: text as a `.txt` file, a copied file list as one path per line, and
   a picture as a re-encoded PNG. The right-click menu has the same action as **Save as...** for a

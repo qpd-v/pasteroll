@@ -1165,6 +1165,11 @@ impl Platform for LinuxPlatform {
         ClickPoll::Target(target)
     }
 
+    fn image_batch_folder(&self) -> Result<PathBuf,String> {
+        use pasteroll_core::keystore::Os;
+        let folder=self.db.parent().ok_or("No data folder")?.join("paste-cache");
+        crate::sys::LinuxOs::private_dir(&folder)?;Ok(folder)
+    }
     fn write_clipboard(&mut self, payload: &Payload) -> Result<(), String> {
         let r = self.server.set(&self.conn, &self.atoms, payload);
         let _ = self.conn.flush();

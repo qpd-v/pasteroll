@@ -133,6 +133,9 @@ pub struct EditorView {
     pub preview: Option<Arc<Rgba>>,
     /// The size the preview stands for, in real pixels (the preview may be a reduced copy).
     pub dims: (u32, u32),
+    /// Absolute scale in DIP per source pixel; None fits the viewport.
+    pub zoom: Option<f32>,
+    pub pan: (f32, f32),
     /// The preview is being redrawn.
     pub busy: bool,
     pub crop: Option<CropView>,
@@ -176,6 +179,7 @@ pub enum EHit {
     Paste,
     Crop(CropPart),
     Image,
+    Zoom(u8),
     Panel,
     /// Inside the popup, on nothing in particular.
     Popup,
@@ -209,6 +213,7 @@ pub struct ELayout {
     pub back: Rect,
     pub tops: Vec<Rect>,
     pub preview: Rect,
+    pub zoom_buttons: [Rect; 5],
     /// Where the picture is drawn (inside `preview`).
     pub image: Option<Rect>,
     /// The crop rectangle on screen.
@@ -372,7 +377,15 @@ pub fn editor_layout(v: &EditorView, size: (f32, f32)) -> ELayout {
     let panel = Rect { x: w - PANEL_W - 12.0, y: HEADER_H, w: PANEL_W, h: (footer_y - HEADER_H - 6.0).max(0.0) };
     let preview = Rect { x: 12.0, y: HEADER_H, w: (panel.x - 24.0).max(0.0), h: panel.h };
     let area = Rect { x: preview.x + 14.0, y: preview.y + 14.0, w: (preview.w - 28.0).max(1.0), h: (preview.h - 52.0).max(1.0) };
-    let image = (v.dims.0 > 0 && v.dims.1 > 0).then(|| fit_rect(area, v.dims));
+    let area = Rect { h: (area.h - 34.0).max(1.0), ..area };
+    let zoom_buttons = std::array::from_fn(|i| Rect { x: preview.x + 14.0 + i as f32 * 52.0, y: preview.y + preview.h - 64.0, w: 50.0, h: 26.0 });
+    let image = (v.dims.0 > 0 && v.dims.1 > 0).then(|| {
+        let fit = fit_rect(area, v.dims);
+        let k = v.zoom.unwrap_or(fit.w / v.dims.0 as f32);
+        let (w,h) = (v.dims.0 as f32*k,v.dims.1 as f32*k);
+        let pan = |p:f32, len:f32, avail:f32| p.clamp(-((len-avail)/2.0).max(0.0), ((len-avail)/2.0).max(0.0));
+        Rect { x: area.x+(area.w-w)/2.0+pan(v.pan.0,w,area.w), y:area.y+(area.h-h)/2.0+pan(v.pan.1,h,area.h), w,h }
+    });
     let crop = match (&v.crop, image) {
         (Some(c), Some(img)) => {
             let k = img.w / v.dims.0.max(1) as f32;
@@ -425,6 +438,7 @@ pub fn editor_layout(v: &EditorView, size: (f32, f32)) -> ELayout {
         back,
         tops,
         preview,
+        zoom_buttons,
         image,
         crop,
         panel,
@@ -514,6 +528,8 @@ pub fn editor_hit(v: &EditorView, size: (f32, f32), scale: f32, px: f32, py: f32
         }
         return EHit::Panel;
     }
+    if let Some(i) = l.zoom_buttons.iter().position(|r| r.contains(x,y)) { return EHit::Zoom(i as u8); }
+    if !l.preview.contains(x,y) { return EHit::Nothing; }
     if let Some(c) = l.crop {
         if let Some(part) = crop_part_at(c, x, y) {
             return EHit::Crop(part);
@@ -834,9 +850,10 @@ impl Renderer {
         // ---- preview
         let pv = l.preview;
         cv.fill(pv, 8.0, (20, 20, 24), 1.0);
+        let before_preview = cv.pm.clone();
         match (&v.preview, l.image) {
             (Some(img), Some(ir)) if img.width > 0 && img.height > 0 => {
-                checker(&mut cv, ir, 0.0, 8.0);
+                checker(&mut cv, super::intersect(ir,pv).unwrap_or(Rect{x:0.0,y:0.0,w:0.0,h:0.0}), 0.0, 8.0);
                 let k = ir.w * s / img.width as f32; // px per picture pixel
                 let mut level = 0u32;
                 while level < 6 && k * (1u32 << (level + 1)) as f32 <= 1.0 && (img.width >> (level + 1)) > 0 {
@@ -891,6 +908,25 @@ impl Renderer {
                 cv.fill(badge, 5.0, TOOLBAR_BG, 0.92);
                 self.centred(&mut cv, &c.label, Rect { x: badge.x + 7.0, w: tw + 2.0, ..badge }, 12.0, FOREGROUND);
             }
+        }
+        // Image and crop overlays are clipped to the preview, including when panned.
+        let pw=cv.pm.width() as usize;
+        let left=(pv.x*s).ceil().max(0.0) as usize;
+        let right=((pv.x+pv.w)*s).floor().max(0.0) as usize;
+        for yy in 0..cv.pm.height() as usize {
+            let row=yy*pw*4;
+            if (yy as f32)/s < pv.y || (yy as f32)/s >= pv.y+pv.h {
+                cv.pm.data_mut()[row..row+pw*4].copy_from_slice(&before_preview.data()[row..row+pw*4]);
+            } else {
+                let a=row+left.min(pw)*4;let b=row+right.min(pw)*4;
+                cv.pm.data_mut()[row..a].copy_from_slice(&before_preview.data()[row..a]);
+                cv.pm.data_mut()[b..row+pw*4].copy_from_slice(&before_preview.data()[b..row+pw*4]);
+            }
+        }
+        for (i,r) in l.zoom_buttons.iter().enumerate() {
+            cv.fill(*r,4.0,FIELD,1.0);
+            let label=match i {0=>"-".to_owned(),1=>"+".to_owned(),2=>"Fit".to_owned(),3=>"100%".to_owned(),_=>format!("{}%",(l.image.map_or(1.0,|r|r.w/v.dims.0.max(1) as f32)*s*100.0).round())};
+            self.centred(&mut cv,&label,*r,12.0,FOREGROUND);
         }
         if v.busy {
             let m = "Updating...";
@@ -1084,6 +1120,22 @@ mod tests {
         v
     }
 
+
+    #[test]
+    fn zoom_crop_and_pointer_hits_share_coordinates_at_multiple_dpi() {
+        let mut v=view();
+        v.preview=Some(Arc::new(Rgba{width:80,height:60,pixels:[100,120,140,255].repeat(80*60)}));
+        v.dims=(800,600);v.zoom=Some(2.0);v.pan=(100.0,-80.0);
+        v.crop=Some(CropView{rect:(350.0,250.0,100.0,100.0),label:"100 x 100".into()});
+        let l=editor_layout(&v,(1200.0,700.0));let image=l.image.unwrap();let crop=l.crop.unwrap();
+        assert!((crop.x-(image.x+700.0)).abs()<0.1);
+        for scale in [1.0,1.5,2.0] {
+            let center=(crop.x+crop.w/2.0,crop.y+crop.h/2.0);
+            assert_eq!(editor_hit(&v,(1200.0,700.0),scale,center.0*scale,center.1*scale),EHit::Crop(CropPart::Move));
+            let f=Renderer::new().render_editor(&v,(1200.0,700.0),scale);
+            assert_eq!((f.width,f.height),((1200.0*scale) as u32,(700.0*scale) as u32));
+        }
+    }
     const SIZE: (f32, f32) = (1440.0, 810.0);
 
     #[test]

@@ -17,6 +17,7 @@ mod editor;
 mod joinpanel;
 mod keep;
 mod multi;
+mod imagebatch;
 mod pins;
 mod rolls;
 mod viewer;
@@ -211,6 +212,7 @@ struct Ui {
     selection: Option<(usize, usize)>,
     anchor: Option<usize>,
     dragging: bool,
+    word_anchor: Option<(usize, usize)>,
     /// The carousel window is being dragged by an empty part of it.
     moving: bool,
     scroll: f32,
@@ -337,6 +339,7 @@ pub struct Controller {
     row_cache: HashMap<i64, RowInfo>,
     /// Set while a multi-paste is being pasted: how many clips went into the text (see `multi.rs`).
     joined_paste: Option<usize>,
+    image_batch: Option<imagebatch::Pending>,
     /// The choices last made on the multi-paste options card (kept until Pasteroll restarts).
     join_last: joinpanel::JoinOptions,
     preview_gen: u64,
@@ -473,6 +476,7 @@ impl Controller {
             last_maintain_ms: None,
             row_cache: HashMap::new(),
             joined_paste: None,
+            image_batch: None,
             join_last: joinpanel::JoinOptions::default(),
             preview_gen: 0,
             overlay: OverlayInfo::new(1.0, (WIDTH as u32, HEIGHT as u32)),
@@ -635,6 +639,14 @@ impl Controller {
         if !matches!(ev, Event::Tick) {
             p.heartbeat();
         }
+        if self.image_batch.is_some() {
+            if matches!(ev,Event::Key(Key::Escape,_)|Event::ClickCancel(_)|Event::Activate|Event::BrowseAt(..)) {
+                self.image_batch=None;
+            } else if !matches!(ev,Event::Tick|Event::Wake) {
+                return;
+            }
+        }
+        self.poll_image_batch(p);
         let viewing = self.viewer.is_some();
         // Ctrl or Shift with Up or Down choose clips in the carousel only; elsewhere they are the arrows
         let ev = match ev {
@@ -833,6 +845,7 @@ impl Controller {
                 selection: None,
                 anchor: None,
                 dragging: false,
+                word_anchor: None,
                 moving: false,
                 scroll: 0.0,
                 last_dbl_ms: None,
@@ -861,6 +874,7 @@ impl Controller {
     }
 
     fn end_session(&mut self, p: &mut dyn Platform) {
+        self.image_batch = None;
         self.pending_copy_refresh = false;
         let collapsing = self.open.as_ref().is_some_and(|o| o.ui.collapse.running());
         self.drop_editor(p);
@@ -1787,6 +1801,24 @@ impl Controller {
         match m.kind {
             MouseKind::Down | MouseKind::DoubleClick => {
                 let hit = self.renderer.hit_test(vm, size, scale, x, y);
+                if m.kind == MouseKind::DoubleClick
+                    && self.open.as_ref().is_some_and(|o| !o.ui.dropdown_open && o.ui.menu.is_none())
+                {
+                    let g = geometry(vm, size, scale);
+                    let paste_area = match hit {
+                        Hit::Body { .. } => {
+                            let b = g.body;
+                            b.is_some_and(|b| y > b.y * scale + self.renderer.body_text_height(vm, size, scale) - match &vm.body { Body::Text { scroll, .. } => *scroll, _ => 0.0 })
+                        }
+                        Hit::Row(i) => i == vm.active,
+                        _ => false,
+                    };
+                    if paste_area {
+                        if let Some(o)=self.open.as_mut() {o.ui.selection=None;o.ui.word_anchor=None;o.ui.dragging=false;}
+                        self.confirm(p);
+                        return;
+                    }
+                }
                 // The image modifier on a picture opens the editor from the carousel itself.
                 if self.image_clip_opens_editor(p, hit, vm, now) {
                     return;
@@ -1889,6 +1921,7 @@ impl Controller {
         if self.open.is_none() || self.editor.is_some() || self.viewer.is_some() {
             return false;
         }
+        if self.open.as_ref().is_some_and(|o| o.ui.multi_on || !o.ui.picks.is_empty()) { return false; }
         if !p.modifiers_now().has(self.advanced_modifier) {
             return false;
         }
@@ -1936,13 +1969,16 @@ impl Controller {
             o.ui.last_dbl_ms = Some(now);
             let s = Selection::word_at(&units, pos);
             o.ui.selection = (!s.is_empty()).then(|| s.range());
-            o.ui.dragging = false;
+            o.ui.word_anchor = Some(s.range());
+            o.ui.anchor = Some(s.range().0);
+            o.ui.dragging = true;
         } else if triple {
             o.ui.last_dbl_ms = None;
             let s = Selection::line_at(&units, pos);
             o.ui.selection = (!s.is_empty()).then(|| s.range());
             o.ui.dragging = false;
         } else {
+            o.ui.word_anchor = None;
             let pos = pasteroll_core::select::snap(&units, pos);
             o.ui.anchor = Some(pos);
             o.ui.selection = None;
@@ -1975,7 +2011,10 @@ impl Controller {
                 let units: Vec<u16> = san.display.encode_utf16().collect();
                 let pos = pasteroll_core::select::snap(&units, pos);
                 if let Some(a) = o.ui.anchor {
-                    o.ui.selection = (a != pos).then_some((a.min(pos), a.max(pos)));
+                    o.ui.selection = if let Some((lo, hi)) = o.ui.word_anchor {
+                        let word = Selection::word_at(&units, pos).range();
+                        Some((lo.min(word.0), hi.max(word.1)))
+                    } else { (a != pos).then_some((a.min(pos), a.max(pos))) };
                 }
             }
         }
@@ -2123,6 +2162,7 @@ impl Controller {
             (Payload::Text(t), true) => format!("whole clip ({} chars)", t.chars().count()),
             (Payload::Text(t), false) => format!("selection ({} chars)", t.chars().count()),
             (Payload::Files(f), _) => format!("{} file(s)", f.len()),
+            (Payload::Images { paths, .. }, _) => format!("{} images",paths.len()),
             (Payload::Image(_), _) => "image".to_owned(),
         };
         p.log(&format!("pasted {what} with {key:?}"));

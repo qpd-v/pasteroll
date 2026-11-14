@@ -850,3 +850,19 @@ fn the_editor_has_a_long_idle_limit_and_cleans_up_when_it_ends() {
     assert!(!h.c.editor_is_open() && !h.c.is_open());
     assert!(!h.p.modal && !h.p.viewer_mode && h.p.viewer_rect.is_none() && h.p.created.is_empty());
 }
+
+#[test]
+fn zoom_controls_change_view_without_changing_edit_parameters() {
+    let (mut h,_)=H::desktop_session(&[Clip::Gradient(800,600)]);
+    h.open_editor();
+    let params=h.params();
+    for index in [1usize,3,2] {
+        let l=editor_layout(&h.eview(),h.c.editor_size_dip().unwrap());
+        let r=l.zoom_buttons[index];
+        let pt=(r.x+r.w/2.0,r.y+r.h/2.0);
+        h.send(Event::ViewerMouse(MouseEvent{kind:MouseKind::Down,x:pt.0,y:pt.1}));
+        h.send(Event::ViewerMouse(MouseEvent{kind:MouseKind::Up,x:pt.0,y:pt.1}));
+        assert_eq!(h.params(),params);
+        if index==2 {assert_eq!(h.eview().zoom,None);} else {assert!(h.eview().zoom.is_some());}
+    }
+}
